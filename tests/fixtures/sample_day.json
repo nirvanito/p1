@@ -1,0 +1,68 @@
+{
+  "contract_version": 1,
+  "journal_date": "2026-07-27",
+  "source": {"text": "INJECTED-BY-TEST", "type": "pasted"},
+  "day": {
+    "summary": "Shipped the quarterly report draft; bouldering with Jake at Movement, finally sent the blue V4.",
+    "measurements": [
+      {"metric": "mood", "numeric_value": 7},
+      {"metric": "energy", "numeric_value": 6},
+      {"metric": "sleep_hours", "numeric_value": 6.5, "unit": "h"}
+    ]
+  },
+  "entries": [
+    {
+      "kind": "event",
+      "categories": {"primary": "food"},
+      "title": "Breakfast: scrambled eggs and toast",
+      "time_of_day": "morning",
+      "provenance": {"char_start": 0, "char_end": 60}
+    },
+    {
+      "kind": "event",
+      "categories": {"primary": "work"},
+      "title": "Shipped quarterly report draft to Dana",
+      "body": "Finally shipped the draft around 2pm.",
+      "time_of_day": "afternoon",
+      "entities": [
+        {"ref": "new", "type": "person", "name": "Dana", "role": "participant"}
+      ]
+    },
+    {
+      "kind": "event",
+      "categories": {"primary": "food"},
+      "title": "Lunch: chicken burrito bowl",
+      "time_of_day": "afternoon"
+    },
+    {
+      "kind": "event",
+      "categories": {"primary": "exercise", "secondary": ["social"]},
+      "title": "Bouldering at Movement with Jake",
+      "body": "About 90 minutes; finally sent the blue V4.",
+      "time_of_day": "evening",
+      "measurements": [
+        {"metric": "duration", "numeric_value": 90, "unit": "min"}
+      ],
+      "entities": [
+        {"ref": "new", "type": "person", "name": "Jake", "role": "participant"},
+        {"ref": "new", "type": "place", "name": "Movement", "aliases": ["the gym"], "role": "location"},
+        {"ref": "new", "type": "activity", "name": "Bouldering", "role": "subject"}
+      ],
+      "provenance": {"segments": [4, 5]}
+    },
+    {
+      "kind": "event",
+      "categories": {"primary": "food"},
+      "title": "Dinner: leftover pasta",
+      "time_of_day": "evening"
+    },
+    {
+      "kind": "idea",
+      "categories": {"primary": "idea"},
+      "title": "App to track how often I call Mom"
+    }
+  ],
+  "ambiguities": [
+    {"note": "Assumed 'Movement' is a climbing gym (place)."}
+  ]
+}

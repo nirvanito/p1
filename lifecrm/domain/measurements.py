@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlite3
 
 from ..config import CONFIDENCE
-from . import audit
-from .util import DomainError, is_iso_date, new_uuid, now_utc
+from . import audit, days
+from .util import DomainError, new_uuid, now_utc
 
 # metric -> {units: {unit: factor_to_norm}, norm_unit, range (on normalized or raw value)}
 KNOWN_METRICS: dict[str, dict] = {
@@ -94,8 +94,8 @@ def add(conn: sqlite3.Connection, *, entry_id: int | None = None,
         extraction_run_id: int | None = None, actor: str = "user") -> dict:
     if (entry_id is None) == (journal_date is None):
         raise DomainError("measurement needs exactly one owner: entry_id or journal_date")
-    if journal_date is not None and not is_iso_date(journal_date):
-        raise DomainError(f"invalid journal_date '{journal_date}'")
+    if journal_date is not None:
+        days.ensure_day(conn, journal_date)   # validates format, creates day row
     err = validate_fields(metric, numeric_value, text_value, unit, confidence)
     if err:
         raise DomainError(err)

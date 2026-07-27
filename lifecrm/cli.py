@@ -447,10 +447,14 @@ def restore(snapshot_file: str = typer.Argument(
         _fail(f"snapshot not found: {snap}")
     check = sqlite3.connect(f"file:{snap.as_posix()}?mode=ro", uri=True)
     try:
-        ok = check.execute("PRAGMA integrity_check").fetchone()[0]
-        if ok != "ok":
-            _fail(f"snapshot failed integrity check: {ok}")
-        row = check.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        try:
+            ok = check.execute("PRAGMA integrity_check").fetchone()[0]
+            if ok != "ok":
+                _fail(f"snapshot failed integrity check: {ok}")
+            row = check.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        except sqlite3.DatabaseError as e:
+            _fail(f"{snap.name} is not a readable SQLite database: {e}")
         if row is None:
             _fail("snapshot has no meta.schema_version — not a lifecrm database")
         snap_version = int(row[0])
