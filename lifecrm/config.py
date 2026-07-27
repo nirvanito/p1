@@ -61,8 +61,9 @@ def load_config(root: Path | None = None) -> Config:
     cfg_file = root / "config.toml"
     if not cfg_file.exists():
         cfg_file = root / "config.example.toml"
-    with open(cfg_file, "rb") as f:
-        raw = tomllib.load(f)
+    # utf-8-sig: tolerate the BOM that Notepad and Windows PowerShell's
+    # Out-File -Encoding utf8 prepend (tomllib rejects a raw BOM).
+    raw = tomllib.loads(cfg_file.read_text(encoding="utf-8-sig"))
 
     paths = raw.get("paths", {})
     time_cfg = raw.get("time", {})
