@@ -1,0 +1,29 @@
+# Life CRM configuration.
+# Copy to config.toml and adjust. Relative paths resolve against the project root.
+
+[paths]
+data_dir = "data"                  # canonical private data (SQLite DB, transcripts, staging)
+backups_dir = "backups"            # local DB snapshots
+inbox_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox'
+archive_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\archive'
+onedrive_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'
+
+[time]
+timezone = "America/Chicago"       # IANA name; recorded per source at ingest
+day_rollover_hour = 5              # recordings before 05:00 local count as the previous day
+
+[whisper]
+model = "small"                    # set by the setup benchmark; do not treat as a fixed default
+device = "cpu"
+compute_type = "int8"
+vad_filter = false
+language = "en"
+# Seeding initial_prompt with known entity names is a marginal aid to roughly the
+# first minute of audio only; the alias table is the real fix for misspellings.
+seed_initial_prompt = true
+
+[ingest]
+# content_hash duplicates WARN (never block); these tolerances drive the soft
+# (recorded_at, duration_sec) similarity warning.
+duplicate_recorded_at_tolerance_sec = 120
+duplicate_duration_tolerance_sec = 5

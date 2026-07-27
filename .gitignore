@@ -1,0 +1,16 @@
+# --- private personal data: never committed ---
+/data/
+/backups/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+
+# --- environment ---
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- local-only config (config.example.toml IS committed) ---
+/config.toml
