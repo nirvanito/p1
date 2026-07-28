@@ -16,6 +16,11 @@ from .config import DEFAULT_CATEGORIES, DEFAULT_KINDS
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _MIGRATION_RE = re.compile(r"^(\d{4})_.+\.sql$")
+_COMMENT_LINE_RE = re.compile(r"^\s*(--.*)?$")
+
+
+class MigrationError(RuntimeError):
+    """A malformed migration set: duplicate numbers, gaps, or reserved numbers."""
 
 
 def connect(db_path: Path | str, readonly: bool = False) -> sqlite3.Connection:
@@ -65,13 +70,58 @@ def schema_version(conn: sqlite3.Connection) -> int:
 
 
 def available_migrations(migrations_dir: Path = MIGRATIONS_DIR) -> list[tuple[int, Path]]:
-    out = []
+    """All migrations, validated: numbers start at 2 (schema.sql is v1), no
+    duplicates, no gaps. A malformed set raises before anything applies."""
+    found: dict[int, Path] = {}
     if migrations_dir.exists():
         for f in sorted(migrations_dir.iterdir()):
             m = _MIGRATION_RE.match(f.name)
-            if m:
-                out.append((int(m.group(1)), f))
-    return out
+            if not m:
+                continue
+            version = int(m.group(1))
+            if version < 2:
+                raise MigrationError(
+                    f"migration number {version:04d} is reserved ({f.name}) — "
+                    f"schema.sql is version 1; migrations start at 0002")
+            if version in found:
+                raise MigrationError(
+                    f"duplicate migration number {version:04d}: "
+                    f"{found[version].name} and {f.name}")
+            found[version] = f
+    versions = sorted(found)
+    for i, version in enumerate(versions):
+        expected = 2 + i
+        if version != expected:
+            raise MigrationError(
+                f"gap in migration sequence: found {found[version].name} but no "
+                f"migration {expected:04d} (have: "
+                f"{', '.join(found[v].name for v in versions)})")
+    return [(v, found[v]) for v in versions]
+
+
+def split_statements(sql: str) -> list[str]:
+    """Split a SQL script into complete statements.
+
+    `sqlite3.complete_statement` (sqlite3_complete) tokenizes for real: a
+    semicolon inside a string literal, a comment, or a CREATE TRIGGER
+    BEGIN...END body does not terminate a statement. We accumulate text and
+    only cut where a candidate chunk is a complete statement — so trigger
+    bodies like the ones in schema.sql survive intact. A naive text split on
+    ';' would not.
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    for ch in sql:
+        buf.append(ch)
+        if ch == ";" and sqlite3.complete_statement("".join(buf)):
+            stmt = "".join(buf).strip()
+            if not all(_COMMENT_LINE_RE.match(line) for line in stmt.splitlines()):
+                statements.append(stmt)
+            buf = []
+    tail = "".join(buf).strip()
+    if tail and not all(_COMMENT_LINE_RE.match(line) for line in tail.splitlines()):
+        statements.append(tail)  # unterminated tail: let SQLite report the error
+    return statements
 
 
 def pending_migrations(conn: sqlite3.Connection,
@@ -82,10 +132,21 @@ def pending_migrations(conn: sqlite3.Connection,
 
 def migrate(conn: sqlite3.Connection, *, snapshot_to: Path | None = None,
             migrations_dir: Path = MIGRATIONS_DIR) -> list[int]:
-    """Apply pending migrations in order, each in its own transaction.
+    """Apply pending migrations in order, each atomically.
+
+    NOT executescript: that commits any pending transaction and then runs each
+    statement in autocommit mode, so a failure half-way leaves earlier
+    statements applied with schema_version claiming otherwise. Instead each
+    migration's statements AND its schema_version bump run inside one explicit
+    BEGIN IMMEDIATE ... COMMIT — either the whole migration lands or none of it.
+    (DDL is transactional in SQLite, so this is safe.)
+
+    A migration that changes the contract must update meta.contract_version
+    itself — the runner only maintains schema_version.
 
     When snapshot_to is given, a backup-API snapshot is written there before
-    anything is applied.
+    anything is applied. Any transaction the caller left open is committed
+    first — do not call this mid-transaction.
     """
     pending = pending_migrations(conn, migrations_dir)
     if not pending:
@@ -94,10 +155,14 @@ def migrate(conn: sqlite3.Connection, *, snapshot_to: Path | None = None,
         snapshot(conn, snapshot_to)
     applied = []
     for version, path in pending:
-        sql = path.read_text(encoding="utf-8")
+        statements = split_statements(path.read_text(encoding="utf-8-sig"))
+        conn.commit()  # clean autocommit state before the explicit transaction
         try:
-            conn.executescript(sql)  # opens its own implicit transaction
-            conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(version),))
+            conn.execute("BEGIN IMMEDIATE")
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute("UPDATE meta SET value=? WHERE key='schema_version'",
+                         (str(version),))
             conn.commit()
         except Exception:
             conn.rollback()

@@ -86,12 +86,98 @@ def test_migration_framework(conn, cfg, tmp_path):
 
 
 def test_migration_failure_rolls_back(conn, tmp_path):
+    """Parse failure: dies before anything applies."""
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "0002_bad.sql").write_text("CREATE TABLE broken (;\n", encoding="utf-8")
     with pytest.raises(sqlite3.OperationalError):
         db_mod.migrate(conn, migrations_dir=mig)
     assert db_mod.schema_version(conn) == 1
+
+
+def test_migration_create_then_fail_is_atomic(conn, tmp_path):
+    """Runtime failure AFTER a successful statement: the earlier statement must
+    not survive. This is the executescript autocommit bug F0 exists to fix."""
+    mig = tmp_path / "migrations"
+    mig.mkdir()
+    (mig / "0002_half.sql").write_text(
+        "CREATE TABLE half_applied (id INTEGER PRIMARY KEY);\n"
+        "INSERT INTO nonexistent_table VALUES (1);\n", encoding="utf-8")
+    with pytest.raises(sqlite3.OperationalError):
+        db_mod.migrate(conn, migrations_dir=mig)
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "half_applied" not in tables
+    assert db_mod.schema_version(conn) == 1
+
+
+def test_migration_duplicate_numbers_rejected(conn, tmp_path):
+    mig = tmp_path / "migrations"
+    mig.mkdir()
+    (mig / "0002_first.sql").write_text("CREATE TABLE a (id INTEGER);\n", encoding="utf-8")
+    (mig / "0002_second.sql").write_text("CREATE TABLE b (id INTEGER);\n", encoding="utf-8")
+    with pytest.raises(db_mod.MigrationError, match="0002_first.sql and 0002_second.sql"):
+        db_mod.migrate(conn, migrations_dir=mig)
+    assert db_mod.schema_version(conn) == 1
+
+
+def test_migration_gap_rejected(conn, tmp_path):
+    mig = tmp_path / "migrations"
+    mig.mkdir()
+    (mig / "0002_ok.sql").write_text("CREATE TABLE a (id INTEGER);\n", encoding="utf-8")
+    (mig / "0004_skips.sql").write_text("CREATE TABLE b (id INTEGER);\n", encoding="utf-8")
+    with pytest.raises(db_mod.MigrationError, match="0004_skips.sql but no migration 0003"):
+        db_mod.migrate(conn, migrations_dir=mig)
+    assert db_mod.schema_version(conn) == 1
+
+
+def test_migration_reserved_number_rejected(conn, tmp_path):
+    mig = tmp_path / "migrations"
+    mig.mkdir()
+    (mig / "0001_schema.sql").write_text("CREATE TABLE a (id INTEGER);\n", encoding="utf-8")
+    with pytest.raises(db_mod.MigrationError, match="reserved"):
+        db_mod.migrate(conn, migrations_dir=mig)
+
+
+def test_migration_can_update_contract_version(conn, tmp_path):
+    """Contract bumps ride inside the migration's transaction."""
+    mig = tmp_path / "migrations"
+    mig.mkdir()
+    (mig / "0002_contract.sql").write_text(
+        "CREATE TABLE new_thing (id INTEGER PRIMARY KEY);\n"
+        "UPDATE meta SET value='99' WHERE key='contract_version';\n", encoding="utf-8")
+    db_mod.migrate(conn, migrations_dir=mig)
+    assert db_mod.schema_version(conn) == 2
+    row = conn.execute("SELECT value FROM meta WHERE key='contract_version'").fetchone()
+    assert row["value"] == "99"
+
+
+def test_split_statements_survives_triggers_and_literals(tmp_path):
+    """Splitting schema.sql (trigger bodies with internal semicolons) and
+    executing statement-by-statement must reproduce exactly what executescript
+    produces on a fresh database."""
+    schema_sql = db_mod.SCHEMA_FILE.read_text(encoding="utf-8")
+    statements = db_mod.split_statements(schema_sql)
+    assert len(statements) > 20
+
+    ref = sqlite3.connect(":memory:")
+    ref.executescript(schema_sql)
+    split = sqlite3.connect(":memory:")
+    split.execute("BEGIN")
+    for stmt in statements:
+        split.execute(stmt)
+    split.commit()
+    q = ("SELECT type, name, COALESCE(sql,'') FROM sqlite_master "
+         "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+    assert ref.execute(q).fetchall() == split.execute(q).fetchall()
+    ref.close()
+    split.close()
+
+    # semicolon inside a string literal does not split
+    stmts = db_mod.split_statements(
+        "INSERT INTO t VALUES ('a;b');\nINSERT INTO t VALUES ('c');\n")
+    assert len(stmts) == 2
+    assert stmts[0] == "INSERT INTO t VALUES ('a;b');"
 
 
 def test_out_of_date_schema_detected(conn, tmp_path):

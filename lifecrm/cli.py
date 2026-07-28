@@ -67,6 +67,9 @@ def _echo_json(obj) -> None:
 
 
 def _commit_or_rollback(conn: sqlite3.Connection, fn):
+    """Run fn, commit on success, roll back on DomainError — and always close
+    the connection. Leaked handles keep the DB file open, which on Windows
+    blocks restore's file swap."""
     try:
         result = fn()
         conn.commit()
@@ -74,6 +77,8 @@ def _commit_or_rollback(conn: sqlite3.Connection, fn):
     except DomainError as e:
         conn.rollback()
         _fail(str(e))
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------- init / migrate
@@ -165,13 +170,16 @@ def transcribe(
     from .transcribe import scan_inbox, transcribe_inbox
     cfg = _cfg()
     conn = _conn(cfg)
-    only = Path(file) if file else None
-    if only and not only.exists():
-        _fail(f"file not found: {only}")
-    if not only and not scan_inbox(cfg):
-        typer.echo("inbox empty — nothing to transcribe")
-        return
-    results = transcribe_inbox(conn, cfg, only_file=only, date_override=date)
+    try:
+        only = Path(file) if file else None
+        if only and not only.exists():
+            _fail(f"file not found: {only}")
+        if not only and not scan_inbox(cfg):
+            typer.echo("inbox empty — nothing to transcribe")
+            return
+        results = transcribe_inbox(conn, cfg, only_file=only, date_override=date)
+    finally:
+        conn.close()
     if as_json:
         _echo_json(results)
         return
@@ -195,7 +203,6 @@ def ingest(
 ) -> None:
     """Validate a draft and reconcile it into a reviewable diff (never destructive)."""
     cfg = _cfg()
-    conn = _conn(cfg)
     p = Path(draft_file)
     if not p.exists():
         _fail(f"file not found: {p}")
@@ -204,69 +211,76 @@ def ingest(
     except json.JSONDecodeError as e:
         _fail(f"{p.name} is not valid JSON: {e}")
 
-    transcript_text = None
-    src = draft.get("source") or {}
-    if isinstance(src, dict):
-        if isinstance(src.get("text"), str):
-            transcript_text = src["text"]
-        elif isinstance(src.get("source_id"), int):
-            row = conn.execute(
+    conn = _conn(cfg)
+    try:
+        transcript_text = None
+        src = draft.get("source") or {}
+        if isinstance(src, dict):
+            if isinstance(src.get("text"), str):
+                transcript_text = src["text"]
+            elif isinstance(src.get("source_id"), int):
+                row = conn.execute(
+                    "SELECT text FROM transcripts WHERE source_id=? "
+                    "ORDER BY id DESC LIMIT 1", (src["source_id"],)).fetchone()
+                if row:
+                    transcript_text = row["text"]
+                elif conn.execute("SELECT 1 FROM sources WHERE id=?",
+                                  (src["source_id"],)).fetchone():
+                    _fail(f"source id={src['source_id']} has no transcript")
+
+        errors = contract_mod.validate_draft(conn, draft, transcript_text)
+        if errors:
+            typer.echo(f"draft invalid ({len(errors)} error(s)):", err=True)
+            for e in errors:
+                typer.echo(f"  {e}", err=True)
+            raise typer.Exit(1)
+        if dry_run:
+            typer.echo(f"draft valid: {len(draft.get('entries', []))} entries for "
+                       f"{draft['journal_date']}")
+            return
+
+        def _do():
+            if "text" in draft["source"]:
+                from .importer import import_text
+                imported = import_text(
+                    conn, cfg, draft["source"]["text"],
+                    journal_date=draft["journal_date"],
+                    source_type=draft["source"].get("type", "pasted"),
+                    recorded_at=draft["source"].get("recorded_at"))
+                for w in imported["warnings"]:
+                    typer.echo(w, err=True)
+                draft["source"] = {"source_id": imported["source_id"]}
+            source_id = draft["source"]["source_id"]
+            text_row = conn.execute(
                 "SELECT text FROM transcripts WHERE source_id=? ORDER BY id DESC LIMIT 1",
-                (src["source_id"],)).fetchone()
-            if row:
-                transcript_text = row["text"]
-            elif conn.execute("SELECT 1 FROM sources WHERE id=?",
-                              (src["source_id"],)).fetchone():
-                _fail(f"source id={src['source_id']} has no transcript")
+                (source_id,)).fetchone()
+            meta = draft.get("extraction") or {}
+            interface = meta.get("interface", "claude_skill")
+            if interface not in ("claude_skill", "manual"):
+                raise DomainError(f"extraction.interface '{interface}' must be "
+                                  f"claude_skill or manual")
+            run = reconcile.create_extraction_run(
+                conn, source_id=source_id,
+                provider=meta.get("provider", "claude-code"),
+                model=meta.get("model"), interface=interface,
+                contract_version=CONTRACT_VERSION,
+                input_hash=content_hash_text(text_row["text"]))
+            diff = reconcile.build_diff(conn, draft, run)
+            cfg.staging_dir.mkdir(parents=True, exist_ok=True)
+            diff_path = cfg.staging_dir / (
+                f"diff-{draft['journal_date']}-{run['uuid'][:8]}.json")
+            diff_path.write_text(json.dumps(diff, indent=2, ensure_ascii=False) + "\n",
+                                 encoding="utf-8")
+            return diff, diff_path
 
-    errors = contract_mod.validate_draft(conn, draft, transcript_text)
-    if errors:
-        typer.echo(f"draft invalid ({len(errors)} error(s)):", err=True)
-        for e in errors:
-            typer.echo(f"  {e}", err=True)
-        raise typer.Exit(1)
-    if dry_run:
-        typer.echo(f"draft valid: {len(draft.get('entries', []))} entries for "
-                   f"{draft['journal_date']}")
-        return
-
-    def _do():
-        nonlocal transcript_text
-        if "text" in draft["source"]:
-            from .importer import import_text
-            imported = import_text(
-                conn, cfg, draft["source"]["text"],
-                journal_date=draft["journal_date"],
-                source_type=draft["source"].get("type", "pasted"),
-                recorded_at=draft["source"].get("recorded_at"))
-            for w in imported["warnings"]:
-                typer.echo(w, err=True)
-            draft["source"] = {"source_id": imported["source_id"]}
-            transcript_text = None  # re-read below for canonical form
-        source_id = draft["source"]["source_id"]
-        text_row = conn.execute(
-            "SELECT text FROM transcripts WHERE source_id=? ORDER BY id DESC LIMIT 1",
-            (source_id,)).fetchone()
-        meta = draft.get("extraction") or {}
-        interface = meta.get("interface", "claude_skill")
-        if interface not in ("claude_skill", "manual"):
-            raise DomainError(f"extraction.interface '{interface}' must be "
-                              f"claude_skill or manual")
-        run = reconcile.create_extraction_run(
-            conn, source_id=source_id,
-            provider=meta.get("provider", "claude-code"),
-            model=meta.get("model"), interface=interface,
-            contract_version=CONTRACT_VERSION,
-            input_hash=content_hash_text(text_row["text"]))
-        diff = reconcile.build_diff(conn, draft, run)
-        cfg.staging_dir.mkdir(parents=True, exist_ok=True)
-        diff_path = cfg.staging_dir / (
-            f"diff-{draft['journal_date']}-{run['uuid'][:8]}.json")
-        diff_path.write_text(json.dumps(diff, indent=2, ensure_ascii=False) + "\n",
-                             encoding="utf-8")
-        return diff, diff_path
-
-    diff, diff_path = _commit_or_rollback(conn, _do)
+        try:
+            diff, diff_path = _do()
+            conn.commit()
+        except DomainError as e:
+            conn.rollback()
+            _fail(str(e))
+    finally:
+        conn.close()
     c = diff["counts"]
     typer.echo(f"diff for {diff['journal_date']}: "
                f"{c['add']} add, {c['update']} update, "
@@ -283,7 +297,6 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
           as_json: bool = typer.Option(False, "--json")) -> None:
     """Apply a reviewed diff transactionally. Applying is the confirmation."""
     cfg = _cfg()
-    conn = _conn(cfg)
     p = Path(diff_file)
     if not p.exists():
         _fail(f"file not found: {p}")
@@ -291,6 +304,7 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
         diff = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         _fail(f"{p.name} is not valid JSON: {e}")
+    conn = _conn(cfg)
     summary = _commit_or_rollback(conn, lambda: reconcile.apply_diff(conn, diff))
     if as_json:
         _echo_json(summary)
@@ -334,6 +348,14 @@ def status(as_json: bool = typer.Option(False, "--json")) -> None:
     from .transcribe import scan_inbox
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
+    try:
+        _status_body(conn, cfg, as_json)
+    finally:
+        conn.close()
+
+
+def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
+    from .transcribe import scan_inbox
     pending_audio = [p.name for p in scan_inbox(cfg)]
     unprocessed = [dict(r) for r in conn.execute(
         "SELECT s.id AS source_id, s.journal_date, s.type, s.created_at, "
@@ -382,6 +404,8 @@ def sql(query: str = typer.Argument(..., help="Read-only SQL"),
         rows = [dict(r) for r in cur.fetchall()]
     except sqlite3.Error as e:
         _fail(str(e))
+    finally:
+        conn.close()
     if as_json:
         _echo_json(rows)
         return
@@ -409,7 +433,10 @@ def backup(keep: int = typer.Option(8, "--keep")) -> None:
     conn = _conn(cfg, readonly=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     dest = cfg.backups_dir / f"lifecrm-{ts}.db"
-    db_mod.snapshot(conn, dest)
+    try:
+        db_mod.snapshot(conn, dest)
+    finally:
+        conn.close()
     typer.echo(f"snapshot: {dest}")
     if str(cfg.onedrive_backups_dir):
         try:
@@ -510,6 +537,8 @@ def entities_match(
         results = [entities_mod.match(conn, n, entity_type) for n in names]
     except DomainError as e:
         _fail(str(e))
+    finally:
+        conn.close()
     if as_json:
         _echo_json(results)
         return
@@ -532,7 +561,10 @@ def entities_list(entity_type: str = typer.Option(None, "--type"),
         q += " AND e.type=?"
         args = (entity_type,)
     q += " GROUP BY e.id ORDER BY e.type, e.name"
-    rows = [dict(r) for r in conn.execute(q, args)]
+    try:
+        rows = [dict(r) for r in conn.execute(q, args)]
+    finally:
+        conn.close()
     if as_json:
         _echo_json(rows)
         return
@@ -548,15 +580,19 @@ def entities_show(entity_id: int, as_json: bool = typer.Option(False, "--json"))
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
     try:
-        e = entities_mod.get(conn, entity_id)
-    except DomainError as err:
-        _fail(str(err))
-    aliases = [r["alias"] for r in conn.execute(
-        "SELECT alias FROM entity_aliases WHERE entity_id=? ORDER BY alias", (entity_id,))]
-    mentions = [dict(r) for r in conn.execute(
-        "SELECT en.journal_date, en.title, en.uuid, m.role FROM mentions m "
-        "JOIN entries en ON en.id=m.entry_id WHERE m.entity_id=? AND en.status='active' "
-        "ORDER BY en.journal_date DESC LIMIT 50", (entity_id,))]
+        try:
+            e = entities_mod.get(conn, entity_id)
+        except DomainError as err:
+            _fail(str(err))
+        aliases = [r["alias"] for r in conn.execute(
+            "SELECT alias FROM entity_aliases WHERE entity_id=? ORDER BY alias",
+            (entity_id,))]
+        mentions = [dict(r) for r in conn.execute(
+            "SELECT en.journal_date, en.title, en.uuid, m.role FROM mentions m "
+            "JOIN entries en ON en.id=m.entry_id WHERE m.entity_id=? AND en.status='active' "
+            "ORDER BY en.journal_date DESC LIMIT 50", (entity_id,))]
+    finally:
+        conn.close()
     out = dict(e) | {"aliases": aliases, "recent_mentions": mentions}
     if as_json:
         _echo_json(out)
@@ -624,14 +660,17 @@ def entry_show(entry_uuid: str, as_json: bool = typer.Option(False, "--json")) -
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
     try:
-        row = entries_dom.get_by_uuid(conn, entry_uuid)
-        snap = entries_dom.snapshot(conn, row["id"])
-    except DomainError as e:
-        _fail(str(e))
-    snap["provenance"] = _entry_provenance(conn, row["id"])
-    snap["revisions"] = [dict(r) for r in conn.execute(
-        "SELECT revised_at, actor, change_kind, note FROM entry_revisions "
-        "WHERE entry_uuid=? ORDER BY id", (entry_uuid,))]
+        try:
+            row = entries_dom.get_by_uuid(conn, entry_uuid)
+            snap = entries_dom.snapshot(conn, row["id"])
+        except DomainError as e:
+            _fail(str(e))
+        snap["provenance"] = _entry_provenance(conn, row["id"])
+        snap["revisions"] = [dict(r) for r in conn.execute(
+            "SELECT revised_at, actor, change_kind, note FROM entry_revisions "
+            "WHERE entry_uuid=? ORDER BY id", (entry_uuid,))]
+    finally:
+        conn.close()
     if as_json:
         _echo_json(snap)
         return
@@ -731,8 +770,11 @@ def entry_merge(src_uuid: str, dst_uuid: str,
 def _ref_list(table: str, as_json: bool) -> None:
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
-    rows = [dict(r) for r in conn.execute(
-        f"SELECT id, name FROM {table} ORDER BY id")]
+    try:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT id, name FROM {table} ORDER BY id")]
+    finally:
+        conn.close()
     if as_json:
         _echo_json(rows)
     else:
@@ -743,17 +785,20 @@ def _ref_add(table: str, name: str) -> None:
     from .domain import audit
     from .domain.util import now_utc
     cfg = _cfg()
-    conn = _conn(cfg)
     name = name.strip().lower()
     if not name:
         _fail("name must be non-empty")
-    if conn.execute(f"SELECT 1 FROM {table} WHERE name=? COLLATE NOCASE",
-                    (name,)).fetchone():
-        _fail(f"'{name}' already exists in {table}")
-    conn.execute(f"INSERT INTO {table} (name, created_at) VALUES (?, ?)",
-                 (name, now_utc()))
-    audit.log(conn, "user", "create", table, None, {"name": name})
-    conn.commit()
+    conn = _conn(cfg)
+    try:
+        if conn.execute(f"SELECT 1 FROM {table} WHERE name=? COLLATE NOCASE",
+                        (name,)).fetchone():
+            _fail(f"'{name}' already exists in {table}")
+        conn.execute(f"INSERT INTO {table} (name, created_at) VALUES (?, ?)",
+                     (name, now_utc()))
+        audit.log(conn, "user", "create", table, None, {"name": name})
+        conn.commit()
+    finally:
+        conn.close()
     typer.echo(f"added '{name}' to {table}")
 
 
