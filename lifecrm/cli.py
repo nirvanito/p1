@@ -492,6 +492,31 @@ def sql(query: str = typer.Argument(..., help="Read-only SQL"),
         typer.echo(" | ".join("" if r[c] is None else str(r[c]) for c in cols))
 
 
+@app.command()
+def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
+           out: str = typer.Option(..., "--out", help="Output directory")) -> None:
+    """Dump the archive in a form that outlives this code. Deterministic:
+    consecutive exports of the same data diff cleanly."""
+    from . import export as export_mod
+    cfg = _cfg()
+    conn = _conn(cfg, readonly=True)
+    out_dir = Path(out)
+    try:
+        if format == "jsonl":
+            manifest = export_mod.export_jsonl(conn, out_dir)
+            typer.echo(f"exported {sum(manifest['tables'].values())} rows across "
+                       f"{len(manifest['tables'])} tables to {out_dir}")
+        elif format == "markdown":
+            result = export_mod.export_markdown(conn, out_dir)
+            typer.echo(f"exported {result['files']} markdown files "
+                       f"({result['days']} day(s), {result['entities']} entities) "
+                       f"to {out_dir}")
+        else:
+            _fail("format must be jsonl or markdown")
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------- backup / restore
 
 def _prune(dirpath: Path, pattern: str, keep: int) -> None:
