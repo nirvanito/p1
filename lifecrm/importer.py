@@ -19,6 +19,13 @@ from .domain.util import DomainError, is_iso_date, is_iso_datetime
 _BOUNDARY_RE = re.compile(r"[.!?…]+(?=\s|$)")
 
 
+def normalize_text(text: str) -> str:
+    """Canonical transcript form: LF line endings, outer whitespace stripped.
+    Content hashes are computed over this form so a CRLF round trip through
+    OneDrive cannot defeat duplicate detection."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def segment_text(text: str) -> list[dict]:
     """Sentence-boundary segments with character offsets into `text`.
 
@@ -51,7 +58,7 @@ def import_text(conn: sqlite3.Connection, cfg: Config, text: str, *,
                 recorded_at: str | None = None, path: str | None = None) -> dict:
     """Create source + transcript + segments for a text transcript.
     Does not commit — the caller owns the transaction."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = normalize_text(text)
     if not text:
         raise DomainError("transcript text is empty")
     if recorded_at is not None and not is_iso_datetime(recorded_at):

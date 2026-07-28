@@ -5,6 +5,7 @@
 data_dir = "data"                  # canonical private data (SQLite DB, transcripts, staging)
 backups_dir = "backups"            # local DB snapshots
 inbox_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox'
+inbox_text_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox-text'   # dictated quick notes
 archive_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\archive'
 onedrive_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'
 

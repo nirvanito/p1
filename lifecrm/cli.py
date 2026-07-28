@@ -194,6 +194,38 @@ def transcribe(
             typer.echo(f"{r['file']}: {r['status']}")
 
 
+@app.command()
+def intake(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Process both inboxes: dictated text notes first (no whisper load), then
+    audio. This is the command the scheduled task runs."""
+    from .transcribe import (intake_text_inbox, scan_inbox, scan_text_inbox,
+                             transcribe_inbox)
+    cfg = _cfg()
+    conn = _conn(cfg)
+    try:
+        results = []
+        if scan_text_inbox(cfg):
+            results += intake_text_inbox(conn, cfg)
+        if scan_inbox(cfg):
+            results += transcribe_inbox(conn, cfg)
+    finally:
+        conn.close()
+    if not results:
+        typer.echo("both inboxes empty — nothing to intake")
+        return
+    if as_json:
+        _echo_json(results)
+        return
+    for r in results:
+        for w in r.get("warnings", []):
+            typer.echo(w, err=True)
+        if r["status"] in ("transcribed", "imported"):
+            typer.echo(f"{r['file']}: source id={r['source_id']} "
+                       f"({r['journal_date']}, {r['segments']} segments)")
+        else:
+            typer.echo(f"{r['file']}: {r['status']}")
+
+
 # ---------------------------------------------------------------- ingest / apply
 
 @app.command()
@@ -355,8 +387,9 @@ def status(as_json: bool = typer.Option(False, "--json")) -> None:
 
 
 def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
-    from .transcribe import scan_inbox
+    from .transcribe import scan_inbox, scan_text_inbox
     pending_audio = [p.name for p in scan_inbox(cfg)]
+    pending_text = [p.name for p in scan_text_inbox(cfg)]
     unprocessed = [dict(r) for r in conn.execute(
         "SELECT s.id AS source_id, s.journal_date, s.type, s.created_at, "
         "MAX(LENGTH(t.text)) AS chars "
@@ -372,6 +405,7 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
     out = {
         "today": _local_today(cfg).strftime("%Y-%m-%d"),
         "pending_audio": pending_audio,
+        "pending_text": pending_text,
         "unprocessed_sources": unprocessed,
         "open_extraction_runs": open_runs,
         "last_entry_date": last_row["d"],
@@ -384,6 +418,8 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
                f"last entry: {out['last_entry_date'] or 'none'}")
     typer.echo(f"pending audio in inbox: {len(pending_audio)}"
                + (f" ({', '.join(pending_audio)})" if pending_audio else ""))
+    typer.echo(f"pending text notes: {len(pending_text)}"
+               + (f" ({', '.join(pending_text)})" if pending_text else ""))
     if unprocessed:
         typer.echo("sources awaiting extraction:")
         for s in unprocessed:

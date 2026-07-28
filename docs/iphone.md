@@ -1,0 +1,131 @@
+# iPhone capture — Life CRM voice journal
+
+This guide is self-contained: everything needed to capture voice notes and
+quick dictated notes from an iPhone into a Life CRM inbox. No app to install
+beyond **OneDrive** (free, App Store) and Apple's built-in **Shortcuts**.
+
+How it works: you record (or dictate) on the phone; the file lands in a
+OneDrive folder; a computer running the Life CRM pipeline picks it up from
+there. The two folders are:
+
+```
+OneDrive/VoiceJournal/inbox         <- audio notes (.m4a)
+OneDrive/VoiceJournal/inbox-text    <- dictated text notes (.txt)
+```
+
+If you're uploading into **someone else's** journal (they run the pipeline,
+you capture): they share their `VoiceJournal` folder from OneDrive
+(Share -> invite you with edit access), and in your OneDrive app you open
+Shared -> the folder -> **Add shortcut to My files**. It then appears inside
+your own OneDrive in the Files app, and the shortcuts below can save into it.
+
+## The two-timestamp rule (why the filename looks like that)
+
+Every file is named:
+
+```
+<journal date> <clock time> <utc offset>.m4a
+2026-07-27 21.30.05 -0500.m4a
+```
+
+- **Clock time** is the real, unmodified time of capture (dots, not colons —
+  colons are illegal in filenames).
+- **Journal date** is the day the note *belongs to*: notes recorded before
+  **05:00** count as the previous day, so a 00:30 debrief after a long night
+  files under the day it describes. That's why the shortcut subtracts 5 hours
+  before formatting the date — and only for the date, never for the time.
+  (If the pipeline's `day_rollover_hour` is configured to something other
+  than 5, use that number instead.)
+
+Do not "simplify" this by formatting both from the adjusted date: that stamps
+a 00:30 note as 19:30.
+
+## Shortcut 1 — "Log My Day" (audio)
+
+Create in Shortcuts (exact action names as they appear in iOS):
+
+1. **Record Audio** — Audio Quality: Normal, Start Recording: Immediately.
+   (Recording stops when you tap Stop.)
+2. **Current Date** — no changes.
+3. **Format Date** — Date: `Current Date`, Date Format: **Custom**, Format
+   String: `HH.mm.ss ZZZ` → produces `21.30.05 -0500`. Rename this action's
+   result to *ClockTime* if you like tidy variable names.
+4. **Adjust Date** — `Subtract` `5` `hours` from `Current Date`.
+5. **Format Date** — Date: the adjusted date from step 4, Custom format
+   `yyyy-MM-dd` → *JournalDate*.
+6. **Text** — `[JournalDate] [ClockTime]` (insert the two Format Date results
+   as magic variables, one space between).
+7. **Set Name** — Input: `Recorded Audio`, Name: the Text from step 6.
+   Leave "Don't Include File Extension" ON so iOS keeps `.m4a`.
+8. **Save File** — Input: the renamed audio.
+   - Turn **Ask Where to Save** OFF and set the destination to
+     `OneDrive/VoiceJournal/inbox`.
+   - Turn **Overwrite If File Exists** OFF.
+   - **Known caveat:** on some iOS versions, Save File only allows a fixed
+     destination path for iCloud Drive, and third-party providers (OneDrive)
+     force the file picker. If you can't pin the OneDrive folder, leave
+     *Ask Where to Save* ON — it costs two taps per note (OneDrive is
+     remembered as the last location) — or use the Voice Memos fallback
+     below. Please report which behavior your iOS shows; it's the one step
+     that can only be tested on a real phone.
+
+## Shortcut 2 — "Quick Note" (dictated text, for mid-day moments)
+
+One nightly note only captures what you still remember at 9pm. This one is
+for the ten-second thought at 2pm. One file per note — never append to a
+shared daily file.
+
+1. **Dictate Text** — Language: yours, Stop Listening: After Pause.
+2. **Current Date**.
+3. **Format Date** — `Current Date`, Custom `HH.mm.ss ZZZ`.
+4. **Adjust Date** — Subtract 5 hours from `Current Date`.
+5. **Format Date** — adjusted date, Custom `yyyy-MM-dd`.
+6. **Set Name** — Input: `Dictated Text`, Name:
+   `[JournalDate] [ClockTime].txt`.
+7. **Save File** — destination `OneDrive/VoiceJournal/inbox-text`, same
+   toggles and same caveat as above.
+
+## Triggers — pick what fits your hardware
+
+| Trigger | Where | Hardware |
+|---|---|---|
+| Action Button | Settings -> Action Button -> Shortcut | iPhone 15 Pro and later |
+| Back Tap (double-tap the phone's back) | Settings -> Accessibility -> Touch -> Back Tap | any recent iPhone |
+| Lock Screen control | Lock Screen customization / Control Center (iOS 18+) | iOS 18+ |
+| Home Screen icon | Shortcuts -> (i) -> Add to Home Screen | any |
+| Siri | "Hey Siri, Log My Day" (shortcut name is the phrase) | any |
+
+A nightly nudge: Shortcuts -> Automation -> New Automation -> **Time of Day**
+(e.g. 21:00, Daily) -> run "Log My Day". Be aware: **this opens the shortcut;
+it does not record unattended.** iOS will not capture audio from a background
+automation — you still tap and talk. There is no hands-free mode.
+
+## Fallback that always works
+
+Record in **Voice Memos** -> Share -> **Save to Files** ->
+`OneDrive/VoiceJournal/inbox`. The filename will have no date ("New Recording
+7.m4a") — the pipeline then falls back to the file's timestamp, which after a
+OneDrive round trip may be the *upload* time. Fine for a note uploaded
+promptly; for anything delayed, rename the file in the Files app to the
+`yyyy-MM-dd HH.mm.ss` form first.
+
+## Verification checklist (run on the real phone)
+
+The pipeline side is tested with synthetic files named exactly as above.
+What is **not** tested — and cannot be, without your hands on the phone — is
+Shortcuts saving into the OneDrive file provider. Please run:
+
+1. Build "Quick Note". Run it, dictate one sentence, and confirm the `.txt`
+   appears in `OneDrive/VoiceJournal/inbox-text` in the OneDrive app.
+2. On the computer, wait for sync and confirm the file shows up in the local
+   OneDrive folder (note roughly how long sync took).
+3. Run `python -m lifecrm intake` there, then `python -m lifecrm status --json`
+   — confirm the note's journal date and the recorded time match reality.
+4. Build "Log My Day". Record a ~3 minute note; confirm the `.m4a` lands in
+   `inbox`.
+5. Run `python -m lifecrm intake` and note the whisper wall-clock time for
+   that ~3 minute note.
+6. Run `/log` in Claude Code end to end: review the extraction, apply it.
+7. Report back: sync latency, whisper wall-clock, and whether Save File let
+   you pin the OneDrive folder (step 8 caveat) — those three facts replace
+   the guesses in the docs.

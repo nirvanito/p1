@@ -30,9 +30,10 @@ class Config:
     root: Path
     data_dir: Path
     backups_dir: Path
-    inbox_dir: Path
-    archive_dir: Path
-    onedrive_backups_dir: Path
+    inbox_dir: Path | None
+    inbox_text_dir: Path | None
+    archive_dir: Path | None
+    onedrive_backups_dir: Path | None
     timezone: str = "America/Chicago"
     day_rollover_hour: int = 5
     whisper: dict = field(default_factory=dict)
@@ -56,6 +57,12 @@ def _resolve(root: Path, value: str) -> Path:
     return p if p.is_absolute() else root / p
 
 
+def _optional_path(value: str | None) -> Path | None:
+    """Unset or empty paths become None — Path('') is '.', which exists and
+    would silently point inbox scans at the current directory."""
+    return Path(value) if value else None
+
+
 def load_config(root: Path | None = None) -> Config:
     root = root or PROJECT_ROOT
     cfg_file = root / "config.toml"
@@ -71,9 +78,10 @@ def load_config(root: Path | None = None) -> Config:
         root=root,
         data_dir=_resolve(root, paths.get("data_dir", "data")),
         backups_dir=_resolve(root, paths.get("backups_dir", "backups")),
-        inbox_dir=Path(paths.get("inbox_dir", "")),
-        archive_dir=Path(paths.get("archive_dir", "")),
-        onedrive_backups_dir=Path(paths.get("onedrive_backups_dir", "")),
+        inbox_dir=_optional_path(paths.get("inbox_dir")),
+        inbox_text_dir=_optional_path(paths.get("inbox_text_dir")),
+        archive_dir=_optional_path(paths.get("archive_dir")),
+        onedrive_backups_dir=_optional_path(paths.get("onedrive_backups_dir")),
         timezone=time_cfg.get("timezone", "America/Chicago"),
         day_rollover_hour=int(time_cfg.get("day_rollover_hour", 5)),
         whisper=raw.get("whisper", {}),

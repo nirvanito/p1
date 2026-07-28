@@ -96,7 +96,7 @@ def test_audio_duplicate_hash_detected(conn, cfg, tmp_path):
     sources_mod.create(conn, source_type="audio", timezone_name="America/Chicago",
                        journal_date="2026-07-27",
                        content_hash=sources_mod.content_hash_bytes(b"fake-audio-bytes"))
-    result = process_file(conn, cfg, model=None, path=audio)   # model unused for dups
+    result = process_file(conn, cfg, get_model=lambda: None, path=audio)  # never loads for dups
     assert result["status"] == "duplicate"
     assert not audio.exists()
     assert (cfg.archive_dir / "2026" / audio.name).exists()
