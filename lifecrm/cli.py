@@ -29,11 +29,13 @@ from .domain.util import DomainError
 app = typer.Typer(help="Life CRM — personal life database.", no_args_is_help=True)
 entities_app = typer.Typer(help="Entity resolution and curation.", no_args_is_help=True)
 entry_app = typer.Typer(help="Entry corrections.", no_args_is_help=True)
+link_app = typer.Typer(help="Typed links between entries.", no_args_is_help=True)
 categories_app = typer.Typer(help="Category reference table.", no_args_is_help=True)
 kinds_app = typer.Typer(help="Entry-kind reference table.", no_args_is_help=True)
 admin_app = typer.Typer(help="Destructive administrative commands.", no_args_is_help=True)
 app.add_typer(entities_app, name="entities")
 app.add_typer(entry_app, name="entry")
+app.add_typer(link_app, name="link")
 app.add_typer(categories_app, name="categories")
 app.add_typer(kinds_app, name="kinds")
 app.add_typer(admin_app, name="admin")
@@ -245,58 +247,68 @@ def ingest(
 
     conn = _conn(cfg)
     try:
-        transcript_text = None
-        src = draft.get("source") or {}
-        if isinstance(src, dict):
-            if isinstance(src.get("text"), str):
-                transcript_text = src["text"]
-            elif isinstance(src.get("source_id"), int):
-                row = conn.execute(
-                    "SELECT text FROM transcripts WHERE source_id=? "
-                    "ORDER BY id DESC LIMIT 1", (src["source_id"],)).fetchone()
-                if row:
-                    transcript_text = row["text"]
-                elif conn.execute("SELECT 1 FROM sources WHERE id=?",
-                                  (src["source_id"],)).fetchone():
-                    _fail(f"source id={src['source_id']} has no transcript")
+        texts: dict[int, str] = {}
+        inline_text = None
+        srcs = draft.get("sources")
+        if isinstance(srcs, list):
+            for src in srcs:
+                if not isinstance(src, dict):
+                    continue
+                if isinstance(src.get("source_id"), int):
+                    row = conn.execute(
+                        "SELECT text FROM transcripts WHERE source_id=? "
+                        "ORDER BY id DESC LIMIT 1", (src["source_id"],)).fetchone()
+                    if row:
+                        texts[src["source_id"]] = row["text"]
+                    elif conn.execute("SELECT 1 FROM sources WHERE id=?",
+                                      (src["source_id"],)).fetchone():
+                        _fail(f"source id={src['source_id']} has no transcript")
+                elif isinstance(src.get("text"), str):
+                    inline_text = src["text"]
 
-        errors = contract_mod.validate_draft(conn, draft, transcript_text)
+        errors = contract_mod.validate_draft(conn, draft, texts, inline_text)
         if errors:
             typer.echo(f"draft invalid ({len(errors)} error(s)):", err=True)
             for e in errors:
                 typer.echo(f"  {e}", err=True)
             raise typer.Exit(1)
         if dry_run:
-            typer.echo(f"draft valid: {len(draft.get('entries', []))} entries for "
+            typer.echo(f"draft valid: {len(draft.get('entries', []))} entries, "
+                       f"{len(draft.get('entry_updates', []) or [])} entry update(s), "
+                       f"{len(draft.get('links', []) or [])} link(s) for "
                        f"{draft['journal_date']}")
             return
 
         def _do():
-            if "text" in draft["source"]:
-                from .importer import import_text
-                imported = import_text(
-                    conn, cfg, draft["source"]["text"],
-                    journal_date=draft["journal_date"],
-                    source_type=draft["source"].get("type", "pasted"),
-                    recorded_at=draft["source"].get("recorded_at"))
-                for w in imported["warnings"]:
-                    typer.echo(w, err=True)
-                draft["source"] = {"source_id": imported["source_id"]}
-            source_id = draft["source"]["source_id"]
-            text_row = conn.execute(
-                "SELECT text FROM transcripts WHERE source_id=? ORDER BY id DESC LIMIT 1",
-                (source_id,)).fetchone()
+            from .importer import import_text
+            for i, src in enumerate(draft["sources"]):
+                if "text" in src:
+                    imported = import_text(
+                        conn, cfg, src["text"],
+                        journal_date=draft["journal_date"],
+                        source_type=src.get("type", "pasted"),
+                        recorded_at=src.get("recorded_at"))
+                    for w in imported["warnings"]:
+                        typer.echo(w, err=True)
+                    draft["sources"][i] = {"source_id": imported["source_id"]}
+            source_ids = [s["source_id"] for s in draft["sources"]]
+            all_texts = []
+            for sid in sorted(source_ids):
+                row = conn.execute(
+                    "SELECT text FROM transcripts WHERE source_id=? "
+                    "ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+                all_texts.append(row["text"])
             meta = draft.get("extraction") or {}
             interface = meta.get("interface", "claude_skill")
             if interface not in ("claude_skill", "manual"):
                 raise DomainError(f"extraction.interface '{interface}' must be "
                                   f"claude_skill or manual")
             run = reconcile.create_extraction_run(
-                conn, source_id=source_id,
+                conn, source_ids=source_ids,
                 provider=meta.get("provider", "claude-code"),
                 model=meta.get("model"), interface=interface,
                 contract_version=CONTRACT_VERSION,
-                input_hash=content_hash_text(text_row["text"]))
+                input_hash=content_hash_text("\n".join(all_texts)))
             diff = reconcile.build_diff(conn, draft, run)
             cfg.staging_dir.mkdir(parents=True, exist_ok=True)
             diff_path = cfg.staging_dir / (
@@ -314,10 +326,12 @@ def ingest(
     finally:
         conn.close()
     c = diff["counts"]
-    typer.echo(f"diff for {diff['journal_date']}: "
+    typer.echo(f"diff for {diff['journal_date']} "
+               f"({len(diff['source_ids'])} source(s)): "
                f"{c['add']} add, {c['update']} update, "
                f"{c['possible_duplicate']} possible duplicate(s), "
                f"{c['retract_proposals']} retract proposal(s), "
+               f"{c['entry_updates']} cross-day update(s), {c['links']} link(s), "
                f"{c['unchanged_confirmed']} unchanged confirmed, "
                f"{c['requires_decision']} requiring a decision")
     typer.echo(f"review, adjust accepted flags if needed, then apply:")
@@ -344,6 +358,8 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
         typer.echo(f"applied {diff['journal_date']}: "
                    f"{summary['added']} added, {summary['updated']} updated, "
                    f"{summary['retracted']} retracted, "
+                   f"{summary['closed']} loop(s) closed, "
+                   f"{summary['links_created']} link(s), "
                    f"{summary['entities_created']} new entities, "
                    f"{summary['day_measurements']} day measurements"
                    + (f", {summary['skipped_decisions']} skipped (needs decision)"
@@ -394,20 +410,35 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
         "SELECT s.id AS source_id, s.journal_date, s.type, s.created_at, "
         "MAX(LENGTH(t.text)) AS chars "
         "FROM sources s JOIN transcripts t ON t.source_id=s.id "
-        "WHERE NOT EXISTS (SELECT 1 FROM extraction_runs r "
-        "                  WHERE r.source_id=s.id AND r.status='applied') "
+        "WHERE NOT EXISTS (SELECT 1 FROM extraction_run_sources rs "
+        "                  JOIN extraction_runs r ON r.id=rs.extraction_run_id "
+        "                  WHERE rs.source_id=s.id AND r.status='applied') "
         "GROUP BY s.id ORDER BY s.journal_date DESC, s.id DESC")]
     open_runs = [dict(r) for r in conn.execute(
-        "SELECT uuid, source_id, status, started_at FROM extraction_runs "
-        "WHERE status IN ('draft','reviewed') ORDER BY id DESC")]
+        "SELECT r.uuid, r.status, r.started_at, "
+        "GROUP_CONCAT(rs.source_id) AS source_ids FROM extraction_runs r "
+        "LEFT JOIN extraction_run_sources rs ON rs.extraction_run_id=r.id "
+        "WHERE r.status IN ('draft','reviewed') GROUP BY r.id ORDER BY r.id DESC")]
     last_row = conn.execute(
         "SELECT MAX(journal_date) AS d FROM entries WHERE status='active'").fetchone()
+    today_str = _local_today(cfg).strftime("%Y-%m-%d")
+    open_loops = []
+    for r in conn.execute(
+            "SELECT e.uuid, e.title, k.name AS kind, e.journal_date, e.due_at "
+            "FROM entries e JOIN entry_kinds k ON k.id=e.kind_id "
+            "WHERE k.name IN ('task','plan') AND e.status='active' "
+            "AND e.closed_at IS NULL "
+            "ORDER BY (e.due_at IS NULL), e.due_at, e.journal_date"):
+        loop = dict(r)
+        loop["overdue"] = bool(r["due_at"]) and r["due_at"][:10] < today_str
+        open_loops.append(loop)
     out = {
-        "today": _local_today(cfg).strftime("%Y-%m-%d"),
+        "today": today_str,
         "pending_audio": pending_audio,
         "pending_text": pending_text,
         "unprocessed_sources": unprocessed,
         "open_extraction_runs": open_runs,
+        "open_loops": open_loops,
         "last_entry_date": last_row["d"],
         "streak_days": _streak(conn, cfg),
     }
@@ -427,6 +458,13 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
                        f"{s['chars']} chars")
     else:
         typer.echo("no sources awaiting extraction")
+    if open_loops:
+        typer.echo(f"open loops ({len(open_loops)}):")
+        for lp in open_loops:
+            due = f"due {lp['due_at']}" if lp["due_at"] else "no due date"
+            mark = "  OVERDUE" if lp["overdue"] else ""
+            typer.echo(f"  [{lp['kind']}] {lp['title']} ({lp['journal_date']}, "
+                       f"{due}){mark}")
 
 
 @app.command()
@@ -705,6 +743,8 @@ def entry_show(entry_uuid: str, as_json: bool = typer.Option(False, "--json")) -
         snap["revisions"] = [dict(r) for r in conn.execute(
             "SELECT revised_at, actor, change_kind, note FROM entry_revisions "
             "WHERE entry_uuid=? ORDER BY id", (entry_uuid,))]
+        from .domain import links as links_dom
+        snap["links"] = links_dom.for_entry(conn, entry_uuid)
     finally:
         conn.close()
     if as_json:
@@ -713,6 +753,8 @@ def entry_show(entry_uuid: str, as_json: bool = typer.Option(False, "--json")) -
     typer.echo(f"{snap['journal_date']}  [{snap['kind']}] {snap['title']} "
                f"(status: {snap['status']})")
     typer.echo(f"uuid: {snap['uuid']}")
+    if snap.get("closure"):
+        typer.echo(f"closed: {snap['closure']} at {snap['closed_at']}")
     cats = snap["categories"]
     typer.echo(f"categories: {cats['primary']}"
                + (f" + {', '.join(cats['secondary'])}" if cats["secondary"] else ""))
@@ -727,6 +769,11 @@ def entry_show(entry_uuid: str, as_json: bool = typer.Option(False, "--json")) -
     for p in snap["provenance"]:
         if p.get("transcript_excerpt"):
             typer.echo(f"  from transcript: \"{p['transcript_excerpt']}\"")
+    for direction, rows in snap["links"].items():
+        for link in rows:
+            arrow = "->" if direction == "outgoing" else "<-"
+            typer.echo(f"  link: {arrow} {link['type']} {arrow} "
+                       f"[{link['other_date']}] {link['other_title']}")
     for r in snap["revisions"]:
         typer.echo(f"  revision: {r['revised_at']} {r['actor']} {r['change_kind']}"
                    + (f" ({r['note']})" if r["note"] else ""))
@@ -799,6 +846,82 @@ def entry_merge(src_uuid: str, dst_uuid: str,
     _commit_or_rollback(
         conn, lambda: corrections.merge_entries(conn, src_uuid, dst_uuid, note=note))
     typer.echo(f"merged {src_uuid} into {dst_uuid}")
+
+
+@entry_app.command("close")
+def entry_close(entry_uuid: str,
+                closure: str = typer.Option(..., "--closure",
+                                            help="done | dropped | obsolete"),
+                at: str = typer.Option(None, "--at", help="ISO datetime (default now)"),
+                note: str = typer.Option(None, "--note")) -> None:
+    """Close a loop (task done, plan dropped, idea obsolete). Not retraction:
+    the record stays true; the loop stops being open."""
+    cfg = _cfg()
+    conn = _conn(cfg)
+    _commit_or_rollback(
+        conn, lambda: corrections.close_entry(conn, entry_uuid, closure,
+                                              closed_at=at, note=note))
+    typer.echo(f"closed {entry_uuid} ({closure})")
+
+
+@entry_app.command("reopen")
+def entry_reopen(entry_uuid: str) -> None:
+    """Reopen a closed loop."""
+    cfg = _cfg()
+    conn = _conn(cfg)
+    _commit_or_rollback(conn, lambda: corrections.reopen_entry(conn, entry_uuid))
+    typer.echo(f"reopened {entry_uuid}")
+
+
+# ---------------------------------------------------------------- links
+
+@link_app.command("add")
+def link_add(from_uuid: str, to_uuid: str,
+             link_type: str = typer.Option(..., "--type",
+                                           help="continues | caused | resolves | "
+                                                "contradicts | part_of | relates"),
+             note: str = typer.Option(None, "--note")) -> None:
+    """Link two entries. Direction: later continues earlier, new resolves old,
+    child part_of parent, cause caused effect, newer contradicts older."""
+    from .domain import links as links_dom
+    cfg = _cfg()
+    conn = _conn(cfg)
+    created = _commit_or_rollback(
+        conn, lambda: links_dom.add(conn, from_uuid, to_uuid, link_type, note=note))
+    typer.echo("linked" if created else "link already exists")
+
+
+@link_app.command("list")
+def link_list(entry_uuid: str, as_json: bool = typer.Option(False, "--json")) -> None:
+    from .domain import links as links_dom
+    cfg = _cfg()
+    conn = _conn(cfg, readonly=True)
+    try:
+        result = links_dom.for_entry(conn, entry_uuid)
+    finally:
+        conn.close()
+    if as_json:
+        _echo_json(result)
+        return
+    for direction, rows in result.items():
+        for link in rows:
+            arrow = "->" if direction == "outgoing" else "<-"
+            typer.echo(f"{arrow} {link['type']} {arrow} "
+                       f"[{link['other_date']}] {link['other_title']}"
+                       + (f"  ({link['note']})" if link["note"] else ""))
+    if not result["outgoing"] and not result["incoming"]:
+        typer.echo("(no links)")
+
+
+@link_app.command("rm")
+def link_rm(from_uuid: str, to_uuid: str,
+            link_type: str = typer.Option(..., "--type")) -> None:
+    from .domain import links as links_dom
+    cfg = _cfg()
+    conn = _conn(cfg)
+    _commit_or_rollback(
+        conn, lambda: links_dom.remove(conn, from_uuid, to_uuid, link_type))
+    typer.echo("removed")
 
 
 # ---------------------------------------------------------------- categories / kinds

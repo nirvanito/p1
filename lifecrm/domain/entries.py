@@ -61,6 +61,7 @@ def snapshot(conn: sqlite3.Connection, entry_id: int) -> dict:
         "data": json.loads(e["data"]) if e["data"] else None,
         "confidence": e["confidence"], "status": e["status"],
         "confirmed_at": e["confirmed_at"],
+        "closed_at": e["closed_at"], "closure": e["closure"],
         "categories": {"primary": next((c["name"] for c in cats if c["is_primary"]), None),
                        "secondary": [c["name"] for c in cats if not c["is_primary"]]},
         "entities": [dict(m) for m in mentions],

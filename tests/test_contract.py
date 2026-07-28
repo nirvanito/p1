@@ -9,7 +9,9 @@ def _errors(conn, mutate=None):
     draft = golden_draft()
     if mutate:
         mutate(draft)
-    return contract.validate_draft(conn, draft, draft["source"].get("text"))
+    srcs = draft.get("sources") or []
+    inline = srcs[0].get("text") if len(srcs) == 1 and isinstance(srcs[0], dict) else None
+    return contract.validate_draft(conn, draft, None, inline)
 
 
 def test_golden_fixture_is_valid(conn):
@@ -32,17 +34,30 @@ def test_bad_date_format(conn):
 
 
 def test_source_requires_exactly_one(conn):
-    errs = _errors(conn, lambda d: d["source"].update(source_id=1))
+    errs = _errors(conn, lambda d: d["sources"][0].update(source_id=1))
     assert any("exactly one" in e for e in errs)
 
 
 def test_missing_source_id(conn):
     def mutate(d):
-        d["source"] = {"source_id": 12345}
-    draft = golden_draft()
-    mutate(draft)
-    errs = contract.validate_draft(conn, draft, None)
+        d["sources"] = [{"source_id": 12345}]
+    errs = _errors(conn, mutate)
     assert any("does not exist" in e for e in errs)
+
+
+def test_v1_singular_source_key_gets_helpful_error(conn):
+    def mutate(d):
+        d["source"] = d["sources"][0]
+        del d["sources"]
+    errs = _errors(conn, mutate)
+    assert any("sources" in e and "ARRAY" in e for e in errs)
+
+
+def test_inline_text_forbidden_in_multi_source_drafts(conn):
+    def mutate(d):
+        d["sources"].append({"text": "another note"})
+    errs = _errors(conn, mutate)
+    assert any("inline text is only allowed in single-source" in e for e in errs)
 
 
 def test_unknown_category(conn):

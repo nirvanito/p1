@@ -10,13 +10,9 @@ from lifecrm.domain.util import DomainError
 from lifecrm.importer import import_text
 
 
-def _materialize(conn, cfg, draft):
-    """Inline text -> source rows, like the ingest command does."""
-    imported = import_text(conn, cfg, draft["source"]["text"],
-                           journal_date=draft["journal_date"],
-                           source_type=draft["source"].get("type", "pasted"))
-    draft["source"] = {"source_id": imported["source_id"]}
-    return imported
+def _source_text(conn, source_id):
+    return conn.execute("SELECT text FROM transcripts WHERE source_id=? "
+                        "ORDER BY id DESC LIMIT 1", (source_id,)).fetchone()["text"]
 
 
 def _resolve_refs(conn, draft):
@@ -40,18 +36,28 @@ def _resolve_refs(conn, draft):
 
 
 def _ingest(conn, cfg, draft):
+    """Validate + materialize + reconcile, exactly like the ingest command."""
     _resolve_refs(conn, draft)
-    errors = contract.validate_draft(conn, draft, draft["source"].get("text"))
+    texts, inline = {}, None
+    for s in draft["sources"]:
+        if "source_id" in s:
+            texts[s["source_id"]] = _source_text(conn, s["source_id"])
+        else:
+            inline = s["text"]
+    errors = contract.validate_draft(conn, draft, texts, inline)
     assert errors == [], errors
-    if "text" in draft["source"]:
-        _materialize(conn, cfg, draft)
-    text = conn.execute("SELECT text FROM transcripts WHERE source_id=? "
-                        "ORDER BY id DESC LIMIT 1",
-                        (draft["source"]["source_id"],)).fetchone()["text"]
+    for i, s in enumerate(draft["sources"]):
+        if "text" in s:
+            imported = import_text(conn, cfg, s["text"],
+                                   journal_date=draft["journal_date"],
+                                   source_type=s.get("type", "pasted"))
+            draft["sources"][i] = {"source_id": imported["source_id"]}
+    source_ids = [s["source_id"] for s in draft["sources"]]
+    all_texts = [_source_text(conn, sid) for sid in sorted(source_ids)]
     run = reconcile.create_extraction_run(
-        conn, source_id=draft["source"]["source_id"], provider="test",
-        model=None, interface="manual", contract_version=1,
-        input_hash=content_hash_text(text))
+        conn, source_ids=source_ids, provider="test",
+        model=None, interface="manual", contract_version=2,
+        input_hash=content_hash_text("\n".join(all_texts)))
     return reconcile.build_diff(conn, draft, run)
 
 
@@ -135,12 +141,12 @@ def test_retraction_only_proposed_never_automatic(conn, cfg):
     draft = golden_draft()
     diff = _ingest(conn, cfg, draft)
     reconcile.apply_diff(conn, diff)
-    source_id = diff["source_id"]
+    source_id = diff["source_ids"][0]
 
     # re-extraction of the SAME source with one entry omitted
     draft2 = golden_draft()
     omitted = draft2["entries"].pop()   # drop the idea entry
-    draft2["source"] = {"source_id": source_id}
+    draft2["sources"] = [{"source_id": source_id}]
     draft2["day"] = {}
     diff2 = _ingest(conn, cfg, draft2)
     props = [i for i in diff2["items"] if i["action"] == "retract"]
@@ -166,7 +172,7 @@ def test_retraction_only_proposed_never_automatic(conn, cfg):
 
 def test_provenance_round_trip(conn, cfg):
     draft = golden_draft()
-    text = draft["source"]["text"]
+    text = draft["sources"][0]["text"]
     diff = _ingest(conn, cfg, draft)
     reconcile.apply_diff(conn, diff)
     # char-offset provenance

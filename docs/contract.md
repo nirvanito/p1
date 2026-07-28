@@ -1,8 +1,8 @@
-# Extraction contract — version 1
+# Extraction contract — version 2
 
 The provider-neutral boundary of the system:
 
-    transcript -> versioned extraction JSON -> validation/review -> persistence
+    transcript(s) -> versioned extraction JSON -> validation/review -> persistence
 
 Any extractor (the /log skill, a hand-written draft, a future tool) produces
 this document. `lifecrm ingest` validates it deterministically — single-line
@@ -13,9 +13,9 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
 
 ```json
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "journal_date": "2026-07-27",
-  "source": {"source_id": 3},
+  "sources": [{"source_id": 3}, {"source_id": 5}],
   "extraction": {"provider": "claude-code", "model": null, "interface": "claude_skill"},
   "day": {
     "summary": "One or two sentences about the day.",
@@ -44,8 +44,20 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
         {"ref": "new", "type": "place", "name": "Movement Gym",
          "aliases": ["Movement", "the gym"], "role": "location"}
       ],
-      "provenance": {"char_start": 210, "char_end": 330}
+      "provenance": {"source_id": 3, "char_start": 210, "char_end": 330}
     }
+  ],
+  "entry_updates": [
+    {
+      "target_uuid": "b8e2...-uuid-of-tuesdays-task",
+      "set": {"closure": "done", "closed_at": "2026-07-27T15:00:00Z"},
+      "provenance": {"source_id": 5, "char_start": 0, "char_end": 45},
+      "note": "\"finally renewed the passport\""
+    }
+  ],
+  "links": [
+    {"from_index": 0, "to_uuid": "uuid-of-an-earlier-entry", "type": "continues"},
+    {"from_index": 2, "to_index": 0, "type": "part_of"}
   ],
   "ambiguities": [
     {"note": "'Sam' could be Sam Ortega (id 8) or someone new — asked the user."}
@@ -55,61 +67,85 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
 
 ## Field rules
 
-- **contract_version** — must be `1`.
+- **contract_version** — must be `2`.
 - **journal_date** — `YYYY-MM-DD`, never in the future. The journal date is
   *when it was journaled about*; future events live in `due_at`/`occurred_at`
   of `plan`/`task` entries.
-- **source** — exactly one of:
-  - `{"source_id": N}` — an existing source (created by `transcribe`/`import`);
-  - `{"text": "...", "type": "pasted|phone_transcript|manual", "recorded_at": "...Z"}`
-    — inline text; ingest creates the source + sentence-boundary segments.
+- **sources** — non-empty array. A day made of several notes (evening note
+  plus mid-day quick notes) extracts as ONE draft listing every source:
+  - `{"source_id": N}` — an existing source (created by `intake`/`transcribe`/
+    `import`);
+  - `{"text": "...", "type": "pasted|phone_transcript|manual",
+    "recorded_at": "...Z"}` — inline text, allowed only in single-source
+    drafts (import multi-source days first, then reference ids).
+- **entries[].provenance** — `{"source_id": N}` plus exactly one of
+  `{"char_start", "char_end"}` (offsets into that source's transcript) or
+  `{"segments": [idx, ...]}` (whisper segment indexes). `source_id` may be
+  omitted only in single-source drafts. **Required on every entry in a
+  multi-source draft** — provenance must never degrade from "the passage
+  behind this record" to "one of today's notes".
 - **extraction** — optional metadata; `interface` must be `claude_skill` or
   `manual`.
 - **day.summary** — optional non-empty string. Conflicts with an existing
   different summary become a decision item in the diff.
-- **measurements** (day-level or per-entry) — `metric` (string), plus
-  `numeric_value` and/or `text_value`, optional `unit`, optional `confidence`.
-  Known metrics are validated and normalized (`mood`/`energy` 1–10,
-  `sleep_hours` 0–16 h, `duration` -> min, `distance` -> km, `weight` -> kg,
-  `calories`, `reps`, `sets`, `servings`, `steps`, `water_ml`, `money`,
-  `rating`). Unknown metrics are allowed as open-ended personal metrics — no
-  normalization, no range check.
+- **measurements** (day-level or per-entry) — `metric`, plus `numeric_value`
+  and/or `text_value`, optional `unit`, optional `confidence`. Known metrics
+  are validated and normalized (`mood`/`energy` 1–10, `sleep_hours` 0–16 h,
+  `duration` -> min, `distance` -> km, `weight` -> kg, `calories`, `reps`,
+  `sets`, `servings`, `steps`, `water_ml`, `money`, `rating`). Unknown
+  metrics pass through as open-ended personal metrics.
 - **entries[].kind** — what the record *is*: `event`, `observation`,
   `thought`, `idea`, `decision`, `task`, `plan`, `fact`, `reflection`
   (extensible via `lifecrm kinds add`).
 - **entries[].categories** — what it's *about*: one `primary` plus optional
   `secondary` list (extensible via `lifecrm categories add`).
-- **entries[].title** — required, short, human-scannable.
-- **time_of_day** — `morning|afternoon|evening|night` or omitted.
 - **occurred_at / ended_at / due_at** — ISO dates or datetimes; future values
   are valid here.
-- **data** — JSON object for genuinely uncommon metadata only; anything
-  measurable belongs in `measurements`, anything nameable in `entities`.
-- **entities[]** — either `{"ref": "existing", "id": N, "role": R}` or
+- **entities[]** — `{"ref": "existing", "id": N, "role": R}` or
   `{"ref": "new", "type": T, "name": "...", "aliases": [...], "role": R}`.
-  Types: person, place, food, project, activity, media, organization, topic.
-  Roles: participant, location, item, subject, mention. A `new` entity whose
-  name exactly matches an existing active entity (or alias) of the same type
-  is **rejected** — resolve with `lifecrm entities match` first.
-- **provenance** — exactly one of `{"char_start": N, "char_end": M}`
-  (offsets into the transcript text; the primary form for imported text) or
-  `{"segments": [idx, ...]}` (whisper segment indexes). Strongly recommended
-  on every entry — it powers "show me the passage behind this record".
-- **entries[].uuid** — only for proposing an update to an existing entry.
-  Changes to user-confirmed entries always become requires-decision diff items.
+  A `new` entity whose name exactly matches an existing active entity (or
+  alias) of the same type is rejected — resolve with `lifecrm entities match`
+  first.
+- **entries[].uuid** — only for proposing an update to an existing same-day
+  entry. Changes to user-confirmed entries always become requires-decision
+  diff items.
+- **entry_updates** — the cross-day operation: *"finished the thing I
+  mentioned Tuesday"* closes an entry on a DIFFERENT day than the one being
+  extracted. Constraints, all enforced:
+  - `set` may touch **closure fields only** (`closure`: done/dropped/obsolete,
+    optional `closed_at`). Titles, categories, dates, bodies are deliberately
+    excluded — cross-day content edits go through `lifecrm entry edit`, not
+    through an extractor.
+  - `provenance` is **required**: the closure must trace to the sentence that
+    closed it.
+  - Always a requires-decision diff item; never auto-applied; never silently
+    modifies a confirmed record.
+- **links** — thread structure. Each end is `from_index`/`to_index` (an index
+  into this draft's `entries`) or `from_uuid`/`to_uuid` (an existing entry).
+  Types and directions: `later continues earlier`, `new_event resolves
+  old_task`, `child part_of parent`, `cause caused effect`, `newer
+  contradicts older`, `relates` (loose association). Links ride the diff for
+  review and are created at apply; a link whose index resolves to a
+  skipped-duplicate entry attaches to the surviving entry instead.
 - **ambiguities** — free-form audit trail of what was uncertain and how it
   was resolved; stored with the draft, not in the entries.
 
 ## Lifecycle
 
-1. `lifecrm ingest draft.json` — validate, create the extraction run, reconcile
-   against existing records, write `data\staging\diff-<date>-<run>.json`.
+1. `lifecrm ingest draft.json` — validate, create the extraction run (linked
+   to every source), reconcile against existing records, write
+   `data\staging\diff-<date>-<run>.json`.
 2. Review the diff. Items with `"accepted": null` (updates to confirmed
-   entries, possible duplicates, retract proposals) stay skipped unless you
-   set `"accepted": true`.
+   entries, possible duplicates, retract proposals, every entry_update) stay
+   skipped unless you set `"accepted": true`.
 3. `lifecrm apply diff.json` — transactional persistence with audit +
    revision records. Applying is the user's confirmation: created entries are
    marked confirmed.
 
-Version history: v1 — initial contract (2026-07). Version bumps accompany a
-schema migration and a note here.
+## Version history
+
+- v2 (2026-07, schema v2): `sources` array replaces singular `source`;
+  per-entry provenance names its source; `entry_updates` (closure-only,
+  requires-decision, cross-day); `links`; closable loops (`closed_at`,
+  `closure`) on entries.
+- v1 (2026-07): initial contract.

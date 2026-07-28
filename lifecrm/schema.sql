@@ -1,4 +1,4 @@
--- Life CRM schema v1.
+-- Life CRM schema v2.
 -- Conventions: timestamps are UTC ISO-8601 ('YYYY-MM-DDTHH:MM:SSZ'); journal
 -- dates are 'YYYY-MM-DD' computed in the source's recorded timezone with the
 -- configured rollover hour. User-facing records carry stable UUIDs that survive
@@ -71,10 +71,12 @@ CREATE TABLE transcript_segments (
   UNIQUE (transcript_id, idx)
 );
 
+-- A run may extract several same-day sources into one draft (an evening note
+-- plus mid-day quick notes). Sources live in the join table only — there is
+-- deliberately no denormalized "primary source" pointer to drift out of sync.
 CREATE TABLE extraction_runs (
   id               INTEGER PRIMARY KEY,
   uuid             TEXT NOT NULL UNIQUE,
-  source_id        INTEGER NOT NULL REFERENCES sources(id),
   provider         TEXT NOT NULL,
   model            TEXT,
   interface        TEXT NOT NULL CHECK (interface IN ('claude_skill','manual')),
@@ -84,6 +86,12 @@ CREATE TABLE extraction_runs (
   reviewed_at      TEXT,
   status           TEXT NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','reviewed','applied','discarded'))
+);
+
+CREATE TABLE extraction_run_sources (
+  extraction_run_id INTEGER NOT NULL REFERENCES extraction_runs(id),
+  source_id         INTEGER NOT NULL REFERENCES sources(id),
+  PRIMARY KEY (extraction_run_id, source_id)
 );
 
 CREATE TABLE entries (
@@ -104,7 +112,17 @@ CREATE TABLE entries (
   superseded_by INTEGER REFERENCES entries(id),
   confirmed_at  TEXT,                  -- set on user confirmation; protects from automated overwrite
   created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
+  updated_at    TEXT NOT NULL,
+  -- Closable loops (v2). Deliberately separate from `status`: retracting means
+  -- "this record was wrong"; dropping a plan means "this really happened and I
+  -- chose not to do it" — those must stay distinguishable in 2040.
+  -- closed_at/closure are last in the column list so a v1 database migrated
+  -- via ALTER TABLE ADD COLUMN matches this definition exactly. The
+  -- both-set-or-both-null invariant is enforced by the domain layer and
+  -- verified by `lifecrm doctor` (ALTER cannot add a table-level CHECK, and
+  -- migrated vs fresh schemas must not drift).
+  closed_at     TEXT,
+  closure       TEXT CHECK (closure IN ('done','dropped','obsolete'))
 );
 CREATE INDEX idx_entries_journal_date ON entries(journal_date);
 CREATE INDEX idx_entries_status ON entries(status);
@@ -199,6 +217,31 @@ CREATE TABLE mentions (
   PRIMARY KEY (entry_id, entity_id, role)
 );
 CREATE INDEX idx_mentions_entity ON mentions(entity_id);
+
+-- Thread structure between entries (v2): the edge that is only knowable while
+-- the memory is fresh. Direction conventions (unambiguous, documented):
+--   later  continues   earlier          new_event  resolves  old_task
+--   child  part_of     parent           cause      caused    effect
+--   newer  contradicts older            relates is loosely symmetric; store once
+-- ON DELETE CASCADE is required, not decorative: admin purge-day hard-deletes
+-- entries and foreign keys are ON for every connection, so a plain FK would
+-- break purge. Deliberate asymmetry with entry_revisions.entry_uuid, which
+-- carries NO foreign key: revision history must outlive a purge — a link to a
+-- deleted entry is meaningless, a revision of one is not.
+CREATE TABLE entry_links (
+  id         INTEGER PRIMARY KEY,
+  from_uuid  TEXT NOT NULL REFERENCES entries(uuid) ON DELETE CASCADE,
+  to_uuid    TEXT NOT NULL REFERENCES entries(uuid) ON DELETE CASCADE,
+  type       TEXT NOT NULL CHECK (type IN
+    ('continues','caused','resolves','contradicts','part_of','relates')),
+  note       TEXT,
+  actor      TEXT NOT NULL CHECK (actor IN ('user','extraction','system')),
+  created_at TEXT NOT NULL,
+  UNIQUE (from_uuid, to_uuid, type),
+  CHECK (from_uuid <> to_uuid)
+);
+CREATE INDEX idx_links_from ON entry_links(from_uuid);
+CREATE INDEX idx_links_to ON entry_links(to_uuid);
 
 -- Append-only; the primary revision record alongside entry_revisions.
 CREATE TABLE audit_log (

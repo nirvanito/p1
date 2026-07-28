@@ -5,8 +5,12 @@ Guarantees:
 - Confirmed or manually edited records are never silently overwritten; changes
   to them surface as requires-decision items that stay skipped unless accepted.
 - Stable UUIDs: matched entries keep their identity across re-extraction.
-- Retractions are only ever *proposed* (same-source unconfirmed entries missing
-  from a re-extraction), never applied without acceptance.
+- Retractions are only ever *proposed* (same-source entries missing from a
+  re-extraction), never applied without acceptance.
+- v2: one run may cover several same-day sources; every applied entry's
+  provenance names WHICH source supports it. Cross-day closures arrive as
+  `entry_update` items that ALWAYS require a decision. Links ride the diff
+  and are resolved (draft index -> uuid) at apply time.
 """
 
 from __future__ import annotations
@@ -16,10 +20,11 @@ import sqlite3
 from difflib import SequenceMatcher
 
 from . import audit, corrections, days, entities as entities_mod, entries as entries_mod
+from . import links as links_mod
 from . import measurements as measurements_mod
 from .util import DomainError, new_uuid, now_utc
 
-DIFF_VERSION = 1
+DIFF_VERSION = 2
 DUPLICATE_TITLE_SIM = 0.9
 DUPLICATE_RELATED_SIM = 0.75
 
@@ -27,17 +32,29 @@ COMPARE_FIELDS = ["title", "body", "kind", "time_of_day", "occurred_at",
                   "ended_at", "due_at", "confidence", "data"]
 
 
-def create_extraction_run(conn: sqlite3.Connection, *, source_id: int, provider: str,
-                          model: str | None, interface: str, contract_version: int,
-                          input_hash: str) -> dict:
+def create_extraction_run(conn: sqlite3.Connection, *, source_ids: list[int],
+                          provider: str, model: str | None, interface: str,
+                          contract_version: int, input_hash: str) -> dict:
+    if not source_ids:
+        raise DomainError("an extraction run needs at least one source")
     uid = new_uuid()
     cur = conn.execute(
-        "INSERT INTO extraction_runs (uuid, source_id, provider, model, interface, "
+        "INSERT INTO extraction_runs (uuid, provider, model, interface, "
         "contract_version, input_hash, started_at, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')",
-        (uid, source_id, provider, model, interface, contract_version,
-         input_hash, now_utc()))
-    return {"id": cur.lastrowid, "uuid": uid}
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')",
+        (uid, provider, model, interface, contract_version, input_hash, now_utc()))
+    run_id = cur.lastrowid
+    for sid in source_ids:
+        conn.execute(
+            "INSERT INTO extraction_run_sources (extraction_run_id, source_id) "
+            "VALUES (?, ?)", (run_id, sid))
+    return {"id": run_id, "uuid": uid, "source_ids": list(source_ids)}
+
+
+def run_source_ids(conn: sqlite3.Connection, run_id: int) -> list[int]:
+    return [r["source_id"] for r in conn.execute(
+        "SELECT source_id FROM extraction_run_sources WHERE extraction_run_id=? "
+        "ORDER BY source_id", (run_id,))]
 
 
 def _title_sim(a: str, b: str) -> float:
@@ -78,7 +95,7 @@ def _draft_vs_existing_changes(conn: sqlite3.Connection, draft_entry: dict,
 def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> dict:
     """Compare a validated draft against the existing records for its day."""
     journal_date = draft["journal_date"]
-    source_id = draft["source"]["source_id"]
+    source_ids = [s["source_id"] for s in draft["sources"]]
 
     existing_rows = conn.execute(
         "SELECT id, uuid, confirmed_at FROM entries "
@@ -96,7 +113,7 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
     items: list[dict] = []
     matched: set[str] = set()
 
-    for draft_entry in draft.get("entries", []):
+    for index, draft_entry in enumerate(draft.get("entries", [])):
         target_uuid = draft_entry.get("uuid")
         if target_uuid:
             info = existing.get(target_uuid)
@@ -108,10 +125,12 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
             matched.add(target_uuid)
             changes = _draft_vs_existing_changes(conn, draft_entry, info["snap"])
             if not changes:
-                items.append({"action": "unchanged", "entry_uuid": target_uuid,
+                items.append({"action": "unchanged", "index": index,
+                              "entry_uuid": target_uuid,
                               "title": info["snap"]["title"]})
             else:
-                items.append({"action": "update", "entry_uuid": target_uuid,
+                items.append({"action": "update", "index": index,
+                              "entry_uuid": target_uuid,
                               "title": info["snap"]["title"], "changes": changes,
                               "requires_decision": info["confirmed"],
                               "accepted": None if info["confirmed"] else True})
@@ -135,12 +154,12 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
                 is_dup = True
         if is_dup:
             matched.add(best_uuid)
-            items.append({"action": "possible_duplicate", "entry": draft_entry,
-                          "of_entry_uuid": best_uuid,
+            items.append({"action": "possible_duplicate", "index": index,
+                          "entry": draft_entry, "of_entry_uuid": best_uuid,
                           "of_title": existing[best_uuid]["snap"]["title"],
                           "similarity": round(best_sim, 3), "accepted": None})
         else:
-            items.append({"action": "add", "entry": draft_entry})
+            items.append({"action": "add", "index": index, "entry": draft_entry})
 
     # Unmatched existing entries. Same-source omissions become retract
     # *proposals* (accepted=None -> skipped unless explicitly accepted, even for
@@ -149,7 +168,7 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
     for uuid_, info in existing.items():
         if uuid_ in matched:
             continue
-        if source_id in info["sources"]:
+        if any(sid in info["sources"] for sid in source_ids):
             items.append({"action": "retract", "entry_uuid": uuid_,
                           "title": info["snap"]["title"],
                           "reason": "re-extraction of the same source omitted this entry",
@@ -158,6 +177,36 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
         elif info["confirmed"]:
             items.append({"action": "unchanged_confirmed", "entry_uuid": uuid_,
                           "title": info["snap"]["title"]})
+
+    # Cross-day closures: ALWAYS a decision, never auto-applied.
+    for upd in draft.get("entry_updates", []) or []:
+        target = entries_mod.get_by_uuid(conn, upd["target_uuid"])
+        items.append({
+            "action": "entry_update",
+            "target_uuid": upd["target_uuid"],
+            "target_title": target["title"],
+            "target_date": target["journal_date"],
+            "set": upd["set"],
+            "current": {"closure": target["closure"],
+                        "closed_at": target["closed_at"],
+                        "confirmed": bool(target["confirmed_at"])},
+            "provenance": upd.get("provenance"),
+            "note": upd.get("note"),
+            "requires_decision": True,
+            "accepted": None,
+        })
+
+    # Links ride the diff for visibility; the reviewed apply creates them.
+    for link in draft.get("links", []) or []:
+        items.append({
+            "action": "link",
+            "from": ({"index": link["from_index"]} if "from_index" in link
+                     else {"uuid": link["from_uuid"]}),
+            "to": ({"index": link["to_index"]} if "to_index" in link
+                   else {"uuid": link["to_uuid"]}),
+            "type": link["type"],
+            "note": link.get("note"),
+        })
 
     # Day summary + day-owned measurements.
     day_diff: dict = {"summary": {"action": "none"}, "measurements": []}
@@ -195,6 +244,8 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
         "update": sum(1 for i in items if i["action"] == "update"),
         "possible_duplicate": sum(1 for i in items if i["action"] == "possible_duplicate"),
         "retract_proposals": sum(1 for i in items if i["action"] == "retract"),
+        "entry_updates": sum(1 for i in items if i["action"] == "entry_update"),
+        "links": sum(1 for i in items if i["action"] == "link"),
         "unchanged": sum(1 for i in items if i["action"] == "unchanged"),
         "unchanged_confirmed": sum(1 for i in items if i["action"] == "unchanged_confirmed"),
         "requires_decision": sum(1 for i in items
@@ -203,7 +254,7 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
     return {
         "diff_version": DIFF_VERSION,
         "journal_date": journal_date,
-        "source_id": source_id,
+        "source_ids": source_ids,
         "extraction_run_uuid": extraction_run["uuid"],
         "counts": counts,
         "day": day_diff,
@@ -220,7 +271,8 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
     only when accepted is exactly true.
     """
     if diff.get("diff_version") != DIFF_VERSION:
-        raise DomainError(f"diff_version must be {DIFF_VERSION}")
+        raise DomainError(f"diff_version must be {DIFF_VERSION} — re-run ingest "
+                          f"to rebuild an old diff")
     run = conn.execute("SELECT * FROM extraction_runs WHERE uuid=?",
                        (diff["extraction_run_uuid"],)).fetchone()
     if run is None:
@@ -231,15 +283,22 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
             f"re-run ingest to build a fresh diff")
 
     journal_date = diff["journal_date"]
-    source_id = diff["source_id"]
+    source_ids = diff.get("source_ids") or []
+    if not source_ids:
+        raise DomainError("diff has no source_ids")
     days.ensure_day(conn, journal_date)
-    transcript_row = conn.execute(
-        "SELECT id FROM transcripts WHERE source_id=? ORDER BY id DESC LIMIT 1",
-        (source_id,)).fetchone()
-    transcript_id = transcript_row["id"] if transcript_row else None
+    transcript_by_source: dict[int, int | None] = {}
+    for sid in source_ids:
+        row = conn.execute(
+            "SELECT id FROM transcripts WHERE source_id=? ORDER BY id DESC LIMIT 1",
+            (sid,)).fetchone()
+        transcript_by_source[sid] = row["id"] if row else None
+    sole_source = source_ids[0] if len(source_ids) == 1 else None
 
     created_entities: dict[tuple[str, str], int] = {}
-    summary = {"added": 0, "updated": 0, "retracted": 0, "skipped_duplicates": 0,
+    index_to_uuid: dict[int, str] = {}
+    summary = {"added": 0, "updated": 0, "retracted": 0, "closed": 0,
+               "links_created": 0, "skipped_duplicates": 0,
                "skipped_decisions": 0, "unchanged": 0, "entities_created": 0,
                "day_measurements": 0}
 
@@ -263,7 +322,14 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
         created_entities[key] = eid
         return eid
 
-    def _add_entry(draft_entry: dict) -> None:
+    def _prov_source(prov: dict | None) -> int:
+        if prov and prov.get("source_id") is not None:
+            return prov["source_id"]
+        if sole_source is not None:
+            return sole_source
+        raise DomainError("multi-source diff item lacks provenance.source_id")
+
+    def _add_entry(draft_entry: dict) -> str:
         created = entries_mod.create(
             conn,
             journal_date=journal_date,
@@ -291,26 +357,36 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
                 unit=m.get("unit"), confidence=m.get("confidence", "high"),
                 extraction_run_id=run["id"], actor="extraction")
         prov = draft_entry.get("provenance") or {}
+        prov_sid = _prov_source(prov)
         segs = prov.get("segments")
         entries_mod.add_provenance(
-            conn, entry_id=created["id"], source_id=source_id,
-            transcript_id=transcript_id,
+            conn, entry_id=created["id"], source_id=prov_sid,
+            transcript_id=transcript_by_source.get(prov_sid),
             segment_start=min(segs) if segs else None,
             segment_end=max(segs) if segs else None,
             char_start=prov.get("char_start"), char_end=prov.get("char_end"),
             extraction_run_id=run["id"], original_json=draft_entry)
         summary["added"] += 1
+        return created["uuid"]
 
+    link_items: list[dict] = []
     for item in diff.get("items", []):
         action = item["action"]
         if action == "add":
-            _add_entry(item["entry"])
+            uuid_ = _add_entry(item["entry"])
+            if "index" in item:
+                index_to_uuid[item["index"]] = uuid_
         elif action == "possible_duplicate":
             if item.get("accepted") is True:
-                _add_entry(item["entry"])
+                uuid_ = _add_entry(item["entry"])
             else:
+                uuid_ = item["of_entry_uuid"]   # links resolve to the survivor
                 summary["skipped_duplicates"] += 1
+            if "index" in item:
+                index_to_uuid[item["index"]] = uuid_
         elif action == "update":
+            if "index" in item:
+                index_to_uuid[item["index"]] = item["entry_uuid"]
             if item.get("requires_decision") and item.get("accepted") is not True:
                 summary["skipped_decisions"] += 1
                 continue
@@ -326,10 +402,54 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
                 summary["retracted"] += 1
             else:
                 summary["skipped_decisions"] += 1
+        elif action == "entry_update":
+            if item.get("accepted") is not True:
+                summary["skipped_decisions"] += 1
+                continue
+            st = item["set"]
+            corrections.close_entry(conn, item["target_uuid"], st["closure"],
+                                    closed_at=st.get("closed_at"), actor="user",
+                                    note=item.get("note")
+                                    or f"closed via {diff['extraction_run_uuid']}")
+            prov = item.get("provenance")
+            if prov:
+                prov_sid = _prov_source(prov)
+                target_row = entries_mod.get_by_uuid(conn, item["target_uuid"])
+                segs = prov.get("segments")
+                entries_mod.add_provenance(
+                    conn, entry_id=target_row["id"], source_id=prov_sid,
+                    transcript_id=transcript_by_source.get(prov_sid),
+                    segment_start=min(segs) if segs else None,
+                    segment_end=max(segs) if segs else None,
+                    char_start=prov.get("char_start"), char_end=prov.get("char_end"),
+                    extraction_run_id=run["id"],
+                    original_json={"entry_update": item["set"]})
+            summary["closed"] += 1
+        elif action == "link":
+            link_items.append(item)   # resolved after every index is mapped
         elif action in ("unchanged", "unchanged_confirmed"):
+            if "index" in item:
+                index_to_uuid[item["index"]] = item["entry_uuid"]
             summary["unchanged"] += 1
         else:
             raise DomainError(f"unknown diff item action '{action}'")
+
+    def _resolve_end(end: dict) -> str:
+        if "uuid" in end:
+            return end["uuid"]
+        idx = end["index"]
+        if idx not in index_to_uuid:
+            raise DomainError(f"link references entries[{idx}], which was not applied")
+        return index_to_uuid[idx]
+
+    for item in link_items:
+        from_uuid = _resolve_end(item["from"])
+        to_uuid = _resolve_end(item["to"])
+        if from_uuid == to_uuid:
+            continue  # both ends collapsed onto the same surviving entry
+        if links_mod.add(conn, from_uuid, to_uuid, item["type"],
+                         note=item.get("note"), actor="extraction"):
+            summary["links_created"] += 1
 
     day_diff = diff.get("day") or {}
     sm = day_diff.get("summary", {})

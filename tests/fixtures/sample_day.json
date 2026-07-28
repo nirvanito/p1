@@ -1,7 +1,7 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "journal_date": "2026-07-27",
-  "source": {"text": "INJECTED-BY-TEST", "type": "pasted"},
+  "sources": [{"text": "INJECTED-BY-TEST", "type": "pasted"}],
   "day": {
     "summary": "Shipped the quarterly report draft; bouldering with Jake at Movement, finally sent the blue V4.",
     "measurements": [

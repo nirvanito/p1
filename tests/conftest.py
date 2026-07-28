@@ -46,8 +46,32 @@ def sample_text() -> str:
 
 def golden_draft() -> dict:
     draft = json.loads((FIXTURES / "sample_day.json").read_text(encoding="utf-8"))
-    draft["source"]["text"] = sample_text()
+    draft["sources"][0]["text"] = sample_text()
     return draft
+
+
+def init_v1_db(db_path):
+    """Create a database at pinned schema v1 — the starting point every
+    migration-path test uses."""
+    from lifecrm.config import DEFAULT_CATEGORIES, DEFAULT_KINDS
+    conn = db_mod.connect(db_path)
+    conn.executescript((FIXTURES / "schema_v1.sql").read_text(encoding="utf-8"))
+    conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)",
+                     [("schema_version", "1"), ("contract_version", "1")])
+    now = now_utc()
+    conn.executemany("INSERT INTO categories (name, created_at) VALUES (?, ?)",
+                     [(c, now) for c in DEFAULT_CATEGORIES])
+    conn.executemany("INSERT INTO entry_kinds (name, created_at) VALUES (?, ?)",
+                     [(k, now) for k in DEFAULT_KINDS])
+    conn.commit()
+    return conn
+
+
+@pytest.fixture
+def v1_conn(cfg):
+    c = init_v1_db(cfg.db_path)
+    yield c
+    c.close()
 
 
 def cli_project(tmp_path, monkeypatch) -> Path:

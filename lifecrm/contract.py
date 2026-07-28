@@ -1,9 +1,18 @@
-"""Versioned extraction-contract validation.
+"""Versioned extraction-contract validation (contract v2).
 
 The contract is the provider-neutral boundary: any extractor (the Claude Code
 skill, a manual draft, or a future alternative) produces this JSON document,
 and nothing reaches the database without passing this deterministic validation.
 Errors are single-line and precise so the extractor can self-correct and retry.
+
+v2 (ships with schema v2):
+- `sources: [...]` — a day made of several notes extracts as ONE draft.
+- per-entry provenance names WHICH source supports it (mandatory when the
+  draft has more than one source) — provenance must never degrade to "one of
+  today's notes".
+- `entry_updates` — close a task/plan recorded on a DIFFERENT day ("finished
+  the thing I mentioned Tuesday"). Deliberately narrow: closure fields only.
+- `links` — thread structure between entries (continues/resolves/...).
 """
 
 from __future__ import annotations
@@ -14,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from . import CONTRACT_VERSION
 from .config import CONFIDENCE, ENTITY_TYPES, MENTION_ROLES, TIME_OF_DAY
 from .domain import measurements as measurements_mod
+from .domain.links import LINK_TYPES
 from .domain.util import is_iso_date, is_iso_datetime
 
 ENTRY_KEYS = {
@@ -21,23 +31,30 @@ ENTRY_KEYS = {
     "ended_at", "due_at", "data", "confidence", "measurements", "entities",
     "provenance", "uuid",
 }
-TOP_KEYS = {"contract_version", "journal_date", "source", "day", "entries",
-            "ambiguities", "extraction"}
-
-
-def _known(conn: sqlite3.Connection, table: str) -> list[str]:
-    return [r["name"] for r in conn.execute(f"SELECT name FROM {table} ORDER BY id")]
+TOP_KEYS = {"contract_version", "journal_date", "sources", "day", "entries",
+            "entry_updates", "links", "ambiguities", "extraction"}
+CLOSURES = ("done", "dropped", "obsolete")
 
 
 def validate_draft(conn: sqlite3.Connection, draft: dict,
-                   transcript_text: str | None = None) -> list[str]:
-    """Return a list of single-line errors; empty list means the draft is valid."""
+                   texts: dict[int, str] | None = None,
+                   inline_text: str | None = None) -> list[str]:
+    """Return a list of single-line errors; empty list means the draft is valid.
+
+    texts maps source_id -> transcript text (for provenance bounds checks);
+    inline_text is the text of a single inline source, when present.
+    """
     errors: list[str] = []
+    texts = texts or {}
     if not isinstance(draft, dict):
         return ["draft must be a JSON object"]
 
     for key in set(draft) - TOP_KEYS:
-        errors.append(f"{key}: unknown top-level key")
+        if key == "source":
+            errors.append("source: contract v2 takes a `sources` ARRAY — "
+                          "wrap it: \"sources\": [{...}]")
+        else:
+            errors.append(f"{key}: unknown top-level key")
 
     if draft.get("contract_version") != CONTRACT_VERSION:
         errors.append(
@@ -54,30 +71,59 @@ def validate_draft(conn: sqlite3.Connection, draft: dict,
                 f"journal_date: '{jd}' is in the future — journal dates record days "
                 f"that happened; future events belong in occurred_at/due_at")
 
-    # --- source ---
-    src = draft.get("source")
-    if not isinstance(src, dict):
-        errors.append("source: required object with source_id (int) or text (string)")
-    else:
+    # --- sources ---
+    declared_ids: list[int] = []
+    sole_len: int | None = None
+    srcs = draft.get("sources")
+    if not isinstance(srcs, list) or not srcs:
+        errors.append("sources: required non-empty array of "
+                      "{source_id} or (single) {text} objects")
+        srcs = []
+    for i, src in enumerate(srcs):
+        p = f"sources[{i}]"
+        if not isinstance(src, dict):
+            errors.append(f"{p}: must be an object")
+            continue
         has_id = "source_id" in src
         has_text = "text" in src
         if has_id == has_text:
-            errors.append("source: exactly one of source_id or text is required")
+            errors.append(f"{p}: exactly one of source_id or text is required")
         elif has_id:
             if not isinstance(src["source_id"], int):
-                errors.append("source.source_id: must be an integer")
+                errors.append(f"{p}.source_id: must be an integer")
             elif conn.execute("SELECT 1 FROM sources WHERE id=?",
                               (src["source_id"],)).fetchone() is None:
-                errors.append(f"source.source_id: source id={src['source_id']} does not exist")
+                errors.append(f"{p}.source_id: source id={src['source_id']} does not exist")
+            elif src["source_id"] in declared_ids:
+                errors.append(f"{p}.source_id: source id={src['source_id']} listed twice")
+            else:
+                declared_ids.append(src["source_id"])
         else:
+            if len(srcs) > 1:
+                errors.append(f"{p}: inline text is only allowed in single-source "
+                              f"drafts — import multi-source days first "
+                              f"(lifecrm import / intake), then reference ids")
             if not isinstance(src["text"], str) or not src["text"].strip():
-                errors.append("source.text: must be a non-empty string")
+                errors.append(f"{p}.text: must be a non-empty string")
             stype = src.get("type", "pasted")
             if stype not in ("pasted", "phone_transcript", "manual"):
-                errors.append(
-                    f"source.type: '{stype}' must be pasted, phone_transcript, or manual")
+                errors.append(f"{p}.type: '{stype}' must be pasted, "
+                              f"phone_transcript, or manual")
             if "recorded_at" in src and not is_iso_datetime(src["recorded_at"]):
-                errors.append(f"source.recorded_at: '{src['recorded_at']}' is not ISO datetime")
+                errors.append(f"{p}.recorded_at: '{src['recorded_at']}' is not ISO datetime")
+
+    multi_source = len(srcs) > 1
+    if len(srcs) == 1:
+        if inline_text is not None:
+            sole_len = len(inline_text)
+        elif declared_ids and declared_ids[0] in texts:
+            sole_len = len(texts[declared_ids[0]])
+
+    def prov_len(prov: dict) -> int | None:
+        sid = prov.get("source_id")
+        if sid is not None:
+            return len(texts[sid]) if sid in texts else None
+        return sole_len
 
     # --- day ---
     day = draft.get("day")
@@ -102,9 +148,28 @@ def validate_draft(conn: sqlite3.Connection, draft: dict,
         entries_list = []
     known_kinds = _known(conn, "entry_kinds")
     known_cats = _known(conn, "categories")
-    tlen = len(transcript_text) if transcript_text is not None else None
     for i, entry in enumerate(entries_list):
-        errors.extend(_validate_entry(conn, entry, i, known_kinds, known_cats, tlen))
+        errors.extend(_validate_entry(conn, entry, i, known_kinds, known_cats,
+                                      declared_ids, multi_source, prov_len))
+
+    # --- entry_updates ---
+    updates = draft.get("entry_updates")
+    if updates is not None:
+        if not isinstance(updates, list):
+            errors.append("entry_updates: must be an array")
+        else:
+            for i, upd in enumerate(updates):
+                errors.extend(_validate_entry_update(
+                    conn, upd, i, declared_ids, multi_source, prov_len))
+
+    # --- links ---
+    links = draft.get("links")
+    if links is not None:
+        if not isinstance(links, list):
+            errors.append("links: must be an array")
+        else:
+            for i, link in enumerate(links):
+                errors.extend(_validate_link(conn, link, i, len(entries_list)))
 
     # --- ambiguities ---
     amb = draft.get("ambiguities")
@@ -117,6 +182,10 @@ def validate_draft(conn: sqlite3.Connection, draft: dict,
                     errors.append(f"ambiguities[{i}]: must be an object with a string 'note'")
 
     return errors
+
+
+def _known(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [r["name"] for r in conn.execute(f"SELECT name FROM {table} ORDER BY id")]
 
 
 def _validate_measurement(m, path: str) -> str | None:
@@ -132,7 +201,8 @@ def _validate_measurement(m, path: str) -> str | None:
 
 
 def _validate_entry(conn: sqlite3.Connection, entry, i: int, known_kinds: list[str],
-                    known_cats: list[str], transcript_len: int | None) -> list[str]:
+                    known_cats: list[str], declared_ids: list[int],
+                    multi_source: bool, prov_len) -> list[str]:
     errs: list[str] = []
     p = f"entries[{i}]"
     if not isinstance(entry, dict):
@@ -197,7 +267,11 @@ def _validate_entry(conn: sqlite3.Connection, entry, i: int, known_kinds: list[s
 
     prov = entry.get("provenance")
     if prov is not None:
-        errs.extend(_validate_provenance(prov, f"{p}.provenance", transcript_len))
+        errs.extend(_validate_provenance(prov, f"{p}.provenance", declared_ids,
+                                         multi_source, prov_len))
+    elif multi_source:
+        errs.append(f"{p}.provenance: required in multi-source drafts — every "
+                    f"entry must name which source supports it")
 
     if "uuid" in entry:
         if conn.execute("SELECT 1 FROM entries WHERE uuid=?", (entry["uuid"],)).fetchone() is None:
@@ -256,22 +330,127 @@ def _validate_entity_ref(conn: sqlite3.Connection, ref, path: str) -> list[str]:
     return errs
 
 
-def _validate_provenance(prov, path: str, transcript_len: int | None) -> list[str]:
+def _validate_provenance(prov, path: str, declared_ids: list[int],
+                         multi_source: bool, prov_len) -> list[str]:
     if not isinstance(prov, dict):
         return [f"{path}: must be an object"]
+    errs: list[str] = []
+    sid = prov.get("source_id")
+    if sid is not None:
+        if not isinstance(sid, int):
+            errs.append(f"{path}.source_id: must be an integer")
+        elif sid not in declared_ids:
+            errs.append(f"{path}.source_id: {sid} is not one of this draft's "
+                        f"sources ({', '.join(map(str, declared_ids)) or 'none declared'})")
+    elif multi_source:
+        errs.append(f"{path}.source_id: required in multi-source drafts")
+
     has_chars = "char_start" in prov or "char_end" in prov
     has_segs = "segments" in prov
     if has_chars == has_segs:
-        return [f"{path}: exactly one of {{char_start, char_end}} or {{segments}} required"]
+        return errs + [f"{path}: exactly one of {{char_start, char_end}} "
+                       f"or {{segments}} required"]
     if has_chars:
         cs, ce = prov.get("char_start"), prov.get("char_end")
         if not isinstance(cs, int) or not isinstance(ce, int) or cs < 0 or ce <= cs:
-            return [f"{path}: char_start/char_end must be integers with 0 <= start < end"]
-        if transcript_len is not None and ce > transcript_len:
-            return [f"{path}: char_end {ce} exceeds transcript length {transcript_len}"]
+            return errs + [f"{path}: char_start/char_end must be integers "
+                           f"with 0 <= start < end"]
+        tlen = prov_len(prov)
+        if tlen is not None and ce > tlen:
+            errs.append(f"{path}: char_end {ce} exceeds transcript length {tlen}")
     else:
         segs = prov["segments"]
         if (not isinstance(segs, list) or not segs
                 or any(not isinstance(s, int) or s < 0 for s in segs)):
-            return [f"{path}.segments: must be a non-empty array of non-negative segment indexes"]
-    return []
+            errs.append(f"{path}.segments: must be a non-empty array of "
+                        f"non-negative segment indexes")
+    for key in set(prov) - {"source_id", "char_start", "char_end", "segments"}:
+        errs.append(f"{path}.{key}: unknown key")
+    return errs
+
+
+def _validate_entry_update(conn: sqlite3.Connection, upd, i: int,
+                           declared_ids: list[int], multi_source: bool,
+                           prov_len) -> list[str]:
+    p = f"entry_updates[{i}]"
+    if not isinstance(upd, dict):
+        return [f"{p}: must be an object"]
+    errs: list[str] = []
+    for key in set(upd) - {"target_uuid", "set", "provenance", "note"}:
+        errs.append(f"{p}.{key}: unknown key")
+
+    target = upd.get("target_uuid")
+    if not isinstance(target, str):
+        errs.append(f"{p}.target_uuid: required string")
+    else:
+        row = conn.execute("SELECT status FROM entries WHERE uuid=?", (target,)).fetchone()
+        if row is None:
+            errs.append(f"{p}.target_uuid: entry {target} does not exist")
+        elif row["status"] != "active":
+            errs.append(f"{p}.target_uuid: entry {target} is {row['status']} — "
+                        f"only active entries can be closed")
+
+    st = upd.get("set")
+    if not isinstance(st, dict) or not st:
+        errs.append(f"{p}.set: required object — v2 allows closure fields only")
+    else:
+        # Deliberately narrow in v2: closure fields only. Cross-day edits to
+        # titles/categories/etc. go through the manual corrections CLI.
+        for key in set(st) - {"closure", "closed_at"}:
+            errs.append(f"{p}.set.{key}: not settable via entry_updates in v2 "
+                        f"(allowed: closure, closed_at)")
+        closure = st.get("closure")
+        if closure not in CLOSURES:
+            errs.append(f"{p}.set.closure: '{closure}' must be one of "
+                        f"{', '.join(CLOSURES)}")
+        if "closed_at" in st and not is_iso_datetime(st["closed_at"]) \
+                and not is_iso_date(st["closed_at"]):
+            errs.append(f"{p}.set.closed_at: '{st['closed_at']}' is not an ISO "
+                        f"date or datetime")
+
+    prov = upd.get("provenance")
+    if prov is None:
+        errs.append(f"{p}.provenance: required — a closure must trace to the "
+                    f"sentence that closed it")
+    else:
+        errs.extend(_validate_provenance(prov, f"{p}.provenance", declared_ids,
+                                         multi_source, prov_len))
+    return errs
+
+
+def _validate_link(conn: sqlite3.Connection, link, i: int,
+                   n_entries: int) -> list[str]:
+    p = f"links[{i}]"
+    if not isinstance(link, dict):
+        return [f"{p}: must be an object"]
+    errs: list[str] = []
+    for key in set(link) - {"from_index", "from_uuid", "to_index", "to_uuid",
+                            "type", "note"}:
+        errs.append(f"{p}.{key}: unknown key")
+    if link.get("type") not in LINK_TYPES:
+        errs.append(f"{p}.type: '{link.get('type')}' must be one of "
+                    f"{', '.join(LINK_TYPES)}")
+
+    ends = {}
+    for side in ("from", "to"):
+        has_idx = f"{side}_index" in link
+        has_uuid = f"{side}_uuid" in link
+        if has_idx == has_uuid:
+            errs.append(f"{p}: exactly one of {side}_index or {side}_uuid required")
+            continue
+        if has_idx:
+            idx = link[f"{side}_index"]
+            if not isinstance(idx, int) or not (0 <= idx < n_entries):
+                errs.append(f"{p}.{side}_index: {idx!r} is not a valid index into "
+                            f"entries (0..{n_entries - 1})")
+            else:
+                ends[side] = ("index", idx)
+        else:
+            u = link[f"{side}_uuid"]
+            if conn.execute("SELECT 1 FROM entries WHERE uuid=?", (u,)).fetchone() is None:
+                errs.append(f"{p}.{side}_uuid: entry {u} does not exist")
+            else:
+                ends[side] = ("uuid", u)
+    if len(ends) == 2 and ends["from"] == ends["to"]:
+        errs.append(f"{p}: a link cannot connect an entry to itself")
+    return errs

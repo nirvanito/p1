@@ -11,7 +11,7 @@ import json
 import sqlite3
 
 from . import audit, days, entries
-from .util import DomainError, now_utc
+from .util import DomainError, is_iso_date, is_iso_datetime, now_utc
 
 EDITABLE_FIELDS = {
     "title", "body", "kind", "time_of_day", "occurred_at", "ended_at", "due_at",
@@ -153,6 +153,58 @@ def merge_entries(conn: sqlite3.Connection, src_uuid: str, dst_uuid: str,
               entries.snapshot(conn, dst["id"]), note or f"absorbed {src_uuid}")
     audit.log(conn, actor, "merge", "entries", src_uuid, {"into": dst_uuid})
     return {"src": src_uuid, "dst": dst_uuid}
+
+
+CLOSURES = ("done", "dropped", "obsolete")
+
+
+def close_entry(conn: sqlite3.Connection, entry_uuid: str, closure: str,
+                closed_at: str | None = None, actor: str = "user",
+                note: str | None = None) -> None:
+    """Close a loop. Distinct from retraction: retracting means "this record
+    was wrong"; closing 'dropped' means "this really happened and I chose not
+    to do it". Any kind may be closed (status only surfaces task/plan loops).
+
+    The closed_at/closure both-or-neither invariant lives here — the schema
+    cannot carry a table-level CHECK for it (ALTER limitation + migrated/fresh
+    parity), so this function and `doctor` are the enforcement."""
+    if closure not in CLOSURES:
+        raise DomainError(f"closure '{closure}' must be one of: {', '.join(CLOSURES)}")
+    if closed_at is not None and not (is_iso_datetime(closed_at) or is_iso_date(closed_at)):
+        raise DomainError(f"closed_at '{closed_at}' is not an ISO date or datetime")
+    row = entries.get_by_uuid(conn, entry_uuid)
+    if row["status"] != "active":
+        raise DomainError(f"entry {entry_uuid} is {row['status']} — only active "
+                          f"entries can be closed")
+    if row["closure"] is not None:
+        raise DomainError(f"entry {entry_uuid} is already closed "
+                          f"({row['closure']} at {row['closed_at']}) — reopen first")
+    old = entries.snapshot(conn, row["id"])
+    now = now_utc()
+    conn.execute(
+        "UPDATE entries SET closed_at=?, closure=?, updated_at=?, "
+        "confirmed_at=COALESCE(?, confirmed_at) WHERE id=?",
+        (closed_at or now, closure, now, now if actor == "user" else None, row["id"]))
+    new = entries.snapshot(conn, row["id"])
+    _revision(conn, entry_uuid, actor, "close", old, new, note)
+    audit.log(conn, actor, "close", "entries", entry_uuid,
+              {"closure": closure, "closed_at": closed_at or now})
+
+
+def reopen_entry(conn: sqlite3.Connection, entry_uuid: str, actor: str = "user",
+                 note: str | None = None) -> None:
+    row = entries.get_by_uuid(conn, entry_uuid)
+    if row["closure"] is None:
+        raise DomainError(f"entry {entry_uuid} is not closed")
+    old = entries.snapshot(conn, row["id"])
+    now = now_utc()
+    conn.execute(
+        "UPDATE entries SET closed_at=NULL, closure=NULL, updated_at=?, "
+        "confirmed_at=COALESCE(?, confirmed_at) WHERE id=?",
+        (now, now if actor == "user" else None, row["id"]))
+    new = entries.snapshot(conn, row["id"])
+    _revision(conn, entry_uuid, actor, "reopen", old, new, note)
+    audit.log(conn, actor, "reopen", "entries", entry_uuid, None)
 
 
 def confirm_entry(conn: sqlite3.Connection, entry_uuid: str) -> None:

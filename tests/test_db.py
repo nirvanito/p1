@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 
 import pytest
 
@@ -57,7 +57,8 @@ def test_fts_snippet(conn):
     assert "[V4]" in snip
 
 
-def test_migration_framework(conn, cfg, tmp_path):
+def test_migration_framework(v1_conn, cfg, tmp_path):
+    conn = v1_conn
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "0002_add_widgets.sql").write_text(
@@ -85,7 +86,8 @@ def test_migration_framework(conn, cfg, tmp_path):
     assert db_mod.migrate(conn, migrations_dir=mig) == []
 
 
-def test_migration_failure_rolls_back(conn, tmp_path):
+def test_migration_failure_rolls_back(v1_conn, tmp_path):
+    conn = v1_conn
     """Parse failure: dies before anything applies."""
     mig = tmp_path / "migrations"
     mig.mkdir()
@@ -95,7 +97,8 @@ def test_migration_failure_rolls_back(conn, tmp_path):
     assert db_mod.schema_version(conn) == 1
 
 
-def test_migration_create_then_fail_is_atomic(conn, tmp_path):
+def test_migration_create_then_fail_is_atomic(v1_conn, tmp_path):
+    conn = v1_conn
     """Runtime failure AFTER a successful statement: the earlier statement must
     not survive. This is the executescript autocommit bug F0 exists to fix."""
     mig = tmp_path / "migrations"
@@ -111,7 +114,8 @@ def test_migration_create_then_fail_is_atomic(conn, tmp_path):
     assert db_mod.schema_version(conn) == 1
 
 
-def test_migration_duplicate_numbers_rejected(conn, tmp_path):
+def test_migration_duplicate_numbers_rejected(v1_conn, tmp_path):
+    conn = v1_conn
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "0002_first.sql").write_text("CREATE TABLE a (id INTEGER);\n", encoding="utf-8")
@@ -121,7 +125,8 @@ def test_migration_duplicate_numbers_rejected(conn, tmp_path):
     assert db_mod.schema_version(conn) == 1
 
 
-def test_migration_gap_rejected(conn, tmp_path):
+def test_migration_gap_rejected(v1_conn, tmp_path):
+    conn = v1_conn
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "0002_ok.sql").write_text("CREATE TABLE a (id INTEGER);\n", encoding="utf-8")
@@ -131,7 +136,8 @@ def test_migration_gap_rejected(conn, tmp_path):
     assert db_mod.schema_version(conn) == 1
 
 
-def test_migration_reserved_number_rejected(conn, tmp_path):
+def test_migration_reserved_number_rejected(v1_conn, tmp_path):
+    conn = v1_conn
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "0001_schema.sql").write_text("CREATE TABLE a (id INTEGER);\n", encoding="utf-8")
@@ -139,7 +145,8 @@ def test_migration_reserved_number_rejected(conn, tmp_path):
         db_mod.migrate(conn, migrations_dir=mig)
 
 
-def test_migration_can_update_contract_version(conn, tmp_path):
+def test_migration_can_update_contract_version(v1_conn, tmp_path):
+    conn = v1_conn
     """Contract bumps ride inside the migration's transaction."""
     mig = tmp_path / "migrations"
     mig.mkdir()
@@ -180,12 +187,76 @@ def test_split_statements_survives_triggers_and_literals(tmp_path):
     assert stmts[0] == "INSERT INTO t VALUES ('a;b');"
 
 
-def test_out_of_date_schema_detected(conn, tmp_path):
+def test_out_of_date_schema_detected(v1_conn, tmp_path):
+    conn = v1_conn
     mig = tmp_path / "migrations"
     mig.mkdir()
     (mig / "0002_x.sql").write_text("CREATE TABLE x (id INTEGER);\n", encoding="utf-8")
     pending = db_mod.pending_migrations(conn, mig)
     assert [v for v, _ in pending] == [2]
+
+
+def _normalized_master(c) -> dict:
+    """sqlite_master with comments stripped, quotes removed, whitespace
+    collapsed — the form in which a migrated schema and a fresh init must be
+    IDENTICAL. Drift between those paths surfaces years later, during a
+    restore, on a bad day."""
+    import re
+    out = {}
+    for r in c.execute("SELECT type, name, sql FROM sqlite_master "
+                       "WHERE name NOT LIKE 'sqlite_%'"):
+        sql = r["sql"] or ""
+        sql = re.sub(r"--[^\n]*", "", sql)
+        sql = sql.replace('"', "")
+        sql = " ".join(sql.split())
+        sql = re.sub(r"\s*([(),])\s*", r"\1", sql)   # token-boundary spacing
+        out[(r["type"], r["name"])] = sql
+    return out
+
+
+def test_real_migration_v1_to_v2(v1_conn):
+    """The shipped 0002 migration on a pinned v1 database, with data."""
+    conn = v1_conn
+    # seed v1 rows that the migration must carry over
+    conn.execute("INSERT INTO days (journal_date, created_at, updated_at) "
+                 "VALUES ('2026-07-27', 'x', 'x')")
+    conn.execute("INSERT INTO sources (uuid, type, timezone, journal_date, created_at) "
+                 "VALUES ('s-uuid', 'pasted', 'America/Chicago', '2026-07-27', 'x')")
+    conn.execute("INSERT INTO extraction_runs (uuid, source_id, provider, interface, "
+                 "contract_version, input_hash, started_at, status) "
+                 "VALUES ('r-uuid', 1, 'test', 'manual', 1, 'h', 'x', 'applied')")
+    conn.commit()
+
+    applied = db_mod.migrate(conn)
+    assert applied == [2]
+    assert db_mod.schema_version(conn) == 2
+    assert conn.execute("SELECT value FROM meta WHERE key='contract_version'"
+                        ).fetchone()["value"] == "2"
+    # the singular pointer moved into the join table
+    row = conn.execute("SELECT * FROM extraction_run_sources").fetchone()
+    assert (row["extraction_run_id"], row["source_id"]) == (1, 1)
+    # the run row survived the table rebuild
+    run = conn.execute("SELECT * FROM extraction_runs WHERE uuid='r-uuid'").fetchone()
+    assert run["provider"] == "test" and run["status"] == "applied"
+    # new columns and tables exist
+    conn.execute("SELECT closed_at, closure FROM entries LIMIT 0")
+    conn.execute("SELECT * FROM entry_links LIMIT 0")
+
+
+def test_migrated_schema_matches_fresh_init(v1_conn, tmp_path):
+    """Parity: pinned v1 + migration chain == fresh v2 init, table by table."""
+    from lifecrm.domain.util import now_utc
+    conn = v1_conn
+    db_mod.migrate(conn)
+    fresh_path = tmp_path / "fresh.db"
+    db_mod.init_db(fresh_path, now_utc())
+    fresh = db_mod.connect(fresh_path)
+    try:
+        migrated = _normalized_master(conn)
+        pristine = _normalized_master(fresh)
+        assert migrated == pristine
+    finally:
+        fresh.close()
 
 
 def test_snapshot_is_consistent_backup(conn, cfg):
