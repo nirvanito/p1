@@ -14,3 +14,7 @@ __pycache__/
 
 # --- local-only config (config.example.toml IS committed) ---
 /config.toml
+
+# --- per-machine Claude Code permissions; the exclusion must travel with the
+# repo, not depend on any one machine's global gitignore ---
+.claude/settings.local.json

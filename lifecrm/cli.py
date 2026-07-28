@@ -548,15 +548,11 @@ def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
 
 # ---------------------------------------------------------------- backup / restore
 
-def _prune(dirpath: Path, pattern: str, keep: int) -> None:
-    snaps = sorted(dirpath.glob(pattern), key=lambda p: p.name, reverse=True)
-    for old in snaps[keep:]:
-        old.unlink()
-
-
 @app.command()
-def backup(keep: int = typer.Option(8, "--keep")) -> None:
-    """Snapshot the DB (backup API) locally and to the OneDrive backups folder."""
+def backup() -> None:
+    """Snapshot the DB (backup API) locally and to the OneDrive backups folder.
+    Tiered retention: 14 daily, 12 weekly, 24 monthly, yearly indefinitely."""
+    from .retention import prune_dir
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -566,16 +562,20 @@ def backup(keep: int = typer.Option(8, "--keep")) -> None:
     finally:
         conn.close()
     typer.echo(f"snapshot: {dest}")
-    if str(cfg.onedrive_backups_dir):
+    if cfg.onedrive_backups_dir is not None:
         try:
             cfg.onedrive_backups_dir.mkdir(parents=True, exist_ok=True)
             cloud = cfg.onedrive_backups_dir / dest.name
             shutil.copy2(dest, cloud)
             typer.echo(f"copied to: {cloud} (OneDrive is cloud storage — see docs/privacy.md)")
-            _prune(cfg.onedrive_backups_dir, "lifecrm-*.db", keep)
+            removed = prune_dir(cfg.onedrive_backups_dir)
+            if removed:
+                typer.echo(f"retention pruned {len(removed)} cloud snapshot(s)")
         except OSError as e:
             typer.echo(f"WARNING: OneDrive copy failed: {e}", err=True)
-    _prune(cfg.backups_dir, "lifecrm-*.db", keep)
+    removed = prune_dir(cfg.backups_dir)
+    if removed:
+        typer.echo(f"retention pruned {len(removed)} local snapshot(s)")
 
 
 @app.command()
