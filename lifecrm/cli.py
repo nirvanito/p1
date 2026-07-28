@@ -493,6 +493,35 @@ def sql(query: str = typer.Argument(..., help="Read-only SQL"),
 
 
 @app.command()
+def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Verify every invariant the schema cannot enforce. Non-zero exit on any
+    failure; warnings for operational drift (backup age, stuck drafts)."""
+    from .doctor import run_checks
+    cfg = _cfg()
+    if not cfg.db_path.exists():
+        _fail(f"database not found at {cfg.db_path} — run: python -m lifecrm init")
+    # write-capable connection: the FTS integrity-check command uses INSERT
+    # syntax (it modifies nothing); no data changes are ever committed.
+    conn = db_mod.connect(cfg.db_path)
+    try:
+        report = run_checks(conn, cfg)
+        conn.rollback()
+    finally:
+        conn.close()
+    if as_json:
+        _echo_json(report)
+    else:
+        for c in report["checks"]:
+            label = {"ok": "ok  ", "warn": "WARN", "fail": "FAIL"}[c["status"]]
+            typer.echo(f"{label}  {c['check']}"
+                       + (f" — {c['detail']}" if c["detail"] else ""))
+        typer.echo(f"{report['failures']} failure(s), "
+                   f"{report['warnings']} warning(s)")
+    if not report["healthy"]:
+        raise typer.Exit(1)
+
+
+@app.command()
 def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
            out: str = typer.Option(..., "--out", help="Output directory")) -> None:
     """Dump the archive in a form that outlives this code. Deterministic:
