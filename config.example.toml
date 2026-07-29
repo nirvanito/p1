@@ -14,7 +14,9 @@ timezone = "America/Chicago"       # IANA name; recorded per source at ingest
 day_rollover_hour = 5              # recordings before 05:00 local count as the previous day
 
 [whisper]
-model = "small"                    # set by the setup benchmark; do not treat as a fixed default
+model = "distil-large-v3"          # benchmarked vs "small": same CPU speed, fewer name errors
+                                   # (names are what the entity graph is built from);
+                                   # drop to "small" only if transcription is too slow for you
 device = "cpu"
 compute_type = "int8"
 vad_filter = false

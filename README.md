@@ -44,6 +44,10 @@ No audio handy? Paste text straight into `/log`.
 
 ## One-time setup
 
+Setting this up on a fresh machine that isn't the original author's (your
+own copy, your own data)? Follow [docs/new-machine.md](docs/new-machine.md)
+— it covers clone through first applied `/log`.
+
 ### This computer
 
 ```bash
@@ -141,7 +145,7 @@ restore, admin).
 - **Privacy**: personal data never enters git (test-enforced); OneDrive gets
   audio + DB snapshots — that's cloud storage, read `docs/privacy.md`.
 
-Tests: `.venv/Scripts/python -m pytest tests -q` (169 tests).
+Tests: `.venv/Scripts/python -m pytest tests -q` (170 tests).
 
 ## Roadmap (deliberately not built yet)
 
