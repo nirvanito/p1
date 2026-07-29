@@ -241,7 +241,9 @@ def ingest(
     if not p.exists():
         _fail(f"file not found: {p}")
     try:
-        draft = json.loads(p.read_text(encoding="utf-8"))
+        # utf-8-sig: tolerate the BOM that Notepad and Windows PowerShell's
+        # Set-Content/Out-File prepend to 'utf8' files.
+        draft = json.loads(p.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as e:
         _fail(f"{p.name} is not valid JSON: {e}")
 
@@ -347,7 +349,7 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
     if not p.exists():
         _fail(f"file not found: {p}")
     try:
-        diff = json.loads(p.read_text(encoding="utf-8"))
+        diff = json.loads(p.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as e:
         _fail(f"{p.name} is not valid JSON: {e}")
     conn = _conn(cfg)

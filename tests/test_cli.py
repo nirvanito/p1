@@ -80,6 +80,23 @@ def test_ingest_rejects_invalid_draft(tmp_path, monkeypatch):
     assert _sql_json("SELECT COUNT(*) AS c FROM sources")[0]["c"] == 0
 
 
+def test_ingest_tolerates_utf8_bom(tmp_path, monkeypatch):
+    """Windows PowerShell's Set-Content -Encoding utf8 writes a BOM; a draft
+    written that way must still ingest (found by live use, like config.toml)."""
+    root = _setup(tmp_path, monkeypatch)
+    p = root / "data" / "staging" / "bom.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps(golden_draft()).encode("utf-8"))
+    r = runner.invoke(app, ["ingest", str(p)])
+    assert r.exit_code == 0, r.output
+    diffs = sorted((root / "data" / "staging").glob("diff-2026-07-27-*.json"))
+    assert diffs
+    # a BOM'd diff (user-edited in Notepad) must also apply
+    bom_diff = root / "data" / "staging" / "bom-diff.json"
+    bom_diff.write_bytes(b"\xef\xbb\xbf" + diffs[-1].read_bytes())
+    r = runner.invoke(app, ["apply", str(bom_diff)])
+    assert r.exit_code == 0, r.output
+
+
 def test_ingest_dry_run(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     draft = golden_draft()
