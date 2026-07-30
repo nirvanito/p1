@@ -58,7 +58,7 @@ def test_jsonl_round_trip(conn, cfg, tmp_path):
     segs = _read_jsonl(out / "transcript_segments.jsonl")
     assert segs and all("source_uuid" in s for s in segs)
 
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["contract_version"] == 2
 
 

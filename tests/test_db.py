@@ -214,8 +214,8 @@ def _normalized_master(c) -> dict:
     return out
 
 
-def test_real_migration_v1_to_v2(v1_conn):
-    """The shipped 0002 migration on a pinned v1 database, with data."""
+def test_real_migration_chain_v1_to_latest(v1_conn):
+    """The shipped migration chain on a pinned v1 database, with data."""
     conn = v1_conn
     # seed v1 rows that the migration must carry over
     conn.execute("INSERT INTO days (journal_date, created_at, updated_at) "
@@ -228,10 +228,10 @@ def test_real_migration_v1_to_v2(v1_conn):
     conn.commit()
 
     applied = db_mod.migrate(conn)
-    assert applied == [2]
-    assert db_mod.schema_version(conn) == 2
+    assert applied == [2, 3]
+    assert db_mod.schema_version(conn) == 3
     assert conn.execute("SELECT value FROM meta WHERE key='contract_version'"
-                        ).fetchone()["value"] == "2"
+                        ).fetchone()["value"] == "2"   # 0003 is schema-only
     # the singular pointer moved into the join table
     row = conn.execute("SELECT * FROM extraction_run_sources").fetchone()
     assert (row["extraction_run_id"], row["source_id"]) == (1, 1)
@@ -241,6 +241,7 @@ def test_real_migration_v1_to_v2(v1_conn):
     # new columns and tables exist
     conn.execute("SELECT closed_at, closure FROM entries LIMIT 0")
     conn.execute("SELECT * FROM entry_links LIMIT 0")
+    conn.execute("SELECT * FROM health_records LIMIT 0")
 
 
 def test_migrated_schema_matches_fresh_init(v1_conn, tmp_path):

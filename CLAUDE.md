@@ -33,6 +33,7 @@ provenance, closable loops, and entry links.
   `--basetemp=<scratch dir>` if the default temp root is blocked).
 - Full surface (`python -m lifecrm --help`): intake, transcribe, import,
   ingest, apply, status, doctor, export, backup, restore, migrate, sql,
+  health (import — Health Connect zips, dry-run by default),
   entities (match/list/show/merge/alias-add), entry (show/edit/retract/
   restore/merge/close/reopen), link (add/list/rm), categories, kinds, admin.
 
@@ -44,6 +45,9 @@ provenance, closable loops, and entry links.
   diff; confirmed records are never silently overwritten.
 - `lifecrm/doctor.py` — invariant verification (`lifecrm doctor`).
 - `lifecrm/export.py` — deterministic jsonl/markdown archives.
+- `lifecrm/health_connect.py` + `lifecrm/domain/health.py` — Health Connect
+  export import into `health_records` (deterministic, external-id dedupe,
+  newer-wins updates, conflicts surfaced; dry-run by default).
 - `docs/iphone.md` + `docs/android.md` — standalone phone capture guides.
 - Deferred (do not build unless asked): dashboard, live Obsidian mirror,
   entity<->entity relationships, /recall, /review-week.

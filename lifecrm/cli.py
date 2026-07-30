@@ -434,6 +434,13 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
         loop = dict(r)
         loop["overdue"] = bool(r["due_at"]) and r["due_at"][:10] < today_str
         open_loops.append(loop)
+    try:
+        health_latest = [dict(r) for r in conn.execute(
+            "SELECT metric, MAX(journal_date) AS latest, COUNT(*) AS records "
+            "FROM health_records WHERE status='active' "
+            "GROUP BY metric ORDER BY metric")]
+    except sqlite3.OperationalError:
+        health_latest = []   # pre-v3 database; migrate will add the table
     out = {
         "today": today_str,
         "pending_audio": pending_audio,
@@ -443,6 +450,7 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
         "open_loops": open_loops,
         "last_entry_date": last_row["d"],
         "streak_days": _streak(conn, cfg),
+        "health_latest": health_latest,
     }
     if as_json:
         _echo_json(out)
@@ -467,6 +475,10 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
             mark = "  OVERDUE" if lp["overdue"] else ""
             typer.echo(f"  [{lp['kind']}] {lp['title']} ({lp['journal_date']}, "
                        f"{due}){mark}")
+    if health_latest:
+        typer.echo("health data: " + ", ".join(
+            f"{h['metric']} through {h['latest']} ({h['records']})"
+            for h in health_latest))
 
 
 @app.command()
@@ -546,6 +558,66 @@ def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
             _fail("format must be jsonl or markdown")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------- health
+
+health_app = typer.Typer(help="Imported sensor/app health data.",
+                         no_args_is_help=True)
+app.add_typer(health_app, name="health")
+
+
+@health_app.command("import")
+def health_import(
+    file: str = typer.Argument(..., help="Health Connect export (.zip or .db)"),
+    apply_changes: bool = typer.Option(False, "--apply",
+                                       help="Write; default is a dry-run report"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Import an Android Health Connect export. Dry-run by default: review the
+    per-metric counts, date spans, and sample values (a wrong unit or date is
+    visible there), then re-run with --apply. Re-importing is always safe —
+    records dedupe on the source system's own record ids."""
+    from . import health_connect as hc
+    cfg = _cfg()
+    p = Path(file)
+    if not p.exists():
+        _fail(f"file not found: {p}")
+    try:
+        scan = hc.read_export(p, cfg)
+    except DomainError as e:
+        _fail(str(e))
+    conn = _conn(cfg)
+    try:
+        plan = hc.build_plan(conn, scan["records"])
+        if not apply_changes:
+            conn.rollback()
+            if as_json:
+                _echo_json(hc.plan_summary(scan, plan))
+            else:
+                for line in hc.report_lines(scan, plan):
+                    typer.echo(line)
+                typer.echo("dry run — nothing written. Re-run with --apply "
+                           "to write.")
+            return
+        try:
+            summary = hc.apply_plan(conn, plan)
+            conn.commit()
+        except DomainError as e:
+            conn.rollback()
+            _fail(str(e))
+    finally:
+        conn.close()
+    if as_json:
+        _echo_json({**hc.plan_summary(scan, plan), "applied": summary})
+        return
+    for line in hc.report_lines(scan, plan):
+        typer.echo(line)
+    typer.echo(f"applied: {summary['added']} added, {summary['updated']} "
+               f"updated, {summary['refreshed']} refreshed; "
+               f"{summary['identical']} identical skipped"
+               + (f"; {summary['conflicts']} conflict(s) kept existing"
+                  if summary["conflicts"] else ""))
 
 
 # ---------------------------------------------------------------- backup / restore

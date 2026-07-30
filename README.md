@@ -83,6 +83,16 @@ against placeholders anyway).
 
 Both guides are self-contained and shareable on their own.
 
+### Health data (Android)
+
+Sleep, steps, weight, workouts, heart rate, and nutrition come in through
+Android's **Health Connect** hub — the apps you already use write into it,
+and its export is one zip that
+[docs/health-connect.md](docs/health-connect.md) walks through importing:
+dry-run report first (counts, date spans, sample values), then `--apply`.
+Deterministic parsing, dedupe on the source's own record ids, updates only
+from newer records, conflicts surfaced instead of overwritten.
+
 ## Commands you'll actually use
 
 ```bash
@@ -94,6 +104,8 @@ Both guides are self-contained and shareable on their own.
 .venv/Scripts/python -m lifecrm backup        # snapshot local + OneDrive
 .venv/Scripts/python -m lifecrm export --format markdown --out archive/
 .venv/Scripts/python -m lifecrm export --format jsonl --out archive-data/
+.venv/Scripts/python -m lifecrm health import hc-export.zip           # dry-run report
+.venv/Scripts/python -m lifecrm health import hc-export.zip --apply   # then write
 ```
 
 Loops and threads:
@@ -122,11 +134,16 @@ restore, admin).
 
 ## How it's built
 
-- **SQLite is canonical** (`data\lifecrm.db`, WAL, schema v2 with a
+- **SQLite is canonical** (`data\lifecrm.db`, WAL, schema v3 with a
   transactional migration runner in `lifecrm/migrations/`). Sources,
   transcripts, and segments are immutable; entries carry stable UUIDs and are
   corrected via revisions, retraction, closure, and merges — never
   destructive rewrites.
+- **Two metric layers, one rule**: `measurements` holds what the journal
+  said; `health_records` holds what sensors recorded (Health Connect
+  import), keyed on the source system's own record ids so re-imports dedupe,
+  updates apply only from newer records (audit-logged), and disagreements
+  surface as conflicts instead of overwrites.
 - **Contract boundary** (`docs/contract.md`, v2): transcripts → versioned
   JSON → deterministic validation → reviewable diff → transactional apply. A
   day made of several notes extracts as ONE draft; every entry names which
@@ -145,7 +162,7 @@ restore, admin).
 - **Privacy**: personal data never enters git (test-enforced); OneDrive gets
   audio + DB snapshots — that's cloud storage, read `docs/privacy.md`.
 
-Tests: `.venv/Scripts/python -m pytest tests -q` (170 tests).
+Tests: `.venv/Scripts/python -m pytest tests -q` (177 tests).
 
 ## Roadmap (deliberately not built yet)
 

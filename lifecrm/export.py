@@ -172,6 +172,16 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
         {"seq": r["id"], "asked_at": r["asked_at"], "question": r["question"],
          "answered": bool(r["answered"]), "answer_summary": r["answer_summary"]}
         for r in q("SELECT * FROM recall_log ORDER BY id")]
+    tables["health_records"] = [
+        {"uuid": r["uuid"], "metric": r["metric"],
+         "journal_date": r["journal_date"], "started_at": r["started_at"],
+         "ended_at": r["ended_at"], "utc_offset_sec": r["utc_offset_sec"],
+         "value": r["value"], "unit": r["unit"],
+         "detail": _parse(r["value_json"]), "origin_app": r["origin_app"],
+         "external_id": r["external_id"], "source_file": r["source_file"],
+         "last_modified_at": r["last_modified_at"], "status": r["status"],
+         "created_at": r["created_at"], "updated_at": r["updated_at"]}
+        for r in q("SELECT * FROM health_records ORDER BY metric, external_id")]
 
     for name, rows in tables.items():
         (out_dir / f"{name}.jsonl").write_text(_jl(rows), encoding="utf-8",

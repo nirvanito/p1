@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import SCHEMA_VERSION
@@ -22,6 +22,7 @@ from .config import Config
 
 BACKUP_MAX_AGE_DAYS = 7
 STUCK_DRAFT_DAYS = 2
+HEALTH_STALE_DAYS = 14
 
 
 def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
@@ -184,6 +185,24 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
              f"see: python -m lifecrm status")
     else:
         _add("ok", "overdue_loops")
+
+    # --- health imports gone quiet: a broken pipeline looks exactly like a
+    # healthy one unless something watches the clock. Only meaningful once the
+    # feature is in use (any active rows at all).
+    try:
+        hr = conn.execute("SELECT COUNT(*) c, MAX(journal_date) latest "
+                          "FROM health_records WHERE status='active'").fetchone()
+        if hr["c"]:
+            stale_cutoff = (datetime.now(timezone.utc)
+                            - timedelta(days=HEALTH_STALE_DAYS)).strftime("%Y-%m-%d")
+            if hr["latest"] < stale_cutoff:
+                _add("warn", "health_data_age",
+                     f"latest health record is {hr['latest']} — no import in "
+                     f"over {HEALTH_STALE_DAYS} days")
+            else:
+                _add("ok", "health_data_age")
+    except sqlite3.OperationalError:
+        pass   # pre-v3 schema; pending_migrations already failed above
 
     failures = sum(1 for c in checks if c["status"] == "fail")
     warnings = sum(1 for c in checks if c["status"] == "warn")
