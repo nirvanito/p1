@@ -1,0 +1,263 @@
+# Dashboards-as-code, served by `python -m lifecrm dashboard`
+# (Datasette + datasette-dashboards over a point-in-time snapshot — the live
+# database is never held open by the server; rerun the command to refresh).
+#
+# Rules for editing:
+# - db is always `lifecrm` (the snapshot file's stem).
+# - Charts use library `vega-lite` with an explicit mark + encoding in
+#   `display` (spread verbatim into the spec; data/width are injected).
+#   The shorthand libraries (bar/line/pie) documented in the plugin's master
+#   README do NOT exist in the pinned 0.8.x renderer — they fail silently.
+# - Every field referenced by an encoding or metric display must exactly
+#   match a SELECT alias.
+# - Filters arrive via the [[ AND ... :param ]] optional blocks; a query must
+#   stay valid SQL when every block is stripped (anchor them after WHERE).
+# - tests/test_dashboard.py executes every query here against a seeded schema
+#   and checks encoding fields against the SELECT aliases on every test run —
+#   a schema change that breaks a chart fails CI, not the evening you open
+#   the dashboard.
+title: Life CRM
+
+plugins:
+  datasette-dashboards:
+
+    journal:
+      title: Journal
+      description: Days logged, categories, mood, open loops
+      filters:
+        date_start:
+          name: From
+          type: date
+        date_end:
+          name: To
+          type: date
+      layout:
+        - [days-logged, active-entries, open-loops-count]
+        - [entries-per-day, entries-per-day, entries-by-category]
+        - [mood-energy, mood-energy, open-loops]
+      charts:
+        days-logged:
+          title: Days logged
+          db: lifecrm
+          query: >-
+            SELECT COUNT(DISTINCT journal_date) AS days FROM entries
+            WHERE status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: days
+        active-entries:
+          title: Active entries
+          db: lifecrm
+          query: >-
+            SELECT COUNT(*) AS entries FROM entries WHERE status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: entries
+        open-loops-count:
+          title: Open loops
+          db: lifecrm
+          query: >-
+            SELECT COUNT(*) AS loops FROM entries e
+            JOIN entry_kinds k ON k.id = e.kind_id
+            WHERE k.name IN ('task','plan') AND e.status='active'
+            AND e.closed_at IS NULL
+          library: metric
+          display:
+            field: loops
+        entries-per-day:
+          title: Entries per day
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, COUNT(*) AS entries FROM entries
+            WHERE status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day ORDER BY day
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal }
+              y: { field: entries, type: quantitative }
+        entries-by-category:
+          title: By category
+          db: lifecrm
+          query: >-
+            SELECT c.name AS category, COUNT(*) AS entries FROM entries e
+            JOIN entry_categories ec ON ec.entry_id = e.id AND ec.is_primary = 1
+            JOIN categories c ON c.id = ec.category_id
+            WHERE e.status='active'
+            [[ AND e.journal_date >= :date_start ]]
+            [[ AND e.journal_date <= :date_end ]]
+            GROUP BY c.name ORDER BY entries DESC
+          library: vega-lite
+          display:
+            mark: { type: arc, tooltip: true }
+            encoding:
+              theta: { field: entries, type: quantitative }
+              color: { field: category, type: nominal }
+        mood-energy:
+          title: Mood & energy (journal)
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, metric,
+            AVG(COALESCE(normalized_value, numeric_value)) AS value
+            FROM measurements
+            WHERE status='active' AND metric IN ('mood','energy')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day, metric ORDER BY day
+          library: vega-lite
+          display:
+            mark: { type: line, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal }
+              y: { field: value, type: quantitative, scale: { domain: [0, 10] } }
+              color: { field: metric, type: nominal }
+        open-loops:
+          title: Open loops
+          db: lifecrm
+          query: >-
+            SELECT k.name AS kind, e.title, e.journal_date AS since,
+            COALESCE(e.due_at, '') AS due
+            FROM entries e JOIN entry_kinds k ON k.id = e.kind_id
+            WHERE k.name IN ('task','plan') AND e.status='active'
+            AND e.closed_at IS NULL
+            ORDER BY (e.due_at IS NULL), e.due_at, e.journal_date
+          library: table
+
+    health:
+      title: Health
+      description: Sleep, steps, weight, workouts, heart rate, food — imported from Health Connect
+      filters:
+        date_start:
+          name: From
+          type: date
+        date_end:
+          name: To
+          type: date
+      layout:
+        - [latest-weight, last-night-sleep, workouts-count]
+        - [sleep-per-night, sleep-per-night, weight-trend]
+        - [steps-per-day, steps-per-day, heart-rate]
+        - [kcal-per-day, kcal-per-day, .]
+      charts:
+        latest-weight:
+          title: Latest weight
+          db: lifecrm
+          query: >-
+            SELECT value AS kg FROM health_records
+            WHERE metric='weight' AND status='active'
+            ORDER BY journal_date DESC, started_at DESC LIMIT 1
+          library: metric
+          display:
+            field: kg
+            suffix: " kg"
+        last-night-sleep:
+          title: Last night
+          db: lifecrm
+          query: >-
+            SELECT ROUND(SUM(value) / 60.0, 1) AS hours FROM health_records
+            WHERE metric='sleep_session' AND status='active'
+            AND journal_date = (SELECT MAX(journal_date) FROM health_records
+            WHERE metric='sleep_session' AND status='active')
+          library: metric
+          display:
+            field: hours
+            suffix: " h"
+        workouts-count:
+          title: Workouts
+          db: lifecrm
+          query: >-
+            SELECT COUNT(*) AS sessions FROM health_records
+            WHERE metric='exercise_session' AND status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: sessions
+        sleep-per-night:
+          title: Sleep per night (hours asleep)
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS night, ROUND(SUM(value) / 60.0, 2) AS hours
+            FROM health_records
+            WHERE metric='sleep_session' AND status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY night ORDER BY night
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: night, type: temporal }
+              y: { field: hours, type: quantitative }
+        weight-trend:
+          title: Weight
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, ROUND(AVG(value), 2) AS kg
+            FROM health_records
+            WHERE metric='weight' AND status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day ORDER BY day
+          library: vega-lite
+          display:
+            mark: { type: line, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal }
+              y: { field: kg, type: quantitative, scale: { zero: false } }
+        steps-per-day:
+          title: Steps per day
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, CAST(SUM(value) AS INTEGER) AS steps
+            FROM health_records
+            WHERE metric='steps' AND status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day ORDER BY day
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal }
+              y: { field: steps, type: quantitative }
+        heart-rate:
+          title: Heart rate (daily avg bpm)
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, ROUND(AVG(value), 1) AS bpm
+            FROM health_records
+            WHERE metric IN ('heart_rate','resting_heart_rate')
+            AND status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day ORDER BY day
+          library: vega-lite
+          display:
+            mark: { type: line, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal }
+              y: { field: bpm, type: quantitative, scale: { zero: false } }
+        kcal-per-day:
+          title: Food energy per day
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, ROUND(SUM(value)) AS kcal
+            FROM health_records
+            WHERE metric='nutrition' AND status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day ORDER BY day
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal }
+              y: { field: kcal, type: quantitative }

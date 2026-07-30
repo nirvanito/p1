@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ import typer
 from . import CONTRACT_VERSION, SCHEMA_VERSION, __version__
 from . import contract as contract_mod
 from . import db as db_mod
-from .config import Config, load_config
+from .config import PROJECT_ROOT, Config, load_config
 from .domain import corrections, entities as entities_mod, reconcile
 from .domain.sources import content_hash_text
 from .domain.util import DomainError
@@ -558,6 +559,49 @@ def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
             _fail("format must be jsonl or markdown")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------- dashboard
+
+@app.command()
+def dashboard(
+    port: int = typer.Option(8001, "--port"),
+    host: str = typer.Option("127.0.0.1", "--host",
+                             help="0.0.0.0 to reach it from your phone on the LAN"),
+) -> None:
+    """Serve read-only dashboards (Datasette) over a snapshot of the database.
+
+    The snapshot is taken now via the backup API, so the server never holds
+    the live DB open (a held-open file would block restore's file swap on
+    Windows) and every chart reads one consistent instant. Rerun to refresh;
+    Ctrl+C to stop. Dashboard definitions live in dashboards\\dashboards.yml.
+    """
+    import importlib.util
+    if importlib.util.find_spec("datasette") is None:
+        _fail("datasette is not installed — run: .venv\\Scripts\\python.exe "
+              "-m pip install -r requirements.txt")
+    cfg = _cfg()
+    # A customized copy in the active root wins; otherwise the repo default
+    # (same fallback pattern as config.example.toml).
+    metadata = cfg.root / "dashboards" / "dashboards.yml"
+    if not metadata.exists():
+        metadata = PROJECT_ROOT / "dashboards" / "dashboards.yml"
+    if not metadata.exists():
+        _fail(f"dashboard config not found: {metadata}")
+    conn = _conn(cfg)   # write-capable connection: enforces the migration gate
+    try:
+        snap = cfg.data_dir / "dashboard" / "lifecrm.db"
+        for stale in (snap, snap.with_name(snap.name + "-wal"),
+                      snap.with_name(snap.name + "-shm")):
+            stale.unlink(missing_ok=True)
+        db_mod.snapshot(conn, snap)
+    finally:
+        conn.close()
+    typer.echo("serving a snapshot taken just now — rerun to refresh the data")
+    typer.echo(f"dashboards: http://{host}:{port}/-/dashboards")
+    raise typer.Exit(subprocess.call(
+        [sys.executable, "-m", "datasette", "serve", "-i", str(snap),
+         "--metadata", str(metadata), "--host", host, "--port", str(port)]))
 
 
 # ---------------------------------------------------------------- health

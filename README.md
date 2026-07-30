@@ -106,6 +106,7 @@ from newer records, conflicts surfaced instead of overwritten.
 .venv/Scripts/python -m lifecrm export --format jsonl --out archive-data/
 .venv/Scripts/python -m lifecrm health import hc-export.zip           # dry-run report
 .venv/Scripts/python -m lifecrm health import hc-export.zip --apply   # then write
+.venv/Scripts/python -m lifecrm dashboard      # charts at /-/dashboards (Ctrl+C stops)
 ```
 
 Loops and threads:
@@ -131,6 +132,25 @@ Fixing things (all reversible, all audited):
 
 `lifecrm --help` shows the rest (categories/kinds management, migrate,
 restore, admin).
+
+## Dashboards
+
+```bash
+.venv/Scripts/python -m lifecrm dashboard
+```
+
+Two dashboards at `http://127.0.0.1:8001/-/dashboards` — **Journal** (days
+logged, entries per day, categories, mood & energy, open loops) and
+**Health** (sleep, steps, weight, workouts, heart rate, food energy) — plus
+all of Datasette underneath for ad-hoc exploring of every table.
+
+Definitions are code: [dashboards/dashboards.yml](dashboards/dashboards.yml),
+reviewed and versioned like everything else, and the test suite executes
+every chart query against the current schema so a migration can't silently
+blank a chart. The server reads a **snapshot taken at launch** — the live
+database is never held open (nothing can block backups or restores) — so
+refreshing the data is just rerunning the command. Add `--host 0.0.0.0` to
+open it from your phone on the same network.
 
 ## How it's built
 
@@ -168,8 +188,8 @@ Tests: `.venv/Scripts/python -m pytest tests -q` (177 tests).
 
 This work completes the **foundation**, not the application. After real
 notes accumulate — and the schema has survived contact with them — the next
-layers go on top: a local dashboard (timeline, entity pages, review queue),
-a live Obsidian mirror, typed entity↔entity relationships (Jake works_at
-Acme), and `/recall` + `/review-week` skills. `recall_log`,
-`transcript_segments`, and stable entry UUIDs are already in place as their
-extension points.
+layers go on top: richer dashboard views (timeline, entity pages, review
+queue — the first Datasette layer shipped as `lifecrm dashboard`), a live
+Obsidian mirror, typed entity↔entity relationships (Jake works_at Acme),
+and `/recall` + `/review-week` skills. `recall_log`, `transcript_segments`,
+and stable entry UUIDs are already in place as their extension points.

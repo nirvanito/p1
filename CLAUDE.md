@@ -34,6 +34,7 @@ provenance, closable loops, and entry links.
 - Full surface (`python -m lifecrm --help`): intake, transcribe, import,
   ingest, apply, status, doctor, export, backup, restore, migrate, sql,
   health (import — Health Connect zips, dry-run by default),
+  dashboard (Datasette over a snapshot — never the live db),
   entities (match/list/show/merge/alias-add), entry (show/edit/retract/
   restore/merge/close/reopen), link (add/list/rm), categories, kinds, admin.
 
@@ -48,6 +49,10 @@ provenance, closable loops, and entry links.
 - `lifecrm/health_connect.py` + `lifecrm/domain/health.py` — Health Connect
   export import into `health_records` (deterministic, external-id dedupe,
   newer-wins updates, conflicts surfaced; dry-run by default).
+- `dashboards/dashboards.yml` — dashboards-as-code (datasette-dashboards
+  0.8.x: charts MUST be explicit vega-lite specs — the bar/line/pie
+  shorthands in the plugin's master README don't exist in 0.8.x and fail
+  silently; tests enforce supported libraries and run every chart query).
 - `docs/iphone.md` + `docs/android.md` — standalone phone capture guides.
-- Deferred (do not build unless asked): dashboard, live Obsidian mirror,
+- Deferred (do not build unless asked): live Obsidian mirror,
   entity<->entity relationships, /recall, /review-week.
