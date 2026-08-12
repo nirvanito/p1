@@ -107,6 +107,7 @@ from newer records, conflicts surfaced instead of overwritten.
 .venv/Scripts/python -m lifecrm health import hc-export.zip           # dry-run report
 .venv/Scripts/python -m lifecrm health import hc-export.zip --apply   # then write
 .venv/Scripts/python -m lifecrm dashboard      # charts at /-/dashboards (Ctrl+C stops)
+.venv/Scripts/python -m lifecrm ask "how did I sleep last week"
 ```
 
 Loops and threads:
@@ -152,6 +153,32 @@ database is never held open (nothing can block backups or restores) — so
 refreshing the data is just rerunning the command. Add `--host 0.0.0.0` to
 open it from your phone on the same network.
 
+## Asking questions
+
+```bash
+.venv/Scripts/python -m lifecrm ask "how did I sleep last week"
+```
+
+```
+Sleep totalled 7.09 h per day over 5 day(s) (min 6.47 h 2026-07-27,
+max 7.75 h 2026-07-26) [M1]. Related entries: 2026-07-27 Gym: push day [E1].
+```
+
+Every claim carries an evidence id, and the window it used is printed with
+the answer. Retrieval is deterministic — rules parse the question, SQL
+answers it over a read-only connection — so **it works with no AI installed
+at all**. If you install a local model ([Ollama](docs/ask.md), one command),
+it phrases the same evidence in prose and its citations are verified against
+that evidence before you see them; a model that cites something nonexistent
+gets flagged, not printed as fact.
+
+Because the model never writes SQL or does arithmetic, a small 7-8B local
+model is enough. Nothing is metered and nothing leaves the machine.
+Questions the database *can't* answer are logged — `ask --history` shows
+them, and that list is the best guide to what to import next.
+[docs/ask.md](docs/ask.md) covers windows, metrics, and the `--json` tool
+interface for hooking up a chat UI or voice front-end later.
+
 ## How it's built
 
 - **SQLite is canonical** (`data\lifecrm.db`, WAL, schema v3 with a
@@ -182,7 +209,7 @@ open it from your phone on the same network.
 - **Privacy**: personal data never enters git (test-enforced); OneDrive gets
   audio + DB snapshots — that's cloud storage, read `docs/privacy.md`.
 
-Tests: `.venv/Scripts/python -m pytest tests -q` (177 tests).
+Tests: `.venv/Scripts/python -m pytest tests -q` (224 tests).
 
 ## Roadmap (deliberately not built yet)
 
@@ -191,5 +218,6 @@ notes accumulate — and the schema has survived contact with them — the next
 layers go on top: richer dashboard views (timeline, entity pages, review
 queue — the first Datasette layer shipped as `lifecrm dashboard`), a live
 Obsidian mirror, typed entity↔entity relationships (Jake works_at Acme),
-and `/recall` + `/review-week` skills. `recall_log`, `transcript_segments`,
-and stable entry UUIDs are already in place as their extension points.
+weekly review briefs drafted from the same evidence `ask` retrieves, and a
+voice front-end over the `ask --json` interface. `transcript_segments` and
+stable entry UUIDs are already in place as their extension points.

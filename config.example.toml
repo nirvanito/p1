@@ -30,3 +30,15 @@ seed_initial_prompt = true
 # (recorded_at, duration_sec) similarity warning.
 duplicate_recorded_at_tolerance_sec = 120
 duplicate_duration_tolerance_sec = 5
+
+[ask]
+# `lifecrm ask` retrieves cited evidence deterministically and always answers
+# without a model. If a local Ollama server is running, it also phrases that
+# evidence in prose — nothing leaves the machine, nothing is metered.
+enabled = true                     # false = never call a model, evidence only
+endpoint = "http://localhost:11434"
+model = "llama3.1:8b"              # must be pulled: ollama pull llama3.1:8b
+timeout_sec = 120
+default_days = 30                  # window when the question names no time
+max_entries = 8                    # entries quoted as evidence
+max_passages = 4                   # transcript passages quoted as evidence

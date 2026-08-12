@@ -561,6 +561,144 @@ def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
         conn.close()
 
 
+# ---------------------------------------------------------------- ask
+
+def _evidence_index(bundle: dict) -> dict:
+    """id -> one-line description, for printing what an answer relied on."""
+    from .recall import fmt_value
+    index = {}
+    for m in bundle["metrics"]:
+        index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
+                          f"over {m['days']} day(s), {m['origin']}")
+    for e in bundle["entries"]:
+        index[e["id"]] = f"{e['date']} entry: {e['title']}"
+    for p in bundle["passages"]:
+        index[p["id"]] = f"{p['date']} transcript (source {p['source_id']})"
+    return index
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(None, help="A question about your own data"),
+    days: int = typer.Option(None, "--days",
+                             help="Window when the question names no time"),
+    no_llm: bool = typer.Option(False, "--no-llm",
+                                help="Evidence and statistics only, never a model"),
+    model: str = typer.Option(None, "--model", help="Override the local model"),
+    show_evidence: bool = typer.Option(False, "--evidence",
+                                       help="Print the full evidence block"),
+    history: bool = typer.Option(False, "--history",
+                                 help="List the 20 most recent questions instead"),
+    no_log: bool = typer.Option(False, "--no-log",
+                                help="Do not record the question in recall_log"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Ask a question about your own life data, answered with citations.
+
+    Retrieval is deterministic: the window and metrics are parsed by rule and
+    every fact comes back with an evidence id you can verify. A local model
+    (Ollama, if installed) only phrases that evidence — it is never a source
+    of facts, and its citations are checked against the evidence before you
+    see them. Without a model you still get the statistics and the sources.
+    """
+    from . import llm as llm_mod
+    from . import recall as recall_mod
+    from .domain import recall as recall_domain
+    cfg = _cfg()
+
+    if history:
+        conn = _conn(cfg, readonly=True)
+        try:
+            rows = recall_domain.recent(conn, limit=20)
+        finally:
+            conn.close()
+        if as_json:
+            _echo_json(rows)
+            return
+        if not rows:
+            typer.echo("no questions asked yet")
+            return
+        for r in rows:
+            mark = "  " if r["answered"] else " ?"
+            typer.echo(f"{r['asked_at'][:16].replace('T', ' ')}{mark} "
+                       f"{r['question']}")
+        return
+
+    if not question or not question.strip():
+        _fail('ask what? e.g. python -m lifecrm ask "how did I sleep last week"')
+
+    conn = _conn(cfg, readonly=True)
+    try:
+        bundle = recall_mod.build_evidence(
+            conn, cfg, question, days=days,
+            max_entries=int(cfg.ask.get("max_entries", 8)),
+            max_passages=int(cfg.ask.get("max_passages", 4)))
+    except sqlite3.Error as e:
+        _fail(f"retrieval failed: {e}")
+    finally:
+        conn.close()
+
+    evidence_text = recall_mod.render_evidence(bundle)
+    answer_text = recall_mod.deterministic_answer(bundle)
+    source = "deterministic"
+    llm_state = {"available": False, "reason": "--no-llm"} if no_llm \
+        else llm_mod.status(cfg)
+
+    if not no_llm and llm_state["available"] and bundle["has_evidence"]:
+        try:
+            phrased = llm_mod.answer(cfg, evidence_text, question,
+                                     model=model or llm_state["model"])
+        except Exception as e:                      # transport, timeout, 404
+            typer.echo(f"local model unavailable ({e}) — deterministic answer",
+                       err=True)
+            phrased = ""
+        if phrased:
+            answer_text = phrased
+            source = f"model:{model or llm_state['model']}"
+
+    # Both paths cite evidence ids, so both get checked the same way — the
+    # printed sources are what the answer actually used, never everything
+    # that was retrieved.
+    citations = recall_mod.check_citations(answer_text, bundle)
+
+    if not no_log:
+        wconn = _conn(cfg)
+        _commit_or_rollback(wconn, lambda: recall_domain.log_question(
+            wconn, question, answered=bundle["has_evidence"],
+            answer_summary=answer_text))
+    if as_json:
+        _echo_json({"question": question, "answer": answer_text,
+                    "answer_source": source, "citations": citations,
+                    "evidence": bundle, "evidence_text": evidence_text,
+                    "model": llm_state})
+        return
+
+    typer.echo(answer_text)
+    if source.startswith("model:"):
+        if citations["unknown"]:
+            typer.echo(f"warning: the model cited evidence that does not exist "
+                       f"({', '.join(citations['unknown'])}) — treat those "
+                       f"claims as unsupported", err=True)
+        if citations["uncited"]:
+            typer.echo("warning: the model cited no evidence — verify it "
+                       "against --evidence", err=True)
+    index = _evidence_index(bundle)
+    used = citations["cited"]
+    if used and not show_evidence:
+        typer.echo("")
+        typer.echo("sources:")
+        for cid in used:
+            typer.echo(f"  [{cid}] {index[cid]}")
+    if show_evidence:
+        typer.echo("")
+        typer.echo(evidence_text)
+    w = bundle["window"]
+    note = "" if llm_state["available"] or no_llm else f" · {llm_state['reason']}"
+    typer.echo("")
+    typer.echo(f"window: {w['label']} ({w['start']} to {w['end']}) · "
+               f"answer: {source}{note}")
+
+
 # ---------------------------------------------------------------- dashboard
 
 @app.command()

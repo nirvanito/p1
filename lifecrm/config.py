@@ -38,6 +38,7 @@ class Config:
     day_rollover_hour: int = 5
     whisper: dict = field(default_factory=dict)
     ingest: dict = field(default_factory=dict)
+    ask: dict = field(default_factory=dict)
 
     @property
     def db_path(self) -> Path:
@@ -68,6 +69,11 @@ def load_config(root: Path | None = None) -> Config:
     cfg_file = root / "config.toml"
     if not cfg_file.exists():
         cfg_file = root / "config.example.toml"
+    if not cfg_file.exists():
+        raise FileNotFoundError(
+            f"no config.toml (or config.example.toml) in {root} — copy "
+            f"config.example.toml to config.toml, or point LIFECRM_ROOT at a "
+            f"project root that has one")
     # utf-8-sig: tolerate the BOM that Notepad and Windows PowerShell's
     # Out-File -Encoding utf8 prepend (tomllib rejects a raw BOM).
     raw = tomllib.loads(cfg_file.read_text(encoding="utf-8-sig"))
@@ -86,4 +92,5 @@ def load_config(root: Path | None = None) -> Config:
         day_rollover_hour=int(time_cfg.get("day_rollover_hour", 5)),
         whisper=raw.get("whisper", {}),
         ingest=raw.get("ingest", {}),
+        ask=raw.get("ask", {}),
     )
