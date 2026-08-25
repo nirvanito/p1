@@ -15,6 +15,7 @@ Guarantees:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from difflib import SequenceMatcher
@@ -24,7 +25,7 @@ from . import links as links_mod
 from . import measurements as measurements_mod
 from .util import DomainError, new_uuid, now_utc
 
-DIFF_VERSION = 2
+DIFF_VERSION = 3
 DUPLICATE_TITLE_SIM = 0.9
 DUPLICATE_RELATED_SIM = 0.75
 
@@ -90,6 +91,60 @@ def _draft_vs_existing_changes(conn: sqlite3.Connection, draft_entry: dict,
         changes["secondary_categories"] = {"old": snap["categories"]["secondary"],
                                            "new": draft_entry["categories"].get("secondary", [])}
     return changes
+
+
+def update_targets(diff: dict) -> list[str]:
+    """The cross-day entries an entry_update item points at."""
+    return sorted({i["target_uuid"] for i in diff.get("items", [])
+                   if i.get("action") == "entry_update"})
+
+
+def day_fingerprint(conn: sqlite3.Connection, journal_date: str,
+                    target_uuids: list[str] | tuple[str, ...] = ()) -> str:
+    """Hash of everything build_diff read about a day.
+
+    A diff is a reviewed statement about one before-state: "these six entries
+    are new, that one is a duplicate of the entry you already have". Apply it
+    against a different before-state and the review no longer describes
+    reality — most visibly by ingesting the same day twice and applying both
+    diffs, which used to add every entry a second time because the second diff
+    had been built against the empty day. Stamped at build, re-checked at
+    apply.
+
+    Deliberately broad: entries of every status (an entry can be restored or
+    moved between days), their full snapshots (an entry's entities and
+    measurements are what `changes` is computed from), which sources support
+    them (that is what turns an omission into a retract proposal), the day's
+    summary and day-owned measurements, and the current state of any cross-day
+    entry_update target. Over-sensitivity costs one `ingest` re-run; under-
+    sensitivity costs silent duplicate history.
+    """
+    entries_state = []
+    for row in conn.execute("SELECT id, uuid FROM entries WHERE journal_date=? "
+                            "ORDER BY uuid", (journal_date,)):
+        snap = entries_mod.snapshot(conn, row["id"])
+        snap["sources"] = [r["source_id"] for r in conn.execute(
+            "SELECT source_id FROM entry_sources WHERE entry_id=? ORDER BY source_id",
+            (row["id"],))]
+        entries_state.append(snap)
+    day_row = conn.execute("SELECT summary FROM days WHERE journal_date=?",
+                           (journal_date,)).fetchone()
+    day_measurements = [dict(r) for r in conn.execute(
+        "SELECT uuid, metric, numeric_value, text_value, unit, status "
+        "FROM measurements WHERE journal_date=? ORDER BY uuid", (journal_date,))]
+    targets = []
+    for uuid_ in sorted(set(target_uuids)):
+        row = conn.execute(
+            "SELECT journal_date, status, closure, closed_at, confirmed_at "
+            "FROM entries WHERE uuid=?", (uuid_,)).fetchone()
+        targets.append({"uuid": uuid_,
+                        **(dict(row) if row is not None else {"missing": True})})
+    blob = json.dumps({"entries": entries_state,
+                       "summary": day_row["summary"] if day_row else None,
+                       "measurements": day_measurements,
+                       "targets": targets},
+                      sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> dict:
@@ -251,7 +306,7 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
         "requires_decision": sum(1 for i in items
                                  if i.get("requires_decision") and i.get("accepted") is None),
     }
-    return {
+    diff = {
         "diff_version": DIFF_VERSION,
         "journal_date": journal_date,
         "source_ids": source_ids,
@@ -261,6 +316,9 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
         "items": items,
         "ambiguities": draft.get("ambiguities", []),
     }
+    diff["day_fingerprint"] = day_fingerprint(conn, journal_date,
+                                              update_targets(diff))
+    return diff
 
 
 def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
@@ -283,6 +341,14 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
             f"re-run ingest to build a fresh diff")
 
     journal_date = diff["journal_date"]
+    # Staleness: the review was of a specific before-state. Checked before any
+    # write, and never bypassable — rebuilding a diff costs one `ingest`.
+    if diff.get("day_fingerprint") != day_fingerprint(conn, journal_date,
+                                                      update_targets(diff)):
+        raise DomainError(
+            f"{journal_date} has changed since this diff was built — re-run "
+            f"ingest to rebuild it")
+
     source_ids = diff.get("source_ids") or []
     if not source_ids:
         raise DomainError("diff has no source_ids")

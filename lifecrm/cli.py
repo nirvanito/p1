@@ -341,6 +341,28 @@ def ingest(
     typer.echo(f"  python -m lifecrm apply \"{diff_path}\"")
 
 
+def _mark_applied(p: Path) -> Path | None:
+    """Rename a diff once it has been applied.
+
+    Belt to the fingerprint's braces: the diff is now refused on content, but
+    an applied diff should also stop *looking* applicable in the folder and in
+    tab-completion, and drop out of doctor's `staging/*.json` staleness sweep.
+    Renaming happens after the commit, so a failure here is a warning, never a
+    lost apply.
+    """
+    target = p.with_name(p.name + ".applied")
+    n = 2
+    while target.exists():
+        target = p.with_name(f"{p.name}.applied.{n}")
+        n += 1
+    try:
+        p.rename(target)
+    except OSError as e:
+        typer.echo(f"warning: applied, but could not rename {p.name}: {e}", err=True)
+        return None
+    return target
+
+
 @app.command()
 def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
           as_json: bool = typer.Option(False, "--json")) -> None:
@@ -355,6 +377,7 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
         _fail(f"{p.name} is not valid JSON: {e}")
     conn = _conn(cfg)
     summary = _commit_or_rollback(conn, lambda: reconcile.apply_diff(conn, diff))
+    applied_as = _mark_applied(p)
     if as_json:
         _echo_json(summary)
     else:
@@ -369,6 +392,8 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
                       if summary['skipped_decisions'] else "")
                    + (f", {summary['skipped_duplicates']} skipped duplicate(s)"
                       if summary['skipped_duplicates'] else ""))
+        if applied_as is not None:
+            typer.echo(f"  {p.name} -> {applied_as.name}")
 
 
 # ---------------------------------------------------------------- status / sql

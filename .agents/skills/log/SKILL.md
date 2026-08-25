@@ -109,6 +109,10 @@ Ask for a single confirmation (y / corrections).
   answering the questions above (edit the diff file), then
   `python -m lifecrm apply <diff-file>`.
 - Corrections -> edit the draft JSON, re-run ingest, re-confirm briefly.
+- "has changed since this diff was built" -> the day moved underneath the
+  review (an earlier diff got applied, or an entry was edited). Re-run
+  ingest on the same draft and review the fresh diff — never hand-edit a
+  diff to get around it. Applied diffs are renamed `.applied`.
 - A misheard name -> `python -m lifecrm entities alias-add <id> "<misspelling>"`
   so it resolves automatically forever.
 

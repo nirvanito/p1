@@ -198,6 +198,57 @@ def test_entry_show_provenance_excerpt(tmp_path, monkeypatch):
     assert excerpt and excerpt in sample_text()
 
 
+def test_applying_a_stale_diff_is_refused_and_applied_diffs_are_renamed(
+        tmp_path, monkeypatch):
+    """Ingest the same day twice, apply both: the day used to double, 6 -> 12."""
+    root = _setup(tmp_path, monkeypatch)
+    staging = root / "data" / "staging"
+    draft_path = staging / "draft-2026-07-27.json"
+
+    diffs = []
+    for _ in range(2):
+        draft_path.write_text(json.dumps(golden_draft(), ensure_ascii=False),
+                              encoding="utf-8")
+        r = runner.invoke(app, ["ingest", str(draft_path)])
+        assert r.exit_code == 0, r.output
+        diffs = sorted(staging.glob("diff-2026-07-27-*.json"))
+    assert len(diffs) == 2
+
+    r = runner.invoke(app, ["apply", str(diffs[0])])
+    assert r.exit_code == 0, r.output
+    assert _sql_json("SELECT COUNT(*) AS c FROM entries")[0]["c"] == 6
+
+    # applied diffs are renamed, so they neither tempt a second apply nor look
+    # like a stale draft to doctor
+    assert not diffs[0].exists()
+    assert (staging / (diffs[0].name + ".applied")).exists()
+    assert not list(staging.glob("*.json.applied.2"))
+
+    r = runner.invoke(app, ["apply", str(diffs[1])])
+    assert r.exit_code == 1
+    assert r.output.strip().splitlines()[-1] == (
+        "error: 2026-07-27 has changed since this diff was built — re-run "
+        "ingest to rebuild it")
+    assert _sql_json("SELECT COUNT(*) AS c FROM entries")[0]["c"] == 6
+
+    # the documented recovery works and stays idempotent. Entity refs are
+    # dropped because the contract now (correctly) demands ref:existing for
+    # entities the first apply created — that is the skill's job, not this
+    # test's subject.
+    recovery = golden_draft()
+    for e in recovery["entries"]:
+        e.pop("entities", None)
+    draft_path.write_text(json.dumps(recovery, ensure_ascii=False),
+                          encoding="utf-8")
+    r = runner.invoke(app, ["ingest", str(draft_path)])
+    assert r.exit_code == 0, r.output
+    fresh = sorted(set(staging.glob("diff-2026-07-27-*.json")) - set(diffs))
+    r = runner.invoke(app, ["apply", str(fresh[-1])])
+    assert r.exit_code == 0, r.output
+    assert _sql_json("SELECT COUNT(*) AS c FROM entries")[0]["c"] == 6
+    assert runner.invoke(app, ["doctor"]).exit_code == 0
+
+
 def test_merge_keeps_the_superseded_entrys_excerpt(tmp_path, monkeypatch):
     """End of the merge-provenance story, at the surface the user sees: after
     a merge the superseded entry still shows where it came from, and doctor

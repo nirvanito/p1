@@ -142,6 +142,15 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
    revision records. Applying is the user's confirmation: created entries are
    marked confirmed.
 
+A diff is a review of one before-state, and it says so: `day_fingerprint`
+records the day as ingest saw it. If anything about that day changed since —
+another diff applied, an entry edited, closed, retracted or moved, a day
+measurement or summary set, or a cross-day `entry_update` target touched —
+apply refuses the diff and asks for a fresh `ingest`. Re-ingesting is always
+the right answer and is safe: entries already in the day come back as
+possible-duplicates, which stay skipped. Applied diffs are renamed
+`diff-<date>-<run>.json.applied` so they cannot be applied twice by habit.
+
 ## Version history
 
 - v2 (2026-07, schema v2): `sources` array replaces singular `source`;

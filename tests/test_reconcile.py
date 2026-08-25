@@ -230,6 +230,70 @@ def test_apply_twice_rejected(conn, cfg):
         reconcile.apply_diff(conn, diff)
 
 
+# --- staleness ---------------------------------------------------------------
+# `apply_twice_rejected` above only guards the same diff twice. Two SEPARATE
+# ingests of one day produce two extraction runs, so both diffs looked
+# applicable — and the second one was built against the day BEFORE the first
+# was applied, so applying it added every entry a second time. 6 -> 12.
+
+def test_second_diff_of_the_same_day_is_refused_as_stale(conn, cfg):
+    diff1 = _ingest(conn, cfg, golden_draft())
+    diff2 = _ingest(conn, cfg, golden_draft())      # built against the same empty day
+    reconcile.apply_diff(conn, diff1)
+    assert conn.execute("SELECT COUNT(*) c FROM entries").fetchone()["c"] == 6
+
+    with pytest.raises(DomainError, match="re-run ingest"):
+        reconcile.apply_diff(conn, diff2)
+    assert conn.execute("SELECT COUNT(*) c FROM entries").fetchone()["c"] == 6
+
+
+def test_reingest_after_a_stale_refusal_still_works(conn, cfg):
+    """The escape hatch has to be the documented one: ingest again."""
+    diff1 = _ingest(conn, cfg, golden_draft())
+    diff2 = _ingest(conn, cfg, golden_draft())
+    reconcile.apply_diff(conn, diff1)
+    with pytest.raises(DomainError):
+        reconcile.apply_diff(conn, diff2)
+
+    fresh = _ingest(conn, cfg, golden_draft())
+    summary = reconcile.apply_diff(conn, fresh)
+    assert summary["added"] == 0                    # every entry is a known duplicate
+    assert conn.execute("SELECT COUNT(*) c FROM entries").fetchone()["c"] == 6
+
+
+def test_an_edit_underneath_makes_the_diff_stale(conn, cfg):
+    """Not just double-apply: any change to the day invalidates the review."""
+    reconcile.apply_diff(conn, _ingest(conn, cfg, golden_draft()))
+    draft = golden_draft()
+    draft["entries"].append(_new_entry_titled("Evening walk"))
+    diff = _ingest(conn, cfg, draft)
+
+    victim = conn.execute("SELECT uuid FROM entries WHERE title LIKE 'Lunch%'"
+                          ).fetchone()["uuid"]
+    corrections.edit_entry(conn, victim, {"title": "Lunch: chicken burrito bowl, no rice"})
+
+    with pytest.raises(DomainError, match="re-run ingest"):
+        reconcile.apply_diff(conn, diff)
+
+
+def test_an_unrelated_day_does_not_make_the_diff_stale(conn, cfg):
+    """The guard is per-day: work on another day must not invalidate a diff."""
+    diff = _ingest(conn, cfg, golden_draft())
+    other = import_text(conn, cfg, "Different day entirely.",
+                        journal_date="2026-07-26", source_type="pasted")
+    other_draft = {"contract_version": 2, "journal_date": "2026-07-26",
+                   "sources": [{"source_id": other["source_id"]}],
+                   "entries": [_new_entry_titled("Something else")]}
+    reconcile.apply_diff(conn, _ingest(conn, cfg, other_draft))
+
+    summary = reconcile.apply_diff(conn, diff)      # still valid
+    assert summary["added"] == 6
+
+
+def _new_entry_titled(title):
+    return {"kind": "event", "categories": {"primary": "other"}, "title": title}
+
+
 def test_new_entity_reused_within_apply(conn, cfg):
     draft = golden_draft()
     draft["entries"].append({

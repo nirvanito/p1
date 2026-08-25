@@ -174,6 +174,29 @@ def _apply_task_day(conn, cfg):
                         ).fetchone()["uuid"]
 
 
+def test_entry_update_target_changing_makes_the_diff_stale(conn, cfg):
+    """A cross-day item shows the target's CURRENT state for review. If the
+    target moves underneath, that review is of a state that no longer exists —
+    even though the diff's own day is untouched."""
+    task_uuid = _apply_task_day(conn, cfg)
+    s2 = _import(conn, cfg, "Finally renewed the passport this morning.",
+                 date="2026-07-27")
+    draft = _draft([s2], [], date="2026-07-27", entry_updates=[{
+        "target_uuid": task_uuid,
+        "set": {"closure": "done", "closed_at": "2026-07-27T15:00:00Z"},
+        "provenance": {"char_start": 0, "char_end": 41}}])
+    diff = _ingest(conn, cfg, draft)
+    for i in diff["items"]:
+        if i["action"] == "entry_update":
+            i["accepted"] = True
+
+    corrections.close_entry(conn, task_uuid, "dropped")   # closed by hand meanwhile
+
+    with pytest.raises(DomainError, match="re-run ingest"):
+        reconcile.apply_diff(conn, diff)
+    assert entries.get_by_uuid(conn, task_uuid)["closure"] == "dropped"
+
+
 def test_entry_update_closes_across_days(conn, cfg):
     task_uuid = _apply_task_day(conn, cfg)
 
