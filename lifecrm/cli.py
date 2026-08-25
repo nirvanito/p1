@@ -827,6 +827,50 @@ def health_import(
                   if summary["conflicts"] else ""))
 
 
+@health_app.command("retract")
+def health_retract(
+    source_file: str = typer.Option(..., "--source-file",
+                                    help="Export file name, as `health import` reported it"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Undo an import: every health record that export last wrote becomes
+    status='retracted' — hidden from doctor, dashboards and ask, but still on
+    disk. This is the undo for an export that landed with a wrong unit scale
+    or wrong dates. Put it back with `health restore --source-file`; note that
+    re-importing does NOT, since an unchanged record is skipped as identical.
+    """
+    from .domain import health as health_dom
+    cfg = _cfg()
+    conn = _conn(cfg)
+    result = _commit_or_rollback(
+        conn, lambda: health_dom.retract_source_file(conn, source_file))
+    _health_status_echo(result, as_json, "retracted")
+
+
+@health_app.command("restore")
+def health_restore(
+    source_file: str = typer.Option(..., "--source-file",
+                                    help="Export file name, as `health import` reported it"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Put back records hidden by `health retract --source-file`."""
+    from .domain import health as health_dom
+    cfg = _cfg()
+    conn = _conn(cfg)
+    result = _commit_or_rollback(
+        conn, lambda: health_dom.restore_source_file(conn, source_file))
+    _health_status_echo(result, as_json, "restored")
+
+
+def _health_status_echo(result: dict, as_json: bool, verb: str) -> None:
+    if as_json:
+        _echo_json(result)
+        return
+    detail = ", ".join(f"{m} x{n}" for m, n in sorted(result["metrics"].items()))
+    typer.echo(f"{verb} {result['records']} health record(s) from "
+               f"{result['source_file']}: {detail}")
+
+
 # ---------------------------------------------------------------- observed tier
 
 imports_app = typer.Typer(help="Importer runs: what came in, and how to undo it.",
@@ -1012,10 +1056,14 @@ def imports_retract(
 ) -> None:
     """Undo an import: its observations become status='retracted'.
 
-    Coarse by design, and reversible only by re-importing. Rows this import
-    merely refreshed or updated stay — import_id names the run that CREATED a
-    row, so retracting a later snapshot cannot delete what an earlier one
-    contributed.
+    Coarse by design. Rows this import merely refreshed or updated stay —
+    import_id names the run that CREATED a row, so retracting a later snapshot
+    cannot delete what an earlier one contributed.
+
+    One-way for now: the rows keep their data, but re-importing does NOT bring
+    them back (an unchanged record classifies as identical and is skipped),
+    and there is no `imports restore` yet. `health restore` is the equivalent
+    on the health side.
     """
     from .domain import observations as obs
     cfg = _cfg()

@@ -6,7 +6,7 @@ from conftest import FIXTURES, golden_draft
 
 from lifecrm import health_connect as hc
 from lifecrm.connectors import ai_chat
-from lifecrm.domain import (corrections, entities, entries, links,
+from lifecrm.domain import (corrections, entities, entries, health, links,
                             measurements, observations as obs, reconcile)
 from lifecrm.doctor import run_checks
 from test_health_connect import make_hc_db
@@ -266,6 +266,16 @@ def _op_health_import(conn, cfg, tmp_path):
     hc.apply_plan(conn, hc.build_plan(conn, scan["records"]))
 
 
+def _op_health_retract(conn, cfg, tmp_path):
+    _op_health_import(conn, cfg, tmp_path)
+    health.retract_source_file(conn, "hc_export.zip")
+
+
+def _op_health_restore(conn, cfg, tmp_path):
+    _op_health_retract(conn, cfg, tmp_path)
+    health.restore_source_file(conn, "hc_export.zip")
+
+
 def _ai_chat_scan(cfg, tmp_path):
     export = tmp_path / "conversations.json"
     export.write_bytes((FIXTURES / "ai_chat_claude.json").read_bytes())
@@ -306,6 +316,8 @@ DOMAIN_OPS = {
     "measurement retract": _op_measurement_retract,
     "admin purge-day": _op_purge_day,
     "health import": _op_health_import,
+    "health retract": _op_health_retract,
+    "health restore": _op_health_restore,
     "observe apply": _op_observe_apply,
     "observe retract": _op_observe_retract,
     "handles link": _op_handle_link,

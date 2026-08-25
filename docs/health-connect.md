@@ -57,6 +57,31 @@ old and new values); a record that differs but is NOT newer is refused and
 listed as a CONFLICT. Tables the importer doesn't understand are listed with
 row counts — never silently dropped.
 
+## Undoing an import
+
+If an export lands with a wrong unit scale or wrong dates and you only notice
+after `--apply`:
+
+```
+.venv\Scripts\python.exe -m lifecrm health retract --source-file "export.zip"
+.venv\Scripts\python.exe -m lifecrm health restore --source-file "export.zip"
+```
+
+Retract sets `status='retracted'` on every record that export **last wrote**,
+which hides them from doctor, dashboards, `status` and `ask` while keeping
+every field on disk. That is the right key: a re-import overwrites
+`source_file`, so it always names the export a row's current values came
+from — naming the bad export catches both the rows it created and the rows it
+overwrote, and leaves rows an earlier export still owns alone.
+
+Two things to know:
+
+- **Re-importing does not undo a retraction.** An unchanged record classifies
+  as identical and is skipped whatever its status, so `health restore` is the
+  way back.
+- The name is the file name as `health import` reported it, not the full path.
+  Get it wrong and the error lists the files actually imported.
+
 ## What comes in (v1)
 
 | metric              | stored as                 | notes                                    |

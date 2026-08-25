@@ -33,7 +33,8 @@ provenance, closable loops, and entry links.
   `--basetemp=<scratch dir>` if the default temp root is blocked).
 - Full surface (`python -m lifecrm --help`): intake, transcribe, import,
   ingest, apply, status, doctor, export, backup, restore, migrate, sql,
-  health (import — Health Connect zips, dry-run by default),
+  health (import — Health Connect zips, dry-run by default;
+  retract/restore — undo an import by source file),
   dashboard (Datasette over a snapshot — never the live db),
   ask (cited answers; deterministic retrieval, optional local model),
   observe/connectors/imports/handles (observed tier — bulk imports that never

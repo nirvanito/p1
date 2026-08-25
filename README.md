@@ -106,6 +106,8 @@ from newer records, conflicts surfaced instead of overwritten.
 .venv/Scripts/python -m lifecrm export --format jsonl --out archive-data/
 .venv/Scripts/python -m lifecrm health import hc-export.zip           # dry-run report
 .venv/Scripts/python -m lifecrm health import hc-export.zip --apply   # then write
+.venv/Scripts/python -m lifecrm health retract --source-file hc-export.zip  # undo it
+
 .venv/Scripts/python -m lifecrm dashboard      # charts at /-/dashboards (Ctrl+C stops)
 .venv/Scripts/python -m lifecrm ask "how did I sleep last week"
 ```

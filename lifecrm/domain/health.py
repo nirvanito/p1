@@ -113,3 +113,68 @@ def refresh_modified(conn: sqlite3.Connection, row: sqlite3.Row, rec: dict) -> N
         "UPDATE health_records SET last_modified_at=?, source_file=?, "
         "updated_at=? WHERE uuid=?",
         (rec.get("last_modified_at"), rec["source_file"], now_utc(), row["uuid"]))
+
+
+# ---------------------------------------------------------------- undo
+
+def known_source_files(conn: sqlite3.Connection) -> list[str]:
+    """Export files that wrote at least one row, newest import first."""
+    return [r["source_file"] for r in conn.execute(
+        "SELECT source_file, MAX(created_at) newest FROM health_records "
+        "GROUP BY source_file ORDER BY newest DESC")]
+
+
+def _set_status(conn: sqlite3.Connection, source_file: str, *, new: str,
+                old: str, verb: str, actor: str) -> dict:
+    rows = conn.execute(
+        "SELECT metric, status FROM health_records WHERE source_file=?",
+        (source_file,)).fetchall()
+    if not rows:
+        known = known_source_files(conn)
+        raise DomainError(
+            f"no health records from '{source_file}'"
+            + (f" — imported files: {', '.join(known[:5])}" if known
+               else " — nothing has been imported yet"))
+    targets = [r for r in rows if r["status"] == old]
+    if not targets:
+        raise DomainError(f"nothing to {verb}: all {len(rows)} record(s) from "
+                          f"'{source_file}' are already {new}")
+    metrics: dict[str, int] = {}
+    for r in targets:
+        metrics[r["metric"]] = metrics.get(r["metric"], 0) + 1
+    conn.execute("UPDATE health_records SET status=?, updated_at=? "
+                 "WHERE source_file=? AND status=?",
+                 (new, now_utc(), source_file, old))
+    audit.log(conn, actor, verb, "health_records", None,
+              {"source_file": source_file, "records": len(targets),
+               "metrics": metrics})
+    return {"source_file": source_file, "records": len(targets),
+            "metrics": metrics, "status": new}
+
+
+def retract_source_file(conn: sqlite3.Connection, source_file: str,
+                        actor: str = "user") -> dict:
+    """Undo an import: every record this export last wrote becomes retracted.
+
+    Retraction is by CURRENT source_file, and that is the right key here even
+    though the observed tier retracts by the import that CREATED a row: there,
+    `import_id` is fixed at creation; here, update() and refresh_modified()
+    overwrite `source_file`, so it always names the export a row's present
+    values came from. An export that landed with a wrong unit scale is undone
+    by naming it, whether it created those rows or overwrote them — and rows
+    an earlier export still owns are left alone.
+
+    Soft, and genuinely reversible: the rows keep every field, and
+    `restore_source_file` puts them back. Re-importing does NOT undo it — an
+    unchanged record classifies as identical and is skipped whatever its
+    status.
+    """
+    return _set_status(conn, source_file, new="retracted", old="active",
+                       verb="retract", actor=actor)
+
+
+def restore_source_file(conn: sqlite3.Connection, source_file: str,
+                        actor: str = "user") -> dict:
+    """Put back what retract_source_file hid."""
+    return _set_status(conn, source_file, new="active", old="retracted",
+                       verb="restore", actor=actor)

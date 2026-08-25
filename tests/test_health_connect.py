@@ -262,6 +262,103 @@ def test_zip_apply_reimport_update_conflict(cfg, conn, hc_zip, tmp_path):
     assert row["value"] == 85.0                               # kept existing
 
 
+# ---------------------------------------------------------------- undo
+
+# `health_records.status='retracted'` was in the schema from v3 and filtered on
+# by doctor, dashboards and ask — but nothing ever wrote it, so a bad unit
+# conversion could only be undone by restoring the whole database.
+
+def _import(conn, cfg, z):
+    scan = hc.read_export(z, cfg)
+    hc.apply_plan(conn, hc.build_plan(conn, scan["records"]))
+    conn.commit()
+    return scan["source_file"]
+
+
+def test_retract_hides_records_without_deleting_them(cfg, conn, hc_zip):
+    from lifecrm.doctor import run_checks
+    name = _import(conn, cfg, hc_zip)
+
+    out = health.retract_source_file(conn, name)
+    conn.commit()
+
+    assert out["records"] == 8
+    assert sum(out["metrics"].values()) == 8
+    assert conn.execute("SELECT COUNT(*) c FROM health_records "
+                        "WHERE status='active'").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM health_records").fetchone()["c"] == 8
+    assert conn.execute("SELECT COUNT(*) c FROM audit_log WHERE action='retract' "
+                        "AND table_name='health_records'").fetchone()["c"] == 1
+    assert run_checks(conn, cfg)["failures"] == 0
+
+
+def test_retract_and_restore_round_trip(cfg, conn, hc_zip):
+    name = _import(conn, cfg, hc_zip)
+    before = {r["uuid"]: (r["value"], r["unit"], r["journal_date"]) for r in
+              conn.execute("SELECT uuid, value, unit, journal_date FROM health_records")}
+
+    health.retract_source_file(conn, name)
+    out = health.restore_source_file(conn, name)
+    conn.commit()
+
+    assert out["records"] == 8
+    after = {r["uuid"]: (r["value"], r["unit"], r["journal_date"]) for r in
+             conn.execute("SELECT uuid, value, unit, journal_date FROM health_records "
+                          "WHERE status='active'")}
+    assert after == before, "restore must return the rows unchanged"
+
+
+def test_retract_only_touches_the_named_file(cfg, conn, hc_zip):
+    """The bad export goes; what another export owns stays."""
+    name = _import(conn, cfg, hc_zip)
+    health.insert(conn, {"metric": "weight", "journal_date": "2026-07-20",
+                         "started_at": "2026-07-20T09:00:00Z", "value": 84.0,
+                         "unit": "kg", "external_id": "ab" * 16,
+                         "source_file": "older-export.zip"})
+    conn.commit()
+
+    health.retract_source_file(conn, name)
+    conn.commit()
+
+    live = [r["source_file"] for r in conn.execute(
+        "SELECT source_file FROM health_records WHERE status='active'")]
+    assert live == ["older-export.zip"]
+
+
+def test_retracting_an_unknown_file_names_the_known_ones(cfg, conn, hc_zip):
+    _import(conn, cfg, hc_zip)
+    with pytest.raises(DomainError, match="health_connect_export.zip"):
+        health.retract_source_file(conn, "typo.zip")
+
+
+def test_retract_and_restore_are_refused_when_there_is_nothing_to_do(cfg, conn, hc_zip):
+    name = _import(conn, cfg, hc_zip)
+    health.retract_source_file(conn, name)
+    with pytest.raises(DomainError, match="already retracted"):
+        health.retract_source_file(conn, name)
+
+    health.restore_source_file(conn, name)
+    with pytest.raises(DomainError, match="already active"):
+        health.restore_source_file(conn, name)
+
+
+def test_reimporting_does_not_undo_a_retraction(cfg, conn, hc_zip):
+    """The sharp edge, pinned: an unchanged record classifies as identical and
+    is skipped whatever its status, so `health restore` is the only way back."""
+    name = _import(conn, cfg, hc_zip)
+    health.retract_source_file(conn, name)
+    conn.commit()
+
+    _import(conn, cfg, hc_zip)
+    assert conn.execute("SELECT COUNT(*) c FROM health_records "
+                        "WHERE status='active'").fetchone()["c"] == 0
+
+    health.restore_source_file(conn, name)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) c FROM health_records "
+                        "WHERE status='active'").fetchone()["c"] == 8
+
+
 def test_domain_validation(conn):
     base = {"metric": "weight", "journal_date": "2026-07-27",
             "started_at": "2026-07-27T09:00:00Z", "value": 84.5, "unit": "kg",
@@ -361,3 +458,41 @@ def test_cli_dry_run_then_apply(tmp_path, monkeypatch):
     assert manifest["tables"]["health_records"] == 8
     first = (out / "health_records.jsonl").read_text(encoding="utf-8").splitlines()[0]
     assert json.loads(first)["external_id"]                   # uuid hex survives export
+
+
+def test_cli_retract_and_restore(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from lifecrm.cli import app
+    runner = CliRunner()
+
+    cli_project(tmp_path, monkeypatch)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    db = tmp_path / "healthconnect.db"
+    make_hc_db(db)
+    z = tmp_path / "hc-export.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.write(db, "healthconnect.db")
+    assert runner.invoke(app, ["health", "import", str(z), "--apply"]).exit_code == 0
+
+    def count(status):
+        r = runner.invoke(app, ["sql", "SELECT COUNT(*) AS c FROM health_records "
+                                f"WHERE status='{status}'", "--json"])
+        return json.loads(r.output)[0]["c"]
+
+    r = runner.invoke(app, ["health", "retract", "--source-file", "nope.zip"])
+    assert r.exit_code == 1
+    assert "hc-export.zip" in r.output          # the error names what IS imported
+    assert count("active") == 8
+
+    r = runner.invoke(app, ["health", "retract", "--source-file", "hc-export.zip"])
+    assert r.exit_code == 0, r.output
+    assert "retracted 8 health record(s)" in r.output
+    assert count("active") == 0 and count("retracted") == 8
+    assert runner.invoke(app, ["doctor"]).exit_code == 0
+
+    r = runner.invoke(app, ["health", "restore", "--source-file", "hc-export.zip",
+                            "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["records"] == 8
+    assert count("active") == 8
