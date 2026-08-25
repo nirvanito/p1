@@ -1,9 +1,13 @@
 import json
 
 import pytest
+from conftest import golden_draft
 
-from lifecrm.domain import corrections, entities, entries, measurements
+from lifecrm.domain import corrections, entities, entries, measurements, reconcile
 from lifecrm.domain.util import DomainError
+from lifecrm.doctor import run_checks
+from lifecrm.importer import import_text
+from test_reconcile import _ingest
 
 
 def _entry(conn, title="Lunch", cat="food", kind="event"):
@@ -88,6 +92,106 @@ def test_merge_entries_moves_everything(conn):
                         "AND change_kind='merge_out'", (a["uuid"],)).fetchone()["c"] == 1
     assert conn.execute("SELECT COUNT(*) c FROM entry_revisions WHERE entry_uuid=? "
                         "AND change_kind='merge_in'", (b["uuid"],)).fetchone()["c"] == 1
+
+
+# --- merge and provenance ---------------------------------------------------
+# A real day is one voice note yielding many entries, so merging two of them
+# means src and dst SHARE a source. entry_sources' primary key is
+# (entry_id, source_id), so the old move (UPDATE OR IGNORE + DELETE) dropped
+# src's row on the floor together with the original_json in it, and doctor's
+# entries_have_provenance failed for the superseded entry from then on.
+
+def _seeded_pair(conn, cfg):
+    """Two real entries off one real source, with real provenance."""
+    reconcile.apply_diff(conn, _ingest(conn, cfg, golden_draft()))
+    conn.commit()
+    rows = conn.execute("SELECT id, uuid FROM entries ORDER BY id").fetchall()
+    return rows[0], rows[1]
+
+
+def _provenance(conn, entry_id):
+    return {r["source_id"]: dict(r) for r in conn.execute(
+        "SELECT * FROM entry_sources WHERE entry_id=?", (entry_id,))}
+
+
+def test_merge_keeps_the_source_entrys_provenance(conn, cfg):
+    src, dst = _seeded_pair(conn, cfg)
+    before = _provenance(conn, src["id"])
+    assert before, "fixture should give src provenance"
+    assert any(r["original_json"] for r in before.values())
+
+    corrections.merge_entries(conn, src["uuid"], dst["uuid"])
+    conn.commit()
+
+    after = _provenance(conn, src["id"])
+    assert after, "merge destroyed the superseded entry's provenance"
+    assert after == before, "merge altered the superseded entry's provenance"
+    report = run_checks(conn, cfg)
+    assert report["failures"] == 0, [c for c in report["checks"]
+                                     if c["status"] == "fail"]
+
+
+def test_merge_does_not_overwrite_the_destinations_own_provenance(conn, cfg):
+    """Copying must not clobber: dst's row for the shared source is its own
+    extraction, with its own offsets and original_json."""
+    src, dst = _seeded_pair(conn, cfg)
+    before = _provenance(conn, dst["id"])
+
+    corrections.merge_entries(conn, src["uuid"], dst["uuid"])
+    conn.commit()
+
+    assert _provenance(conn, dst["id"]) == before
+
+
+def test_merge_gives_the_destination_the_sources_it_lacked(conn, cfg):
+    """The other half of copy-don't-move: when src cites a source dst does not
+    (a second note about the same event), dst absorbs that citation."""
+    src, dst = _seeded_pair(conn, cfg)
+    second = import_text(conn, cfg, "A second note about the same morning.",
+                         journal_date="2026-07-27", source_type="pasted")
+    entries.add_provenance(conn, entry_id=src["id"], source_id=second["source_id"],
+                           char_start=2, char_end=8,
+                           original_json={"title": "from the second note"})
+    conn.commit()
+
+    corrections.merge_entries(conn, src["uuid"], dst["uuid"])
+    conn.commit()
+
+    copied = _provenance(conn, dst["id"])[second["source_id"]]
+    assert (copied["char_start"], copied["char_end"]) == (2, 8)
+    assert json.loads(copied["original_json"])["title"] == "from the second note"
+    assert second["source_id"] in _provenance(conn, src["id"]), "src kept its own"
+    assert run_checks(conn, cfg)["failures"] == 0
+
+
+def test_merge_copies_observation_provenance(conn, cfg, tmp_path):
+    """v4 provenance travels the same way. The entry_observations row is made
+    by hand because nothing writes one yet — but doctor already accepts it as
+    an entry's only provenance, so merge has to carry it."""
+    from conftest import FIXTURES
+
+    from lifecrm.connectors import ai_chat
+    from lifecrm.domain import observations as obs
+
+    src, dst = _seeded_pair(conn, cfg)
+    export = tmp_path / "conversations.json"
+    export.write_bytes((FIXTURES / "ai_chat_claude.json").read_bytes())
+    scan = ai_chat.scan(export, cfg)
+    obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
+    obs_id = conn.execute("SELECT id FROM observations ORDER BY id LIMIT 1"
+                          ).fetchone()["id"]
+    conn.execute("INSERT INTO entry_observations (entry_id, observation_id, "
+                 "char_start, char_end) VALUES (?, ?, 3, 9)", (src["id"], obs_id))
+    conn.commit()
+
+    corrections.merge_entries(conn, src["uuid"], dst["uuid"])
+    conn.commit()
+
+    rows = {r["entry_id"]: dict(r) for r in conn.execute(
+        "SELECT * FROM entry_observations WHERE observation_id=?", (obs_id,))}
+    assert set(rows) == {src["id"], dst["id"]}
+    assert (rows[dst["id"]]["char_start"], rows[dst["id"]]["char_end"]) == (3, 9)
+    assert run_checks(conn, cfg)["failures"] == 0
 
 
 def test_merge_requires_active(conn):

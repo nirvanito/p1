@@ -119,8 +119,17 @@ def restore_entry(conn: sqlite3.Connection, entry_uuid: str, actor: str = "user"
 
 def merge_entries(conn: sqlite3.Connection, src_uuid: str, dst_uuid: str,
                   actor: str = "user", note: str | None = None) -> dict:
-    """Merge duplicate entries: src's mentions, measurements, and provenance move
-    to dst; src becomes status='superseded' pointing at dst. Nothing is deleted."""
+    """Merge duplicate entries: src's mentions and measurements move to dst,
+    src's provenance is COPIED to dst, and src becomes status='superseded'
+    pointing at dst.
+
+    Moved rows are recoverable — the merge_out revision snapshots src's
+    entities and measurements before they go. Provenance is not in that
+    snapshot, which is why it is copied instead: entry_sources' primary key is
+    (entry_id, source_id), so moving a shared source — the normal case, one
+    voice note yielding many entries — silently destroys src's row and the
+    original_json in it, and leaves the superseded entry failing doctor's
+    entries_have_provenance forever. dst gains only the sources it lacked."""
     if src_uuid == dst_uuid:
         raise DomainError("cannot merge an entry into itself")
     src = entries.get_by_uuid(conn, src_uuid)
@@ -137,9 +146,18 @@ def merge_entries(conn: sqlite3.Connection, src_uuid: str, dst_uuid: str,
     conn.execute("DELETE FROM mentions WHERE entry_id=?", (src["id"],))
     conn.execute("UPDATE measurements SET entry_id=? WHERE entry_id=?",
                  (dst["id"], src["id"]))
-    conn.execute("UPDATE OR IGNORE entry_sources SET entry_id=? WHERE entry_id=?",
-                 (dst["id"], src["id"]))
-    conn.execute("DELETE FROM entry_sources WHERE entry_id=?", (src["id"],))
+    conn.execute(
+        "INSERT OR IGNORE INTO entry_sources (entry_id, source_id, transcript_id, "
+        "segment_start, segment_end, char_start, char_end, extraction_run_id, "
+        "original_json, confirmed_json) "
+        "SELECT ?, source_id, transcript_id, segment_start, segment_end, "
+        "char_start, char_end, extraction_run_id, original_json, confirmed_json "
+        "FROM entry_sources WHERE entry_id=?", (dst["id"], src["id"]))
+    conn.execute(
+        "INSERT OR IGNORE INTO entry_observations "
+        "(entry_id, observation_id, char_start, char_end) "
+        "SELECT ?, observation_id, char_start, char_end "
+        "FROM entry_observations WHERE entry_id=?", (dst["id"], src["id"]))
     conn.execute(
         "UPDATE entries SET status='superseded', superseded_by=?, updated_at=? WHERE id=?",
         (dst["id"], now, src["id"]))

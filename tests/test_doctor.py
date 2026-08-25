@@ -1,10 +1,15 @@
 """Each check must actually fire. Direct SQL is correct here — the tests
 simulate exactly the corruption the domain layer must never produce."""
 
-from conftest import golden_draft
+import pytest
+from conftest import FIXTURES, golden_draft
 
-from lifecrm.domain import corrections, entities, entries, links, reconcile
+from lifecrm import health_connect as hc
+from lifecrm.connectors import ai_chat
+from lifecrm.domain import (corrections, entities, entries, links,
+                            measurements, observations as obs, reconcile)
 from lifecrm.doctor import run_checks
+from test_health_connect import make_hc_db
 from test_reconcile import _ingest
 
 
@@ -157,3 +162,165 @@ def test_links_resolve_check_passes_after_purge(conn, cfg):
     report = run_checks(conn, cfg)
     assert _status(report, "links_resolve") == "ok"
     assert conn.execute("SELECT COUNT(*) c FROM entry_links").fetchone()["c"] == 0
+
+
+# ---------------------------------------------------------------- every op
+
+# The invariants are only worth having if every write path preserves them.
+# `entry merge` shipped destroying entry_sources rows and left doctor failing
+# forever after; nothing noticed because no test ran doctor after a merge.
+# So: seed a real day, run one domain operation, and demand a green report —
+# once per operation, for every operation that writes.
+
+def _uuids(conn):
+    return [r["uuid"] for r in conn.execute("SELECT uuid FROM entries ORDER BY id")]
+
+
+def _ids(conn):
+    return [r["id"] for r in conn.execute("SELECT id FROM entries ORDER BY id")]
+
+
+def _person_ids(conn):
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM entities WHERE type='person' AND status='active' ORDER BY id")]
+
+
+def _op_edit(conn, cfg, tmp_path):
+    corrections.edit_entry(conn, _uuids(conn)[0],
+                           {"title": "Edited title", "secondary_categories": ["social"]})
+
+
+def _op_retract(conn, cfg, tmp_path):
+    corrections.retract_entry(conn, _uuids(conn)[0], reason="did not happen")
+
+
+def _op_restore(conn, cfg, tmp_path):
+    u = _uuids(conn)[0]
+    corrections.retract_entry(conn, u, reason="did not happen")
+    corrections.restore_entry(conn, u)
+
+
+def _op_close(conn, cfg, tmp_path):
+    corrections.close_entry(conn, _uuids(conn)[0], "done")
+
+
+def _op_reopen(conn, cfg, tmp_path):
+    u = _uuids(conn)[0]
+    corrections.close_entry(conn, u, "done")
+    corrections.reopen_entry(conn, u)
+
+
+def _op_entry_merge(conn, cfg, tmp_path):
+    a, b = _uuids(conn)[:2]
+    corrections.merge_entries(conn, a, b)
+
+
+def _op_entity_merge(conn, cfg, tmp_path):
+    people = _person_ids(conn)
+    assert len(people) >= 2, "fixture should create at least two people"
+    entities.merge(conn, people[0], people[1])
+
+
+def _op_entity_alias(conn, cfg, tmp_path):
+    entities.add_alias(conn, _person_ids(conn)[0], "Danna")
+
+
+def _op_entity_rename(conn, cfg, tmp_path):
+    entities.rename(conn, _person_ids(conn)[0], "Dana R.")
+
+
+def _op_link_add(conn, cfg, tmp_path):
+    a, b = _uuids(conn)[:2]
+    links.add(conn, a, b, "relates", note="same morning")
+
+
+def _op_link_remove(conn, cfg, tmp_path):
+    a, b = _uuids(conn)[:2]
+    links.add(conn, a, b, "relates")
+    links.remove(conn, a, b, "relates")
+
+
+def _op_measurement_add(conn, cfg, tmp_path):
+    measurements.add(conn, entry_id=_ids(conn)[0], metric="duration",
+                     numeric_value=45, unit="min")
+
+
+def _op_measurement_retract(conn, cfg, tmp_path):
+    m = measurements.add(conn, entry_id=_ids(conn)[0], metric="duration",
+                         numeric_value=45, unit="min")
+    measurements.retract(conn, m["uuid"])
+
+
+def _op_purge_day(conn, cfg, tmp_path):
+    corrections.purge_day(conn, "2026-07-27")
+
+
+def _op_health_import(conn, cfg, tmp_path):
+    z = tmp_path / "hc_export.zip"
+    db = tmp_path / "healthconnect.db"
+    make_hc_db(db)
+    import zipfile
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.write(db, "healthconnect.db")
+    scan = hc.read_export(z, cfg)
+    hc.apply_plan(conn, hc.build_plan(conn, scan["records"]))
+
+
+def _ai_chat_scan(cfg, tmp_path):
+    export = tmp_path / "conversations.json"
+    export.write_bytes((FIXTURES / "ai_chat_claude.json").read_bytes())
+    return ai_chat.scan(export, cfg)
+
+
+def _op_observe_apply(conn, cfg, tmp_path):
+    scan = _ai_chat_scan(cfg, tmp_path)
+    obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
+
+
+def _op_observe_retract(conn, cfg, tmp_path):
+    scan = _ai_chat_scan(cfg, tmp_path)
+    result = obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
+    obs.retract_import(conn, result["import_uuid"])
+
+
+def _op_handle_link(conn, cfg, tmp_path):
+    scan = _ai_chat_scan(cfg, tmp_path)
+    obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
+    handle = conn.execute("SELECT kind, value FROM entity_handles LIMIT 1").fetchone()
+    obs.link_handle(conn, handle["kind"], handle["value"], _person_ids(conn)[0])
+
+
+DOMAIN_OPS = {
+    "entry edit": _op_edit,
+    "entry retract": _op_retract,
+    "entry restore": _op_restore,
+    "entry close": _op_close,
+    "entry reopen": _op_reopen,
+    "entry merge": _op_entry_merge,
+    "entity merge": _op_entity_merge,
+    "entity alias-add": _op_entity_alias,
+    "entity rename": _op_entity_rename,
+    "link add": _op_link_add,
+    "link rm": _op_link_remove,
+    "measurement add": _op_measurement_add,
+    "measurement retract": _op_measurement_retract,
+    "admin purge-day": _op_purge_day,
+    "health import": _op_health_import,
+    "observe apply": _op_observe_apply,
+    "observe retract": _op_observe_retract,
+    "handles link": _op_handle_link,
+}
+
+
+@pytest.mark.parametrize("op", list(DOMAIN_OPS))
+def test_doctor_stays_green_after(op, conn, cfg, tmp_path):
+    _seed(conn, cfg)
+    assert run_checks(conn, cfg)["failures"] == 0, "seed itself is not green"
+
+    DOMAIN_OPS[op](conn, cfg, tmp_path)
+    conn.commit()
+
+    report = run_checks(conn, cfg)
+    assert report["failures"] == 0, (
+        f"{op} broke: " + str([(c["check"], c.get("detail"))
+                               for c in report["checks"] if c["status"] == "fail"]))

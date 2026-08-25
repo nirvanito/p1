@@ -198,6 +198,33 @@ def test_entry_show_provenance_excerpt(tmp_path, monkeypatch):
     assert excerpt and excerpt in sample_text()
 
 
+def test_merge_keeps_the_superseded_entrys_excerpt(tmp_path, monkeypatch):
+    """End of the merge-provenance story, at the surface the user sees: after
+    a merge the superseded entry still shows where it came from, and doctor
+    still exits 0."""
+    root = _setup(tmp_path, monkeypatch)
+    _ingest_golden(root)
+    src = _sql_json("SELECT uuid FROM entries WHERE title LIKE 'Breakfast%'")[0]["uuid"]
+    dst = _sql_json("SELECT uuid FROM entries WHERE title LIKE 'Dinner%'")[0]["uuid"]
+
+    r = runner.invoke(app, ["entry", "merge", src, dst])
+    assert r.exit_code == 0, r.output
+
+    r = runner.invoke(app, ["entry", "show", src, "--json"])
+    assert r.exit_code == 0, r.output
+    snap = json.loads(r.output)
+    assert snap["status"] == "superseded"
+    excerpt = snap["provenance"][0].get("transcript_excerpt", "")
+    assert excerpt and excerpt in sample_text()
+
+    r = runner.invoke(app, ["entry", "show", src])
+    assert r.exit_code == 0, r.output
+    assert "from transcript:" in r.output
+
+    r = runner.invoke(app, ["doctor"])
+    assert r.exit_code == 0, r.output
+
+
 def test_backup_restore_round_trip(tmp_path, monkeypatch):
     root = _setup(tmp_path, monkeypatch)
     _ingest_golden(root)

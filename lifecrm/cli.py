@@ -1454,7 +1454,10 @@ def entry_restore(entry_uuid: str) -> None:
 @entry_app.command("merge")
 def entry_merge(src_uuid: str, dst_uuid: str,
                 note: str = typer.Option(None, "--note")) -> None:
-    """Merge duplicate entries: SRC's data moves to DST, SRC becomes superseded."""
+    """Merge duplicate entries: SRC's data moves to DST, SRC becomes superseded.
+
+    SRC keeps its own provenance — `entry show SRC` still names the passage it
+    came from — and DST gains any source SRC cited that DST did not."""
     cfg = _cfg()
     conn = _conn(cfg)
     _commit_or_rollback(
