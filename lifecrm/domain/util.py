@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -17,6 +18,14 @@ def now_utc() -> str:
 
 def new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def canonical_json(detail: dict | None) -> str | None:
+    """Stable JSON for stored detail blobs: sorted keys, no ASCII escaping.
+    Deterministic so an unchanged record compares equal on re-import."""
+    if detail is None or detail == {}:
+        return None
+    return json.dumps(detail, sort_keys=True, ensure_ascii=False)
 
 
 def slugify(name: str) -> str:

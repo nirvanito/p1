@@ -802,6 +802,310 @@ def health_import(
                   if summary["conflicts"] else ""))
 
 
+# ---------------------------------------------------------------- observed tier
+
+imports_app = typer.Typer(help="Importer runs: what came in, and how to undo it.",
+                          no_args_is_help=True)
+handles_app = typer.Typer(help="Machine identifiers seen in imports — and who they are.",
+                          no_args_is_help=True)
+app.add_typer(imports_app, name="imports")
+app.add_typer(handles_app, name="handles")
+
+
+def _observe_summary(scan: dict, plan: dict, prior=None) -> dict:
+    return {"connector": scan["connector"], "account": scan.get("account"),
+            "source_file": scan.get("source_file"),
+            "source_hash": scan.get("source_hash"),
+            "streams": plan["streams"], "scanned": len(scan["records"]),
+            "new": len(plan["new"]), "updated": len(plan["updates"]),
+            "refreshed": len(plan["refreshed"]), "identical": plan["identical"],
+            "duplicates_in_export": plan["dup_incoming"],
+            "conflicts": plan["conflicts"], "invalid": plan["invalid"],
+            "handles": scan.get("handles", []), "unmapped": scan.get("unmapped", []),
+            "skipped": scan.get("skipped", []),
+            "previously_imported_as": prior["uuid"] if prior else None}
+
+
+def _split_handle(handle: str) -> tuple[str, str]:
+    kind, sep, value = handle.partition(":")
+    if not sep or not kind.strip() or not value.strip():
+        _fail(f"handle must be 'kind:value' (e.g. email:jake@acme.com), got '{handle}'")
+    return kind.strip(), value.strip()
+
+
+@app.command()
+def connectors() -> None:
+    """List available connectors for the observed tier and their last import."""
+    from .connectors import base as conn_base
+    cfg = _cfg()
+    reg = conn_base.registry()
+    conn = _conn(cfg, readonly=True)
+    try:
+        last = {r["connector"]: r for r in conn.execute(
+            "SELECT connector, MAX(started_at) started_at, COUNT(*) runs "
+            "FROM imports WHERE status='applied' GROUP BY connector")}
+        counts = {r["stream"]: r["c"] for r in conn.execute(
+            "SELECT stream, COUNT(*) c FROM observations WHERE status='active' "
+            "GROUP BY stream")}
+    finally:
+        conn.close()
+    for cname in sorted(reg):
+        c = reg[cname]
+        row = last.get(cname)
+        when = (f"last import {row['started_at'][:10]} ({row['runs']} run(s))"
+                if row else "never imported")
+        typer.echo(f"{cname:12} {when}")
+        for s in c.streams:
+            typer.echo(f"  {s:16} {counts.get(s, 0)} active observation(s)")
+
+
+@app.command()
+def observe(
+    connector: str = typer.Argument(..., help="Connector name — see: lifecrm connectors"),
+    target: str = typer.Argument(..., help="Export .zip, directory, or .json file"),
+    apply_changes: bool = typer.Option(False, "--apply",
+                                       help="Write; default is a dry-run report"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Import an export into the observed tier (bulk records, no review gate).
+
+    Dry-run by default: read the per-stream counts, date spans and sample rows
+    — a wrong date or a misparsed body is visible there — then re-run with
+    --apply. Re-importing is always safe: records dedupe on the source
+    system's own ids, and only strictly newer records update an existing row.
+
+    Nothing here can touch entries, measurements or mentions. Observed records
+    are cited, never asserted.
+    """
+    from .connectors import base as conn_base
+    from .domain import observations as obs
+    cfg = _cfg()
+    p = Path(target)
+    if not p.exists():
+        _fail(f"not found: {p}")
+    try:
+        c = conn_base.get(connector)
+        scan = c.scan(p, cfg)
+    except DomainError as e:
+        _fail(str(e))
+
+    conn = _conn(cfg)
+    try:
+        prior = None
+        if scan.get("source_hash"):
+            prior = conn.execute(
+                "SELECT uuid, started_at FROM imports WHERE connector=? AND "
+                "source_hash=? AND status='applied' ORDER BY id DESC LIMIT 1",
+                (scan["connector"], scan["source_hash"])).fetchone()
+        try:
+            plan = obs.build_plan(conn, scan)
+        except DomainError as e:
+            _fail(str(e))
+
+        if not apply_changes:
+            conn.rollback()
+            if as_json:
+                _echo_json(_observe_summary(scan, plan, prior))
+            else:
+                for line in c.report_lines(scan, plan):
+                    typer.echo(line)
+                if prior:
+                    typer.echo(f"  note: this exact file was already imported on "
+                               f"{prior['started_at'][:10]} ({prior['uuid'][:8]})")
+                typer.echo("dry run — nothing written. Re-run with --apply to write.")
+            return
+
+        try:
+            summary = obs.apply_plan(conn, scan, plan)
+            conn.commit()
+        except DomainError as e:
+            conn.rollback()
+            _fail(str(e))
+    finally:
+        conn.close()
+
+    if as_json:
+        _echo_json({**_observe_summary(scan, plan, prior), "applied": summary})
+        return
+    for line in c.report_lines(scan, plan):
+        typer.echo(line)
+    typer.echo(f"applied: {summary['added']} added, {summary['updated']} updated, "
+               f"{summary['refreshed']} refreshed; {summary['identical']} identical "
+               f"skipped"
+               + (f"; {summary['conflicts']} conflict(s) kept existing"
+                  if summary["conflicts"] else ""))
+    typer.echo(f"import {summary['import_uuid']} — undo with: "
+               f"python -m lifecrm imports retract {summary['import_uuid']}")
+    unresolved = _unresolved_count(cfg)
+    if unresolved:
+        typer.echo(f"{unresolved} unresolved handle(s) — see: "
+                   f"python -m lifecrm handles list")
+
+
+def _unresolved_count(cfg: Config) -> int:
+    conn = _conn(cfg, readonly=True)
+    try:
+        return conn.execute("SELECT COUNT(*) c FROM entity_handles "
+                            "WHERE entity_id IS NULL AND ignored=0").fetchone()["c"]
+    finally:
+        conn.close()
+
+
+@imports_app.command("list")
+def imports_list(
+    limit: int = typer.Option(20, "--limit"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Recent importer runs, newest first."""
+    cfg = _cfg()
+    conn = _conn(cfg, readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT i.*, (SELECT COUNT(*) FROM observations o "
+            "WHERE o.import_id=i.id AND o.status='active') live "
+            "FROM imports i ORDER BY i.id DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        conn.close()
+    if as_json:
+        _echo_json([dict(r) for r in rows])
+        return
+    if not rows:
+        typer.echo("no imports yet — see: python -m lifecrm connectors")
+        return
+    for r in rows:
+        counts = json.loads(r["counts_json"]) if r["counts_json"] else {}
+        detail = (f"{counts.get('added', 0)} added, {counts.get('updated', 0)} "
+                  f"updated" if counts else r["status"])
+        typer.echo(f"{r['uuid'][:8]}  {r['started_at'][:16].replace('T', ' ')}  "
+                   f"{r['connector']:10} {r['status']:9} {detail}  "
+                   f"({r['live']} live)  {r['source_file'] or ''}")
+
+
+@imports_app.command("retract")
+def imports_retract(
+    import_uuid: str = typer.Argument(..., help="Import uuid — see: lifecrm imports list"),
+) -> None:
+    """Undo an import: its observations become status='retracted'.
+
+    Coarse by design, and reversible only by re-importing. Rows this import
+    merely refreshed or updated stay — import_id names the run that CREATED a
+    row, so retracting a later snapshot cannot delete what an earlier one
+    contributed.
+    """
+    from .domain import observations as obs
+    cfg = _cfg()
+    conn = _conn(cfg)
+    result = _commit_or_rollback(conn, lambda: obs.retract_import(conn, import_uuid))
+    typer.echo(f"retracted {result['retracted']} observation(s) from "
+               f"{result['connector']} import {import_uuid[:8]} "
+               f"({result['source_file'] or 'no file'})")
+
+
+@handles_app.command("list")
+def handles_list(
+    show_all: bool = typer.Option(False, "--all", help="Include resolved and ignored"),
+    limit: int = typer.Option(50, "--limit"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Machine identifiers seen in imports, noisiest first.
+
+    This is the review queue that makes the observed tier answerable. Linking
+    ONE handle to an entity resolves every observation that ever referenced
+    it — past and future — with no backfill pass.
+    """
+    cfg = _cfg()
+    conn = _conn(cfg, readonly=True)
+    try:
+        if show_all:
+            rows = conn.execute(
+                "SELECT h.*, e.name entity_name FROM entity_handles h "
+                "LEFT JOIN entities e ON e.id=h.entity_id "
+                "ORDER BY h.observation_count DESC, h.kind, h.value LIMIT ?",
+                (limit,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT h.*, NULL entity_name FROM entity_handles h "
+                "WHERE h.entity_id IS NULL AND h.ignored=0 "
+                "ORDER BY h.observation_count DESC, h.kind, h.value LIMIT ?",
+                (limit,)).fetchall()
+    finally:
+        conn.close()
+    if as_json:
+        _echo_json([dict(r) for r in rows])
+        return
+    if not rows:
+        typer.echo("no unresolved handles" if not show_all else "no handles yet")
+        return
+    for r in rows:
+        if r["entity_name"]:
+            who = f"-> {r['entity_name']} (id {r['entity_id']})"
+        elif r["ignored"]:
+            who = "-> ignored"
+        else:
+            who = "-> UNRESOLVED"
+        span = f"{r['first_seen_at'][:10]}..{r['last_seen_at'][:10]}"
+        typer.echo(f"{r['observation_count']:6}  {r['kind']}:{r['value']}  "
+                   f"{who}  {span}  {r['display_name'] or ''}")
+    if not show_all:
+        typer.echo("")
+        typer.echo("link one with: python -m lifecrm handles link "
+                   "<kind:value> --entity <id>")
+
+
+@handles_app.command("link")
+def handles_link(
+    handle: str = typer.Argument(..., help="kind:value, e.g. email:jake@acme.com"),
+    entity: int = typer.Option(None, "--entity", help="Existing entity id"),
+    new_name: str = typer.Option(None, "--new", help="Create a new entity with this name"),
+    new_type: str = typer.Option("person", "--type", help="Type for --new"),
+) -> None:
+    """Resolve one handle to one entity — every observation follows immediately."""
+    from .domain import observations as obs
+    kind, value = _split_handle(handle)
+    if (entity is None) == (new_name is None):
+        _fail("give exactly one of --entity <id> or --new <name>")
+    cfg = _cfg()
+    conn = _conn(cfg)
+
+    def _do():
+        target_id = entity
+        created = None
+        if new_name is not None:
+            created = entities_mod.create(conn, new_type, new_name)
+            target_id = created["id"]
+        obs.link_handle(conn, kind, value, target_id)
+        return target_id, created
+
+    target_id, created = _commit_or_rollback(conn, _do)
+    if created:
+        typer.echo(f"created {new_type} \"{created['name']}\" (id {created['id']})")
+    conn2 = _conn(cfg, readonly=True)
+    try:
+        n = conn2.execute(
+            "SELECT COUNT(*) c FROM observation_participants p "
+            "JOIN observations o ON o.id=p.observation_id "
+            "WHERE p.handle_kind=? AND p.handle_value=? AND o.status='active'",
+            (kind, value)).fetchone()["c"]
+    finally:
+        conn2.close()
+    typer.echo(f"{kind}:{value} -> entity {target_id}; {n} observation(s) now "
+               f"attributed")
+
+
+@handles_app.command("ignore")
+def handles_ignore(
+    handle: str = typer.Argument(..., help="kind:value to stop asking about"),
+) -> None:
+    """Mark a handle as never worth resolving (spam, delivery notifications).
+    Reversible: linking it later clears the flag."""
+    from .domain import observations as obs
+    kind, value = _split_handle(handle)
+    cfg = _cfg()
+    conn = _conn(cfg)
+    _commit_or_rollback(conn, lambda: obs.ignore_handle(conn, kind, value))
+    typer.echo(f"ignoring {kind}:{value}")
+
+
 # ---------------------------------------------------------------- backup / restore
 
 @app.command()

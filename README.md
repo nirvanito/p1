@@ -110,6 +110,15 @@ from newer records, conflicts surfaced instead of overwritten.
 .venv/Scripts/python -m lifecrm ask "how did I sleep last week"
 ```
 
+AI chat history (Claude / ChatGPT exports — see [docs/ai-chat.md](docs/ai-chat.md)):
+
+```bash
+.venv/Scripts/python -m lifecrm observe ai_chat claude-export.zip           # dry run
+.venv/Scripts/python -m lifecrm observe ai_chat claude-export.zip --apply
+.venv/Scripts/python -m lifecrm handles list                                # who is who
+.venv/Scripts/python -m lifecrm imports retract <uuid>                      # undo a run
+```
+
 Loops and threads:
 
 ```bash
@@ -181,11 +190,18 @@ interface for hooking up a chat UI or voice front-end later.
 
 ## How it's built
 
-- **SQLite is canonical** (`data\lifecrm.db`, WAL, schema v3 with a
+- **SQLite is canonical** (`data\lifecrm.db`, WAL, schema v4 with a
   transactional migration runner in `lifecrm/migrations/`). Sources,
   transcripts, and segments are immutable; entries carry stable UUIDs and are
   corrected via revisions, retraction, closure, and merges — never
   destructive rewrites.
+- **Two trust tiers, one rule**: the confirmed tier (`entries`,
+  `measurements`, `mentions`) is everything you reviewed through `/log`; the
+  observed tier (`observations`, `health_records`) is bulk-imported at a scale
+  nobody reviews — cited, never asserted, and structurally unable to write to
+  the confirmed tables. `lifecrm observe` imports it, `imports retract` undoes
+  it, and `handles link` attributes a whole decade of messages in one decision.
+  See [docs/observed-tier.md](docs/observed-tier.md).
 - **Two metric layers, one rule**: `measurements` holds what the journal
   said; `health_records` holds what sensors recorded (Health Connect
   import), keyed on the source system's own record ids so re-imports dedupe,
@@ -209,7 +225,7 @@ interface for hooking up a chat UI or voice front-end later.
 - **Privacy**: personal data never enters git (test-enforced); OneDrive gets
   audio + DB snapshots — that's cloud storage, read `docs/privacy.md`.
 
-Tests: `.venv/Scripts/python -m pytest tests -q` (224 tests).
+Tests: `.venv/Scripts/python -m pytest tests -q`.
 
 ## Roadmap (deliberately not built yet)
 

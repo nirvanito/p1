@@ -44,6 +44,8 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
     entity_uuid = {r["id"]: r["uuid"] for r in q("SELECT id, uuid FROM entities")}
     source_uuid = {r["id"]: r["uuid"] for r in q("SELECT id, uuid FROM sources")}
     run_uuid = {r["id"]: r["uuid"] for r in q("SELECT id, uuid FROM extraction_runs")}
+    import_uuid = {r["id"]: r["uuid"] for r in q("SELECT id, uuid FROM imports")}
+    obs_uuid = {r["id"]: r["uuid"] for r in q("SELECT id, uuid FROM observations")}
     kind_name = {r["id"]: r["name"] for r in q("SELECT id, name FROM entry_kinds")}
     cat_name = {r["id"]: r["name"] for r in q("SELECT id, name FROM categories")}
     # transcripts have no uuid: identify as (source_uuid, ordinal within source)
@@ -182,6 +184,52 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
          "last_modified_at": r["last_modified_at"], "status": r["status"],
          "created_at": r["created_at"], "updated_at": r["updated_at"]}
         for r in q("SELECT * FROM health_records ORDER BY metric, external_id")]
+
+    # --- observed tier (v4): bulk-imported records, never review-gated ---
+    tables["imports"] = [
+        {"uuid": r["uuid"], "connector": r["connector"], "account": r["account"],
+         "source_file": r["source_file"], "source_hash": r["source_hash"],
+         "started_at": r["started_at"], "finished_at": r["finished_at"],
+         "status": r["status"], "counts": _parse(r["counts_json"]),
+         "created_at": r["created_at"]}
+        for r in q("SELECT * FROM imports ORDER BY uuid")]
+    tables["observations"] = [
+        {"uuid": r["uuid"], "stream": r["stream"],
+         "import_uuid": import_uuid[r["import_id"]],
+         "journal_date": r["journal_date"], "started_at": r["started_at"],
+         "ended_at": r["ended_at"], "utc_offset_sec": r["utc_offset_sec"],
+         "direction": r["direction"], "title": r["title"], "body": r["body"],
+         "value": r["value"], "unit": r["unit"], "detail": _parse(r["value_json"]),
+         "media_path": r["media_path"], "origin_app": r["origin_app"],
+         "external_id": r["external_id"],
+         "last_modified_at": r["last_modified_at"], "status": r["status"],
+         "created_at": r["created_at"], "updated_at": r["updated_at"]}
+        for r in q("SELECT * FROM observations ORDER BY stream, external_id")]
+    tables["entity_handles"] = [
+        {"kind": r["kind"], "value": r["value"],
+         "entity_uuid": entity_uuid.get(r["entity_id"]),
+         "display_name": r["display_name"], "confirmed_at": r["confirmed_at"],
+         "ignored": bool(r["ignored"]),
+         "observation_count": r["observation_count"],
+         "first_seen_at": r["first_seen_at"], "last_seen_at": r["last_seen_at"],
+         "created_at": r["created_at"]}
+        for r in q("SELECT * FROM entity_handles ORDER BY kind, value")]
+    tables["observation_participants"] = [
+        {"observation_uuid": obs_uuid[r["observation_id"]],
+         "handle_kind": r["handle_kind"], "handle_value": r["handle_value"],
+         "role": r["role"]}
+        for r in q("SELECT p.* FROM observation_participants p "
+                   "JOIN observations o ON o.id=p.observation_id "
+                   "ORDER BY o.stream, o.external_id, p.handle_kind, "
+                   "p.handle_value, p.role")]
+    tables["entry_observations"] = [
+        {"entry_uuid": entry_uuid[r["entry_id"]],
+         "observation_uuid": obs_uuid[r["observation_id"]],
+         "char_start": r["char_start"], "char_end": r["char_end"]}
+        for r in q("SELECT eo.* FROM entry_observations eo "
+                   "JOIN entries e ON e.id=eo.entry_id "
+                   "JOIN observations o ON o.id=eo.observation_id "
+                   "ORDER BY e.uuid, o.uuid")]
 
     for name, rows in tables.items():
         (out_dir / f"{name}.jsonl").write_text(_jl(rows), encoding="utf-8",

@@ -84,10 +84,15 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
             _add("fail", f"fts_sync_{fts}", f"index does not match content: {e}")
 
     # --- provenance chain: entry -> source -> transcript -> segments ---
+    # A confirmed entry may be sourced from a transcript passage (the /log
+    # path) or from an imported observation (v4). Either is provenance;
+    # neither is optional.
     _rows("entries_have_provenance",
           "SELECT e.id, e.uuid FROM entries e WHERE NOT EXISTS "
-          "(SELECT 1 FROM entry_sources es WHERE es.entry_id=e.id)",
-          "entr(y/ies) without an entry_sources provenance row")
+          "(SELECT 1 FROM entry_sources es WHERE es.entry_id=e.id) "
+          "AND NOT EXISTS "
+          "(SELECT 1 FROM entry_observations eo WHERE eo.entry_id=e.id)",
+          "entr(y/ies) with no provenance row at all")
     _rows("sources_have_transcripts",
           "SELECT s.id, s.uuid FROM sources s WHERE NOT EXISTS "
           "(SELECT 1 FROM transcripts t WHERE t.source_id=s.id)",
@@ -203,6 +208,46 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
                 _add("ok", "health_data_age")
     except sqlite3.OperationalError:
         pass   # pre-v3 schema; pending_migrations already failed above
+
+    # --- observed tier (v4) ---
+    try:
+        _rows("observations_import_live",
+              "SELECT o.uuid FROM observations o JOIN imports i ON i.id=o.import_id "
+              "WHERE o.status='active' AND i.status='retracted'",
+              "active observation(s) belonging to a retracted import")
+        _rows("handles_resolve",
+              "SELECT h.kind, h.value FROM entity_handles h "
+              "WHERE h.entity_id IS NOT NULL AND NOT EXISTS "
+              "(SELECT 1 FROM entities e WHERE e.id=h.entity_id "
+              "AND e.status='active')",
+              "handle(s) resolving to a missing or merged entity")
+
+        stuck = conn.execute(
+            "SELECT COUNT(*) c FROM imports WHERE status='running' "
+            "AND started_at < ?",
+            ((datetime.now(timezone.utc) - timedelta(days=STUCK_DRAFT_DAYS))
+             .strftime("%Y-%m-%dT%H:%M:%SZ"),)).fetchone()["c"]
+        if stuck:
+            _add("warn", "stuck_imports",
+                 f"{stuck} import(s) started over {STUCK_DRAFT_DAYS} days ago and "
+                 f"never finished — see: python -m lifecrm imports list")
+        else:
+            _add("ok", "stuck_imports")
+
+        # Unresolved handles are not corruption — they are the review queue.
+        # Worth surfacing because an observation attributed to nobody answers
+        # none of the questions the observed tier exists to answer.
+        unresolved = conn.execute(
+            "SELECT COUNT(*) c FROM entity_handles WHERE entity_id IS NULL "
+            "AND ignored=0 AND observation_count > 0").fetchone()["c"]
+        if unresolved:
+            _add("warn", "unresolved_handles",
+                 f"{unresolved} handle(s) seen in imports but not linked to an "
+                 f"entity — see: python -m lifecrm handles list")
+        else:
+            _add("ok", "unresolved_handles")
+    except sqlite3.OperationalError:
+        pass   # pre-v4 schema; pending_migrations already failed above
 
     failures = sum(1 for c in checks if c["status"] == "fail")
     warnings = sum(1 for c in checks if c["status"] == "warn")

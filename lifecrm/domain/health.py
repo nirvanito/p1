@@ -20,17 +20,11 @@ import json
 import sqlite3
 
 from . import audit, days
-from .util import DomainError, new_uuid, now_utc
+from .util import DomainError, canonical_json, new_uuid, now_utc
 
 # Fields that constitute the record's data (identity and bookkeeping excluded).
 COMPARE_FIELDS = ("journal_date", "started_at", "ended_at", "utc_offset_sec",
                   "value", "unit", "value_json", "origin_app")
-
-
-def canonical_json(detail: dict | None) -> str | None:
-    if detail is None or detail == {}:
-        return None
-    return json.dumps(detail, sort_keys=True, ensure_ascii=False)
 
 
 def validate(rec: dict) -> str | None:

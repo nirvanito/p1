@@ -3,6 +3,7 @@ import json
 from conftest import golden_draft
 
 from lifecrm.domain import corrections, links, reconcile
+from lifecrm import SCHEMA_VERSION
 from lifecrm.export import export_jsonl, export_markdown
 from test_reconcile import _ingest
 
@@ -58,7 +59,7 @@ def test_jsonl_round_trip(conn, cfg, tmp_path):
     segs = _read_jsonl(out / "transcript_segments.jsonl")
     assert segs and all("source_uuid" in s for s in segs)
 
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == SCHEMA_VERSION
     assert manifest["contract_version"] == 2
 
 

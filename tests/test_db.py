@@ -2,6 +2,7 @@
 
 import pytest
 
+from lifecrm import SCHEMA_VERSION
 from lifecrm import db as db_mod
 from lifecrm.domain import corrections, entries
 from lifecrm.importer import import_text
@@ -228,8 +229,8 @@ def test_real_migration_chain_v1_to_latest(v1_conn):
     conn.commit()
 
     applied = db_mod.migrate(conn)
-    assert applied == [2, 3]
-    assert db_mod.schema_version(conn) == 3
+    assert applied == list(range(2, SCHEMA_VERSION + 1))
+    assert db_mod.schema_version(conn) == SCHEMA_VERSION
     assert conn.execute("SELECT value FROM meta WHERE key='contract_version'"
                         ).fetchone()["value"] == "2"   # 0003 is schema-only
     # the singular pointer moved into the join table
@@ -242,6 +243,9 @@ def test_real_migration_chain_v1_to_latest(v1_conn):
     conn.execute("SELECT closed_at, closure FROM entries LIMIT 0")
     conn.execute("SELECT * FROM entry_links LIMIT 0")
     conn.execute("SELECT * FROM health_records LIMIT 0")
+    for t in ("imports", "observations", "entity_handles",
+              "observation_participants", "entry_observations"):
+        conn.execute(f"SELECT * FROM {t} LIMIT 0")
 
 
 def test_migrated_schema_matches_fresh_init(v1_conn, tmp_path):

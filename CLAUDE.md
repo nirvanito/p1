@@ -11,7 +11,7 @@ provenance, closable loops, and entry links.
   never edit files under `data\` by hand.
 - Ad-hoc reads: `python -m lifecrm sql "SELECT ..." --json` (read-only
   connection; writes are blocked at the connection level).
-- The extraction contract is `docs/contract.md` (contract v2, schema v2). A
+- The extraction contract is `docs/contract.md` (contract v2, schema v4). A
   day with several sources extracts as ONE draft. Drafts go to
   `data\staging\`, then `lifecrm ingest` -> review -> `lifecrm apply`.
 - Never apply a diff the user hasn't reviewed. Never guess on ambiguous
@@ -36,6 +36,8 @@ provenance, closable loops, and entry links.
   health (import — Health Connect zips, dry-run by default),
   dashboard (Datasette over a snapshot — never the live db),
   ask (cited answers; deterministic retrieval, optional local model),
+  observe/connectors/imports/handles (observed tier — bulk imports that never
+  pass the review gate; dry-run by default),
   entities (match/list/show/merge/alias-add), entry (show/edit/retract/
   restore/merge/close/reopen), link (add/list/rm), categories, kinds, admin.
 
@@ -50,6 +52,16 @@ provenance, closable loops, and entry links.
 - `lifecrm/health_connect.py` + `lifecrm/domain/health.py` — Health Connect
   export import into `health_records` (deterministic, external-id dedupe,
   newer-wins updates, conflicts surfaced; dry-run by default).
+- `lifecrm/domain/observations.py` + `lifecrm/connectors/` — the OBSERVED
+  tier (schema v4). Two tiers, one rule: `entries`/`measurements`/`mentions`
+  are user-confirmed; `observations`/`health_records` are bulk-imported, never
+  reviewed, and never asserted as fact without citing the row. **An importer
+  may not write entries, measurements, mentions or entity_aliases.** Connectors
+  are pure readers (`connectors/base.py` contract); dedupe, newer-wins
+  classification, conflict surfacing, transactional apply and retraction live
+  once in `domain/observations.py`. Importers emit *handles*, never names —
+  linking one handle attributes every observation that referenced it, with no
+  backfill pass. See `docs/observed-tier.md` and `docs/ai-chat.md`.
 - `lifecrm/recall.py` + `lifecrm/llm.py` — `lifecrm ask`: rules parse the
   question (window + metrics), SQL answers it, every fact carries a citable
   id. The local model (Ollama over stdlib HTTP, optional) may only PHRASE
