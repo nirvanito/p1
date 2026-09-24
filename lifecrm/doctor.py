@@ -23,6 +23,62 @@ from .config import Config
 BACKUP_MAX_AGE_DAYS = 7
 STUCK_DRAFT_DAYS = 2
 HEALTH_STALE_DAYS = 14
+INBOX_STUCK_DAYS = 2
+# System litter the phone or OneDrive leaves beside real files.
+_INBOX_LITTER = {"desktop.ini", "thumbs.db", ".ds_store"}
+
+
+def _capture_checks(cfg: Config, _add) -> None:
+    """The capture side. A typo in an inbox path, a recording intake fails on
+    every run, and a format nothing reads all look exactly like a quiet day —
+    no error anywhere, just nothing arriving. These make them visible."""
+    from .transcribe import AUDIO_EXTS, TEXT_EXTS
+    folders = [("inbox_dir", cfg.inbox_dir, AUDIO_EXTS),
+               ("inbox_text_dir", cfg.inbox_text_dir, TEXT_EXTS),
+               ("archive_dir", cfg.archive_dir, None)]
+
+    missing = [f"{name} = {path}" for name, path, _ in folders
+               if path is not None and not path.is_dir()]
+    if missing:
+        _add("warn", "configured_dirs",
+             f"configured folder(s) do not exist: {'; '.join(missing)} — a typo "
+             f"here means nothing ever arrives; fix config.toml or create them")
+    else:
+        _add("ok", "configured_dirs")
+
+    cutoff = time.time() - INBOX_STUCK_DAYS * 86400
+    stuck, unknown = [], []
+    for name, path, exts in folders:
+        if exts is None or path is None or not path.is_dir():
+            continue
+        for p in sorted(path.iterdir()):
+            if not p.is_file() or p.name.lower() in _INBOX_LITTER \
+                    or p.name.startswith((".", "~")):
+                continue
+            if p.suffix.lower() not in exts:
+                unknown.append(f"{name}/{p.name}")
+                continue
+            try:
+                if p.stat().st_mtime < cutoff:
+                    stuck.append(f"{name}/{p.name}")
+            except OSError:
+                continue
+    if stuck:
+        _add("warn", "inbox_stuck",
+             f"{len(stuck)} file(s) waiting over {INBOX_STUCK_DAYS} days — intake "
+             f"is failing on them or not running: {', '.join(stuck[:5])}"
+             + (" …" if len(stuck) > 5 else "")
+             + " — see data/transcribe.log")
+    else:
+        _add("ok", "inbox_stuck")
+    if unknown:
+        _add("warn", "inbox_unrecognized",
+             f"{len(unknown)} file(s) intake will never read (unrecognized type): "
+             f"{', '.join(unknown[:5])}" + (" …" if len(unknown) > 5 else "")
+             + f" — audio: {', '.join(sorted(AUDIO_EXTS))}; "
+               f"text: {', '.join(sorted(TEXT_EXTS))}")
+    else:
+        _add("ok", "inbox_unrecognized")
 
 
 def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
@@ -164,6 +220,8 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
                  f"staging: {', '.join(stale[:5])}")
         else:
             _add("ok", "staging_drafts")
+
+        _capture_checks(cfg, _add)
 
     stuck = conn.execute(
         "SELECT COUNT(*) c FROM extraction_runs WHERE status='draft' "

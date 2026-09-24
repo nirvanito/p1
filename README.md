@@ -68,6 +68,13 @@ before you sit down), **backup** (daily 21:30, tiered retention: 14 daily /
 **verify-restore** (weekly — restores the newest snapshot into a scratch
 folder and runs `doctor` on it, because an untested backup is not a backup).
 
+When a run fails, it says so: each task exits non-zero, so Task Scheduler's
+*Last Run Result* shows `0x1`, and intake's output (with the name of the file
+it choked on) is in `data\transcribe.log`. A file that fails stays in the
+inbox for the next run. `lifecrm doctor` also warns about a typo'd inbox or
+archive path, files waiting in an inbox for over two days, and files in a
+format intake will never read.
+
 In Explorer, right-click `OneDrive\VoiceJournal` → **Always keep on this
 device** so OneDrive keeps real files, not placeholders (the code guards
 against placeholders anyway).

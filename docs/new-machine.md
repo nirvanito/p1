@@ -85,6 +85,12 @@ powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 That schedules daily intake (transcripts ready before you sit down), daily
 tiered backups (local + OneDrive), and a weekly restore-verification.
 
+If a task fails, Task Scheduler's *Last Run Result* for it shows `0x1`, and
+intake writes what went wrong — including the file name — to
+`data\transcribe.log`. Run `.venv\Scripts\python.exe -m lifecrm doctor` any
+time: it flags a mistyped inbox path, a recording stuck in the inbox, or a
+file in a format intake can't read.
+
 ## 5. First run, end to end
 
 1. On the phone: run **Quick Note**, dictate one sentence. Confirm the

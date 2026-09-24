@@ -22,7 +22,7 @@ import typer
 from . import CONTRACT_VERSION, SCHEMA_VERSION, __version__
 from . import contract as contract_mod
 from . import db as db_mod
-from .config import PROJECT_ROOT, Config, load_config
+from .config import PROJECT_ROOT, Config, ConfigError, load_config
 from .domain import corrections, entities as entities_mod, reconcile
 from .domain.sources import content_hash_text
 from .domain.util import DomainError
@@ -44,13 +44,19 @@ app.add_typer(admin_app, name="admin")
 
 def _cfg() -> Config:
     root = os.environ.get("LIFECRM_ROOT")
-    return load_config(Path(root) if root else None)
+    try:
+        return load_config(Path(root) if root else None)
+    except ConfigError as e:
+        _fail(str(e))
 
 
 def _conn(cfg: Config, readonly: bool = False) -> sqlite3.Connection:
     if not cfg.db_path.exists():
         _fail(f"database not found at {cfg.db_path} — run: python -m lifecrm init")
-    conn = db_mod.connect(cfg.db_path, readonly=readonly)
+    try:
+        conn = db_mod.connect(cfg.db_path, readonly=readonly)
+    except sqlite3.OperationalError as e:
+        _fail(db_error_line(cfg.db_path, e))
     if not readonly:
         pending = db_mod.pending_migrations(conn)
         if pending:
@@ -63,6 +69,28 @@ def _conn(cfg: Config, readonly: bool = False) -> sqlite3.Connection:
 def _fail(msg: str) -> None:
     typer.echo(f"error: {msg}", err=True)
     raise typer.Exit(1)
+
+
+def db_error_line(db_path: Path, e: sqlite3.OperationalError) -> str:
+    """One line for the database errors an operator can act on."""
+    text = str(e)
+    if "locked" in text or "busy" in text:
+        return (f"{db_path} is locked by another program (a DB browser, a "
+                f"running command, OneDrive mid-sync?) — close it and re-run")
+    if "unable to open" in text:
+        return f"cannot open {db_path} ({text}) — check the path and permissions"
+    return f"{db_path}: {text}"
+
+
+def _needs_attention(results: list[dict]) -> None:
+    """Exit 1 when any file failed or could not be archived, so the scheduled
+    task reports failure instead of a success that hides a stuck inbox."""
+    bad = [r for r in results if r.get("status") == "failed" or r.get("archive_failed")]
+    if bad:
+        typer.echo(f"error: {len(bad)} file(s) need attention: "
+                   f"{', '.join(r['file'] for r in bad)} — see the lines above; "
+                   f"failed files stay in the inbox for the next run", err=True)
+        raise typer.Exit(1)
 
 
 def _echo_json(obj) -> None:
@@ -139,13 +167,21 @@ def import_cmd(
     if stdin == bool(file):
         _fail("give exactly one of FILE or --stdin")
     if stdin:
-        text = sys.stdin.read()
+        # A pipe from Windows PowerShell can carry a BOM; strip it like every
+        # file reader here does.
+        text = sys.stdin.read().removeprefix("\N{ZERO WIDTH NO-BREAK SPACE}")
         path = None
     else:
         p = Path(file)
         if not p.exists():
             _fail(f"file not found: {p}")
-        text = p.read_text(encoding="utf-8")
+        try:
+            # utf-8-sig, like every sibling reader: Notepad and PowerShell's
+            # Out-File write a BOM that would otherwise land in the transcript.
+            text = p.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as e:
+            _fail(f"{p.name} is not UTF-8 text (byte {e.start}: {e.reason}) — "
+                  f"re-save it as UTF-8")
         path = str(p)
     cfg = _cfg()
     conn = _conn(cfg)
@@ -185,6 +221,7 @@ def transcribe(
         conn.close()
     if as_json:
         _echo_json(results)
+        _needs_attention(results)
         return
     for r in results:
         for w in r.get("warnings", []):
@@ -195,6 +232,7 @@ def transcribe(
                        f"{r['segments']} segments)")
         else:
             typer.echo(f"{r['file']}: {r['status']}")
+    _needs_attention(results)
 
 
 @app.command()
@@ -218,6 +256,7 @@ def intake(as_json: bool = typer.Option(False, "--json")) -> None:
         return
     if as_json:
         _echo_json(results)
+        _needs_attention(results)
         return
     for r in results:
         for w in r.get("warnings", []):
@@ -227,6 +266,7 @@ def intake(as_json: bool = typer.Option(False, "--json")) -> None:
                        f"({r['journal_date']}, {r['segments']} segments)")
         else:
             typer.echo(f"{r['file']}: {r['status']}")
+    _needs_attention(results)
 
 
 # ---------------------------------------------------------------- ingest / apply

@@ -5,8 +5,14 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+class ConfigError(Exception):
+    """config.toml is missing or wrong. The message is one line, naming the
+    file and the fix — the CLI prints it as-is rather than a traceback."""
 
 DEFAULT_CATEGORIES = [
     "food", "exercise", "work", "social", "health", "sleep", "idea", "media",
@@ -70,16 +76,35 @@ def load_config(root: Path | None = None) -> Config:
     if not cfg_file.exists():
         cfg_file = root / "config.example.toml"
     if not cfg_file.exists():
-        raise FileNotFoundError(
+        raise ConfigError(
             f"no config.toml (or config.example.toml) in {root} — copy "
             f"config.example.toml to config.toml, or point LIFECRM_ROOT at a "
             f"project root that has one")
     # utf-8-sig: tolerate the BOM that Notepad and Windows PowerShell's
     # Out-File -Encoding utf8 prepend (tomllib rejects a raw BOM).
-    raw = tomllib.loads(cfg_file.read_text(encoding="utf-8-sig"))
+    try:
+        raw = tomllib.loads(cfg_file.read_text(encoding="utf-8-sig"))
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{cfg_file} is not valid TOML: {e}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"cannot read {cfg_file}: {e}") from e
 
     paths = raw.get("paths", {})
     time_cfg = raw.get("time", {})
+    # Checked here, not at first use: a bad zone otherwise surfaces as a
+    # traceback from deep inside whichever command happens to need a date.
+    tz = time_cfg.get("timezone", "America/Chicago")
+    try:
+        ZoneInfo(str(tz))
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise ConfigError(
+            f"{cfg_file}: [time] timezone '{tz}' is not a known IANA zone "
+            f"(e.g. America/Chicago, Europe/London)") from e
+    rollover = time_cfg.get("day_rollover_hour", 5)
+    if isinstance(rollover, bool) or not isinstance(rollover, int) \
+            or not 0 <= rollover <= 23:
+        raise ConfigError(f"{cfg_file}: [time] day_rollover_hour must be a whole "
+                          f"hour 0-23, got {rollover!r}")
     return Config(
         root=root,
         data_dir=_resolve(root, paths.get("data_dir", "data")),
@@ -88,8 +113,8 @@ def load_config(root: Path | None = None) -> Config:
         inbox_text_dir=_optional_path(paths.get("inbox_text_dir")),
         archive_dir=_optional_path(paths.get("archive_dir")),
         onedrive_backups_dir=_optional_path(paths.get("onedrive_backups_dir")),
-        timezone=time_cfg.get("timezone", "America/Chicago"),
-        day_rollover_hour=int(time_cfg.get("day_rollover_hour", 5)),
+        timezone=str(tz),
+        day_rollover_hour=rollover,
         whisper=raw.get("whisper", {}),
         ingest=raw.get("ingest", {}),
         ask=raw.get("ask", {}),

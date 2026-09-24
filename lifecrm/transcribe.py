@@ -272,8 +272,15 @@ def archive_file(cfg: Config, path: Path, journal_date: str) -> Path:
     if cfg.archive_dir is None:
         raise DomainError("archive_dir is not configured — set [paths].archive_dir "
                           "in config.toml")
+    # Only the year folder is ever created. Creating the archive root too
+    # would turn a typo in config.toml into a new folder nobody looks at,
+    # silently, on the first archive — after which no check can tell.
+    if not cfg.archive_dir.is_dir():
+        raise FileNotFoundError(
+            f"archive_dir {cfg.archive_dir} does not exist — create it, or fix "
+            f"[paths].archive_dir in config.toml")
     year_dir = cfg.archive_dir / journal_date[:4]
-    year_dir.mkdir(parents=True, exist_ok=True)
+    year_dir.mkdir(exist_ok=True)
     dest = year_dir / path.name
     n = 2
     while dest.exists():
@@ -295,6 +302,7 @@ def _archive_after_commit(conn: sqlite3.Connection, cfg: Config, path: Path,
         conn.commit()
         res["archived_to"] = str(archived)
     except OSError as e:
+        res["archive_failed"] = True      # data is safe; the run still needs attention
         res.setdefault("warnings", []).append(
             f"WARNING: could not archive {path.name}: {e} — its rows are "
             f"committed; the next run will move it as a duplicate")
