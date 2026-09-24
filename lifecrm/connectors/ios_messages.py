@@ -28,7 +28,6 @@ One observation per message, keyed on the message GUID:
                          iOS writes a tapback as a row whose text reads
                          'Loved "see you at 6"', and letting that into message
                          search and "last talked to" counts would be noise
-  text_unsend            a message the sender unsent
   text_event             something that happened to the thread: a member
                          added or removed, a number changed, a rename, an
                          icon or background change, someone leaving, a
@@ -42,18 +41,25 @@ source system called it, for review"); it never links a handle to an entity.
 That stays a decision the owner makes, with `handles list --suggest` offering
 candidates.
 
-Deletion semantics — the archive remembers
-------------------------------------------
-- A message deleted from the phone is simply absent from the next backup.
-  Absent rows are never retracted, so its observation stays.
-- An unsent message is still present, with its text cleared and
-  date_retracted set. It is NOT re-emitted as a message — that would let a
-  newer-wins update blank a body the archive already holds — and is recorded
-  as its own text_unsend observation instead.
-- An edited message IS re-emitted: its body is the current text, its
-  last_modified_at is the edit time, so it updates through the normal
-  newer-wins path and the audit log keeps the previous body. The full version
-  history from message_summary_info rides along in value_json.
+Deletion semantics — the archive mirrors the phone (owner's decision, 2026-09-24)
+-------------------------------------------------------------------------------
+- A message deleted from the phone is absent from the next backup, and its
+  observation is removed. An unsent message is treated the same way: never
+  imported, and removed if it already was.
+- "Gone" means gone from the phone's database — the scan reports every GUID
+  the phone still holds (`present_ids`), and the shared write layer removes
+  only what is missing from that set, scoped to rows first imported from the
+  same account. A message this connector cannot read today is still on the
+  phone and stays archived.
+- A message recovered on the phone (Recently Deleted) returns as a new
+  observation on the next import.
+- An edited message is re-emitted with its current text; the edit time is its
+  last_modified_at, so it updates through newer-wins. Its version history
+  from message_summary_info rides along in value_json.
+- Removal is guarded in domain/observations.py: a removal large enough to
+  look like an incomplete backup is refused without --allow-mass-removal,
+  a snapshot is taken first, and a row a confirmed entry cites as provenance
+  is hidden rather than deleted.
 
 Known limitations, by design
 ----------------------------
@@ -81,7 +87,7 @@ from ..domain.util import DomainError, canonical_json
 from . import base, typedstream
 
 name = "ios_messages"
-streams = ("imessage", "sms", "rcs", "text_reaction", "text_unsend", "text_event")
+streams = ("imessage", "sms", "rcs", "text_reaction", "text_event")
 # Texts flow daily; a newest message this old means backups have stopped.
 stale_after_days = 14
 
@@ -148,9 +154,8 @@ def apple_iso(value) -> str | None:
 def _fail_encrypted(target: Path) -> DomainError:
     return DomainError(
         f"{target.name} is an encrypted backup — its databases cannot be read "
-        f"without the backup password. Make an unencrypted backup (Apple "
-        f"Devices: untick 'Encrypt local backup'), import it, and see "
-        f"docs/texts.md about what an unencrypted backup on disk means")
+        f"without the backup password. Make an unencrypted backup instead "
+        f"(Apple Devices: untick 'Encrypt local backup') — see docs/texts.md")
 
 
 def _backup_files(target: Path) -> dict:
@@ -533,6 +538,7 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
     skipped: dict[str, int] = {}
     unmapped: dict[str, int] = {}
     examples: dict[str, tuple[str, str]] = {}      # raw address -> its handle
+    present: set[str] = set()                      # GUIDs the phone still holds
     counts = {"messages": 0, "chats": len(chats)}
 
     def skip(reason: str) -> None:
@@ -551,6 +557,12 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
         if not r["guid"]:
             skip("message without a GUID")
             continue
+        # The archive mirrors the phone: an unsent message is treated exactly
+        # like a deleted one — not imported, and removed if it already was.
+        if apple_iso(r["date_retracted"]):
+            skip("unsent message (not kept — the archive mirrors the phone)")
+            continue
+        present.add(r["guid"])        # on the phone, even if skipped below
         sent = apple_iso(r["date"])
         if sent is None:
             skip("message with no usable timestamp")
@@ -652,18 +664,6 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
                             "origin_app": "messages", "last_modified_at": sent})
             continue
 
-        # --- unsends: recorded, never allowed to blank an archived body --
-        unsent_at = apple_iso(r["date_retracted"])
-        if unsent_at:
-            records.append({**common, "stream": "text_unsend",
-                            "journal_date": base.journal_date_for_iso(unsent_at, cfg),
-                            "external_id": r["guid"], "started_at": unsent_at,
-                            "title": title, "body": None,
-                            "value_json": _json({**detail, "target": r["guid"],
-                                                 "sent_at": sent}),
-                            "origin_app": "messages", "last_modified_at": unsent_at})
-            continue
-
         # --- the message itself -----------------------------------------
         body = _clean(r["text"])
         undecodable = False
@@ -714,7 +714,7 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
     account = max(owners, key=owners.get) if owners else None
     return {"records": records, "handles": handles, "account": account,
             "skipped": skipped, "unmapped": unmapped, "counts": counts,
-            "examples": examples}
+            "examples": examples, "present": present}
 
 
 # ---------------------------------------------------------------- scan
@@ -787,6 +787,8 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         unmapped=unmapped,
         skipped=skipped,
         facts=facts,
+        present_ids=result["present"],
+        mirror_streams=list(streams),
         target_kind=files["kind"],
         contacts_read=files["contacts"] is not None,
         named_handles=sum(1 for h in handles if h["display_name"]
@@ -806,8 +808,6 @@ def _sample(rec: dict) -> str:
         if d.get("emoji"):
             what += f" {d['emoji']}"
         return f"{rec['journal_date']} {who}: {what}"
-    if rec["stream"] == "text_unsend":
-        return f"{rec['journal_date']} {who}: unsent a message"
     if rec["stream"] == "text_event":
         d = json.loads(rec["value_json"])
         what = d.get("event", "?").replace("_", " ")
@@ -856,8 +856,22 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
         latest = max(recs, key=lambda x: (x["started_at"], x["external_id"]))
         lines.append(f"  {stream}: {len(info['new'])} new, {len(info['upd'])} changed "
                      f"| {span} | e.g. {_sample(latest)}")
-    if not by_stream:
+    removed = plan.get("removed") or []
+    if not by_stream and not removed:
         lines.append("  nothing new — the backup matches the database")
+    if removed:
+        per_stream: dict[str, int] = {}
+        per_chat: dict[str, int] = {}
+        for row in removed:
+            per_stream[row["stream"]] = per_stream.get(row["stream"], 0) + 1
+            chat = row["title"] or (json.loads(row["value_json"]).get("chat")
+                                    if row["value_json"] else None) or "?"
+            per_chat[chat] = per_chat.get(chat, 0) + 1
+        top = sorted(per_chat.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+        lines.append(
+            f"  remove: {len(removed)} no longer on the phone (deleted or unsent) — "
+            + ", ".join(f"{n} {s}" for s, n in sorted(per_stream.items()))
+            + " | from " + ", ".join(f"{c} ({n})" for c, n in top))
 
     tail = []
     if plan["identical"]:

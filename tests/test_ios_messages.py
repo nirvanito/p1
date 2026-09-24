@@ -6,9 +6,12 @@ Messages sms.db, and the phone's AddressBook.sqlitedb. The schemas are the
 real column names, trimmed to what the connector reads.
 
 The deletion-semantics tests import one backup, then a later one, and check
-that the archive remembers: an unsent message keeps its text, an edit updates
-through newer-wins with the old body in the audit log, and a message deleted
-from the phone stays.
+that the archive mirrors the phone (the owner's decision, 2026-09-24): an
+unsent or deleted message is removed, an edit updates through newer-wins, a
+message recovered on the phone comes back — and that removal cannot reach
+what it must not: a message the connector merely failed to read, another
+phone's archive, a confirmed entry's provenance, or most of the archive at
+once.
 """
 
 import hashlib
@@ -100,8 +103,10 @@ def _messages(variant: str) -> list[dict]:
     variant 'before': M7 not yet edited, M8 not yet unsent.
     variant 'after':  M7 edited south -> north, M8 unsent.
     variant 'deleted': as 'after', with M1 deleted on the phone.
+    variant 'unreadable': as 'after', with M1's body now undecodable.
+    variant 'few': as 'after', with everything but M1 and M2 gone.
     """
-    edited = variant in ("after", "deleted")
+    edited = variant != "before"
     rows = [
         dict(guid="M1", chat=1, handle_id=1, text="see you at 6", service="iMessage",
              date=_ns("2026-09-01T18:00:00Z")),
@@ -182,10 +187,15 @@ def _messages(variant: str) -> list[dict]:
     ]
     if variant == "deleted":
         rows = [r for r in rows if r["guid"] != "M1"]
+    if variant == "unreadable":
+        rows[0] = {**rows[0], "text": None,
+                   "attributedBody": b"streamtyped but not really"}
+    if variant == "few":
+        rows = [r for r in rows if r["guid"] in ("M1", "M2")]
     return rows
 
 
-def _write_sms_db(path, variant="after", wal_to=None):
+def _write_sms_db(path, variant="after", wal_to=None, owner=ME):
     """Write the database. With wal_to=(main, wal), it is built in WAL mode
     and both halves are copied out BEFORE any checkpoint — a main file that
     on its own holds no tables at all, exactly the state a backup can catch."""
@@ -212,7 +222,7 @@ def _write_sms_db(path, variant="after", wal_to=None):
     for m in _messages(variant):
         m = dict(m)
         chat, attach = m.pop("chat"), m.pop("attachments", [])
-        m.setdefault("destination_caller_id", ME)
+        m.setdefault("destination_caller_id", owner)
         cols = ", ".join(m)
         cur = conn.execute(f"INSERT INTO message ({cols}) VALUES "
                            f"({', '.join('?' for _ in m)})", list(m.values()))
@@ -250,7 +260,7 @@ def _write_address_book(path):
 
 
 def make_backup(root, variant="after", contacts=True, encrypted=False, wal=False,
-                udid="00008110-TESTUDID", device="Test iPhone"):
+                udid="00008110-TESTUDID", device="Test iPhone", owner=ME):
     """An iPhone backup folder, laid out as the Apple Devices app writes one."""
     backup = root / udid
     backup.mkdir(parents=True, exist_ok=True)
@@ -277,10 +287,10 @@ def make_backup(root, variant="after", contacts=True, encrypted=False, wal=False
     sms = place("HomeDomain", "Library/SMS/sms.db")
     if wal:
         scratch = root / f"scratch-{udid}.db"
-        _write_sms_db(scratch, variant,
+        _write_sms_db(scratch, variant, owner=owner,
                       wal_to=(sms, place("HomeDomain", "Library/SMS/sms.db-wal")))
     else:
-        _write_sms_db(sms, variant)
+        _write_sms_db(sms, variant, owner=owner)
     if contacts:
         _write_address_book(place("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb"))
     man.commit()
@@ -314,7 +324,8 @@ def test_reads_a_backup_into_the_right_streams(cfg, tmp_path):
     assert sorted(by_stream["imessage"]) == ["M1", "M13", "M14", "M2", "M4", "M7", "M9"]
     assert sorted(by_stream["sms"]) == ["M12", "M3"]
     assert sorted(by_stream["text_reaction"]) == ["M15", "M5", "M6"]
-    assert by_stream["text_unsend"] == ["M8"]
+    assert "text_unsend" not in by_stream
+    assert "M8" not in {r["external_id"] for r in scan["records"]}   # unsent
     assert scan["device"] == "Test iPhone" and scan["backup_date"] == "2026-09-20"
     assert scan["account"] == ME
     assert scan["source_hash"]
@@ -357,12 +368,12 @@ def test_an_edit_is_the_current_text_with_its_history(cfg, tmp_path):
         "meet at the south entrance", "meet at the north entrance"]
 
 
-def test_an_unsent_message_is_an_unsend_record_not_a_message(cfg, tmp_path):
+
+def test_an_unsent_message_is_not_imported(cfg, tmp_path):
     scan = im.scan(make_backup(tmp_path), cfg)
-    assert "M8" not in _by_guid(scan, "imessage")
-    rec = _by_guid(scan, "text_unsend")["M8"]
-    assert rec["started_at"] == "2026-09-01T18:21:00Z"
-    assert _detail(rec)["sent_at"] == "2026-09-01T18:20:00Z"
+    assert "M8" not in {r["external_id"] for r in scan["records"]}
+    assert "M8" not in scan["present_ids"]          # so an archived copy goes too
+    assert any("1 × unsent message" in s for s in scan["skipped"])
 
 
 def test_attachments_are_described_not_copied(cfg, tmp_path):
@@ -413,7 +424,7 @@ def test_the_report_reads_like_the_other_connectors(cfg, conn, tmp_path):
     lines = im.report_lines(scan, obs.build_plan(conn, scan))
     text = "\n".join(lines)
     assert "of Test iPhone, taken 2026-09-20" in text
-    assert "imessage: 7 new" in text and "text_unsend: 1 new" in text
+    assert "imessage: 7 new" in text
     assert "handles: 5 (4 named from the backup's contacts)" in text
     assert "them: emoji 🔥" in text
 
@@ -475,17 +486,27 @@ def test_reimporting_the_same_backup_is_a_no_op(cfg, conn, tmp_path):
     _apply(conn, im.scan(backup, cfg))
     plan = obs.build_plan(conn, im.scan(backup, cfg))
     assert not plan["new"] and not plan["updates"] and not plan["conflicts"]
-    assert plan["identical"] == 22
+    assert plan["identical"] == 21
 
 
-def test_an_unsend_after_import_keeps_the_archived_text(cfg, conn, tmp_path):
+
+def test_an_unsend_after_import_removes_it_everywhere(cfg, conn, tmp_path):
     _apply(conn, im.scan(make_backup(tmp_path / "a", variant="before"), cfg))
-    _, result = _apply(conn, im.scan(make_backup(tmp_path / "b", variant="after"), cfg))
-    kept = conn.execute("SELECT body, status FROM observations WHERE stream='imessage' "
-                        "AND external_id='M8'").fetchone()
-    assert (kept["body"], kept["status"]) == ("oops wrong chat", "active")
-    assert conn.execute("SELECT COUNT(*) c FROM observations WHERE stream='text_unsend' "
-                        "AND external_id='M8'").fetchone()["c"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM observations_fts "
+                        "WHERE observations_fts MATCH 'oops'").fetchone()["c"] == 1
+
+    plan, result = _apply(conn, im.scan(make_backup(tmp_path / "b", variant="after"), cfg))
+    assert [r["external_id"] for r in plan["removed"]] == ["M8"]
+    assert result["removed"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM observations WHERE external_id='M8'"
+                        ).fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM observations_fts "
+                        "WHERE observations_fts MATCH 'oops'").fetchone()["c"] == 0
+    orphans = conn.execute("SELECT COUNT(*) c FROM observation_participants p "
+                           "LEFT JOIN observations o ON o.id = p.observation_id "
+                           "WHERE o.id IS NULL").fetchone()["c"]
+    assert orphans == 0
+    assert run_checks(conn, cfg)["failures"] == 0
 
 
 def test_an_edit_after_import_updates_and_the_audit_log_keeps_the_old_text(
@@ -502,12 +523,82 @@ def test_an_edit_after_import_updates_and_the_audit_log_keeps_the_old_text(
     assert audit["changes"]["body"]["old"] == "meet at the south entrance"
 
 
-def test_a_message_deleted_on_the_phone_stays_in_the_archive(cfg, conn, tmp_path):
+
+def test_a_message_deleted_on_the_phone_is_removed_and_returns_if_recovered(
+        cfg, conn, tmp_path):
     _apply(conn, im.scan(make_backup(tmp_path / "a"), cfg))
-    _apply(conn, im.scan(make_backup(tmp_path / "b", variant="deleted"), cfg))
-    row = conn.execute("SELECT status FROM observations WHERE external_id='M1'"
-                       ).fetchone()
-    assert row["status"] == "active"
+    _, result = _apply(conn, im.scan(make_backup(tmp_path / "b", variant="deleted"), cfg))
+    assert result["removed"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM observations WHERE external_id='M1'"
+                        ).fetchone()["c"] == 0
+
+    # recovered from Recently Deleted on the phone: the next backup has it again
+    plan, _ = _apply(conn, im.scan(make_backup(tmp_path / "c"), cfg))
+    assert [r["external_id"] for r in plan["new"]] == ["M1"]
+
+
+def test_a_message_the_connector_cannot_read_is_not_removed(cfg, conn, tmp_path):
+    """Removal keys on what the phone holds, not on what was emitted: a body
+    this reader cannot decode today must not make the message vanish."""
+    _apply(conn, im.scan(make_backup(tmp_path / "a"), cfg))
+    scan = im.scan(make_backup(tmp_path / "b", variant="unreadable"), cfg)
+    assert "M1" not in _by_guid(scan)                 # not emitted...
+    plan = obs.build_plan(conn, scan)
+    assert plan["removed"] == []                      # ...and not removed either
+
+
+def test_removal_never_reaches_another_phones_archive(cfg, conn, tmp_path):
+    _apply(conn, im.scan(make_backup(tmp_path / "a"), cfg))
+    other = im.scan(make_backup(tmp_path / "b", variant="deleted",
+                                owner="+15125559999"), cfg)
+    assert other["account"] == "+15125559999"
+    assert obs.build_plan(conn, other)["removed"] == []
+
+
+def test_a_message_a_journal_entry_cites_is_hidden_not_deleted(cfg, conn, tmp_path):
+    from conftest import golden_draft
+    from lifecrm.domain import reconcile
+    from test_reconcile import _ingest
+    reconcile.apply_diff(conn, _ingest(conn, cfg, golden_draft()))
+    _apply(conn, im.scan(make_backup(tmp_path / "a"), cfg))
+    entry_id = conn.execute("SELECT id FROM entries LIMIT 1").fetchone()["id"]
+    obs_id = conn.execute("SELECT id FROM observations WHERE external_id='M1'"
+                          ).fetchone()["id"]
+    conn.execute("INSERT INTO entry_observations (entry_id, observation_id) "
+                 "VALUES (?, ?)", (entry_id, obs_id))
+    conn.commit()
+
+    _, result = _apply(conn, im.scan(make_backup(tmp_path / "b", variant="deleted"), cfg))
+    assert result.get("retracted_cited") == 1 and "removed" in result
+    row = conn.execute("SELECT status FROM observations WHERE id=?", (obs_id,)).fetchone()
+    assert row["status"] == "retracted"               # hidden, provenance intact
+    assert run_checks(conn, cfg)["failures"] == 0
+
+
+def test_removing_most_of_the_archive_at_once_is_refused(cfg, conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "MASS_REMOVAL_MIN", 5)
+    _apply(conn, im.scan(make_backup(tmp_path / "a"), cfg))
+    scan = im.scan(make_backup(tmp_path / "b", variant="few"), cfg)
+    plan = obs.build_plan(conn, scan)
+    assert len(plan["removed"]) == 19
+    with pytest.raises(DomainError, match="remove 19 of 21.*--allow-mass-removal"):
+        obs.apply_plan(conn, scan, plan)
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 21
+
+    obs.apply_plan(conn, scan, plan, allow_mass_removal=True)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 2
+
+
+@pytest.mark.parametrize("removed,scope,refused", [
+    (101, 1000, True),      # past both bars
+    (101, 2000, False),     # a real share of a big archive: under 10%
+    (60, 70, False),        # most of a small archive, but under the floor
+])
+def test_the_mass_removal_bar(removed, scope, refused):
+    msg = obs.mass_removal({"removed": [None] * removed, "mirror_scope": scope})
+    assert (msg is not None) == refused
 
 
 def test_the_importer_writes_none_of_the_confirmed_tables(cfg, conn, tmp_path):
@@ -718,7 +809,7 @@ def test_cli_dry_run_apply_and_suggest(tmp_path, monkeypatch):
 
     r = runner.invoke(app, ["observe", "ios_messages", str(backup), "--apply"])
     assert r.exit_code == 0, r.output
-    assert "applied: 22 added" in r.output
+    assert "applied: 21 added" in r.output
 
     r = runner.invoke(app, ["handles", "list", "--suggest", "--json"])
     assert r.exit_code == 0, r.output
@@ -753,8 +844,41 @@ def test_cli_observe_without_a_path_uses_the_backup_on_this_machine(tmp_path, mo
     assert r.exit_code == 0, r.output
     out = json.loads(r.output)
     assert out["facts"]["folder"].endswith("00008110-TESTUDID")
-    assert out["new"] == 22
+    assert out["new"] == 21
 
     r = runner.invoke(app, ["observe", "ai_chat"])
     assert r.exit_code == 1
     assert "ai_chat needs a path" in r.output
+
+
+def test_cli_removal_takes_a_snapshot_and_mass_removal_needs_the_flag(
+        tmp_path, monkeypatch):
+    from conftest import cli_project
+    from typer.testing import CliRunner
+
+    from lifecrm.cli import app
+    runner = CliRunner()
+    root = cli_project(tmp_path, monkeypatch)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    phone = tmp_path / "phone"
+    r = runner.invoke(app, ["observe", "ios_messages", str(make_backup(phone / "a")),
+                            "--apply"])
+    assert r.exit_code == 0, r.output
+
+    r = runner.invoke(app, ["observe", "ios_messages",
+                            str(make_backup(phone / "b", variant="deleted")), "--apply"])
+    assert r.exit_code == 0, r.output
+    assert "remove: 1 no longer on the phone" in r.output
+    assert "1 removed" in r.output
+    assert "snapshot before removing:" in r.output
+    assert list((root / "backups").glob("lifecrm-*.db"))
+
+    monkeypatch.setattr(obs, "MASS_REMOVAL_MIN", 5)
+    few = str(make_backup(phone / "c", variant="few"))
+    r = runner.invoke(app, ["observe", "ios_messages", few])
+    assert r.exit_code == 0 and "WILL BE REFUSED on --apply" in r.output
+    r = runner.invoke(app, ["observe", "ios_messages", few, "--apply"])
+    assert r.exit_code == 1 and "--allow-mass-removal" in r.output
+    r = runner.invoke(app, ["observe", "ios_messages", few, "--apply",
+                            "--allow-mass-removal"])
+    assert r.exit_code == 0, r.output

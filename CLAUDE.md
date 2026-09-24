@@ -60,8 +60,11 @@ provenance, closable loops, and entry links.
   reviewed, and never asserted as fact without citing the row. **An importer
   may not write entries, measurements, mentions or entity_aliases.** Connectors
   are pure readers (`connectors/base.py` contract); dedupe, newer-wins
-  classification, conflict surfacing, transactional apply and retraction live
-  once in `domain/observations.py`. Importers emit *handles*, never names —
+  classification, conflict surfacing, transactional apply, retraction and
+  mirroring live once in `domain/observations.py` (a connector that declares
+  `present_ids` has what its source no longer holds removed — texts do; the
+  owner chose "mirror the phone" over "remember", 2026-09-24). Importers emit
+  *handles*, never names —
   linking one handle attributes every observation that referenced it, with no
   backfill pass. See `docs/observed-tier.md`, `docs/ai-chat.md`, and
   `docs/texts.md` — iPhone backup -> iMessage/SMS/RCS, with

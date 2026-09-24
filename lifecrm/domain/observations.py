@@ -35,7 +35,7 @@ __all__ = [
     "COMPARE_FIELDS", "HANDLE_KINDS", "ROLES", "validate", "existing_by_key",
     "classify", "start_import", "finish_import", "build_plan", "apply_plan",
     "retract_import", "refresh_handle_stats", "unresolved_handles",
-    "link_handle", "ignore_handle", "import_by_uuid",
+    "link_handle", "ignore_handle", "import_by_uuid", "mass_removal",
 ]
 
 # Fields that constitute the record's data (identity and bookkeeping excluded).
@@ -47,6 +47,15 @@ HANDLE_KINDS = ("phone", "email", "calendar", "app_account", "card", "place_id")
 ROLES = ("sender", "recipient", "participant", "organizer", "location",
          "counterparty")
 DIRECTIONS = ("in", "out", "self")
+
+# Mirroring. A connector whose every scan is its source's complete current
+# state may declare which ids the source still holds (`present_ids`); archived
+# rows it no longer holds are then removed, so the archive mirrors the source
+# instead of remembering it. A removal this large at once looks like an
+# incomplete source — a partial or cloud-optimized backup — more than like
+# deletions, and is refused unless explicitly allowed.
+MASS_REMOVAL_MIN = 100
+MASS_REMOVAL_SHARE = 0.10
 
 
 # ---------------------------------------------------------------- validation
@@ -353,14 +362,83 @@ def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     return {"new": new, "updates": updates, "refreshed": refreshed,
             "conflicts": conflicts, "identical": identical,
             "dup_incoming": dup_incoming, "invalid": invalid,
-            "streams": list(streams)}
+            "streams": list(streams), **_mirror_plan(conn, scan)}
+
+
+def _mirror_plan(conn: sqlite3.Connection, scan: dict) -> dict:
+    """What a mirroring scan removes: archived rows, first imported from the
+    same connector and account, in the connector's own streams, whose id the
+    source no longer holds.
+
+    Scoped to the account so a second phone never deletes the first's
+    messages, and keyed on what the source *holds*, not on what the connector
+    chose to emit — a message the connector cannot read today is still on
+    the phone, and must not vanish from the archive because of it.
+    """
+    present = scan.get("present_ids")
+    if present is None:
+        return {"removed": [], "mirror_scope": 0}
+    present = set(present)
+    mirror_streams = tuple(scan.get("mirror_streams") or ())
+    if not mirror_streams:
+        return {"removed": [], "mirror_scope": 0}
+    marks = ",".join("?" for _ in mirror_streams)
+    rows = conn.execute(
+        f"SELECT o.* FROM observations o JOIN imports i ON i.id = o.import_id "
+        f"WHERE o.status = 'active' AND o.stream IN ({marks}) "
+        f"AND i.connector = ? AND i.account IS ? "
+        f"ORDER BY o.stream, o.started_at, o.external_id",
+        (*mirror_streams, scan["connector"], scan.get("account"))).fetchall()
+    return {"removed": [r for r in rows if r["external_id"] not in present],
+            "mirror_scope": len(rows)}
+
+
+def mass_removal(plan: dict) -> str | None:
+    """The refusal message if this plan removes suspiciously much, else None."""
+    n, scope = len(plan.get("removed", ())), plan.get("mirror_scope", 0)
+    if n > MASS_REMOVAL_MIN and n > MASS_REMOVAL_SHARE * scope:
+        return (f"this would remove {n} of {scope} archived record(s) at once — "
+                f"more like an incomplete source (a partial or iCloud-optimized "
+                f"backup) than deletions. Check the source; if it is really what "
+                f"you want, re-run with --allow-mass-removal")
+    return None
+
+
+def _remove(conn: sqlite3.Connection, rows: list, actor: str) -> tuple[int, int]:
+    """Mirror deletions at the source: (deleted, retracted).
+
+    A row a confirmed entry cites as its provenance is retracted — hidden
+    everywhere — rather than deleted: the confirmed tier's provenance is never
+    destroyed (the lesson of entry merge, 1.1). Everything else is deleted;
+    participants and the search index follow by cascade and trigger.
+    """
+    deleted = retracted = 0
+    now = now_utc()
+    for row in rows:
+        cited = conn.execute("SELECT 1 FROM entry_observations WHERE "
+                             "observation_id=? LIMIT 1", (row["id"],)).fetchone()
+        if cited:
+            conn.execute("UPDATE observations SET status='retracted', updated_at=? "
+                         "WHERE id=?", (now, row["id"]))
+            retracted += 1
+        else:
+            conn.execute("DELETE FROM observations WHERE id=?", (row["id"],))
+            deleted += 1
+    if rows:
+        audit.log(conn, actor, "mirror_remove", "observations", None,
+                  {"deleted": deleted, "retracted_cited": retracted,
+                   "external_ids": sorted({r["external_id"] for r in rows})})
+    return deleted, retracted
 
 
 def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
-               actor: str = "import") -> dict:
+               actor: str = "import", allow_mass_removal: bool = False) -> dict:
     """Write the plan. The caller owns the transaction; nothing here commits."""
     if plan["invalid"]:
         raise DomainError(plan["invalid"][0])
+    refusal = mass_removal(plan)
+    if refusal and not allow_mass_removal:
+        raise DomainError(refusal)
     import_id, import_uuid = start_import(
         conn, scan["connector"], account=scan.get("account"),
         source_file=scan.get("source_file"), source_hash=scan.get("source_hash"))
@@ -374,11 +452,16 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
         _link_participants(conn, row["id"], rec.get("participants", []))
     for row, rec in plan["refreshed"]:
         _refresh_modified(conn, row, rec)
+    deleted, retracted = _remove(conn, plan.get("removed", []), actor)
     refresh_handle_stats(conn)
     counts = {"added": len(plan["new"]), "updated": len(plan["updates"]),
               "refreshed": len(plan["refreshed"]),
               "identical": plan["identical"],
               "conflicts": len(plan["conflicts"])}
+    if deleted or retracted:
+        counts["removed"] = deleted
+        if retracted:
+            counts["retracted_cited"] = retracted
     finish_import(conn, import_id, "applied", counts, actor)
     return {**counts, "import_uuid": import_uuid}
 

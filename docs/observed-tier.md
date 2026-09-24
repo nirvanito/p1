@@ -265,13 +265,17 @@ the observed tier is real.
    retracted (the archive mirrors)? **Provisionally decided as stay**, because
    that is what the ai_chat connector does today and it is the recoverable
    direction. Confirm before the first *text* import, where the stakes are
-   higher and the choice is unrecoverable the other way. *Implemented for
-   texts as "stay" — including unsends and edits — in docs/texts.md; still
-   awaiting the owner's confirmation before a real import.*
+   higher and the choice is unrecoverable the other way. **Decided per
+   connector, 2026-09-24:** texts *mirror* the phone — deleted and unsent
+   messages are removed (docs/texts.md, "The archive mirrors the phone");
+   ai_chat still remembers. Mirroring is a shared capability: a connector
+   whose scan is its source's complete state declares `present_ids`, and
+   `build_plan`/`apply_plan` remove what the source no longer holds.
 4. **Encryption at rest.** A decade of texts, finance and photo metadata in one
    unencrypted SQLite is the largest liability this project will ever hold, and
    it makes `dashboard --host 0.0.0.0` considerably more dangerous than it is
-   today. Decide before, not after.
+   today. Decide before, not after. **Decided 2026-09-24: not required** —
+   personal use, not a released product.
 5. **Handle privacy in exports** — do phone numbers and email addresses appear in
    the markdown archive, or only resolved entity names?
 

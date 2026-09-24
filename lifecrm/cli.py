@@ -881,6 +881,11 @@ app.add_typer(imports_app, name="imports")
 app.add_typer(handles_app, name="handles")
 
 
+def _mass_removal(plan: dict) -> str | None:
+    from .domain.observations import mass_removal
+    return mass_removal(plan)
+
+
 def _observe_summary(scan: dict, plan: dict, prior=None) -> dict:
     return {"connector": scan["connector"], "account": scan.get("account"),
             "source_file": scan.get("source_file"),
@@ -892,6 +897,8 @@ def _observe_summary(scan: dict, plan: dict, prior=None) -> dict:
             "conflicts": plan["conflicts"], "invalid": plan["invalid"],
             "handles": scan.get("handles", []), "unmapped": scan.get("unmapped", []),
             "skipped": scan.get("skipped", []), "facts": scan.get("facts"),
+            "removed": len(plan.get("removed", [])),
+            "mass_removal": _mass_removal(plan),
             "previously_imported_as": prior["uuid"] if prior else None}
 
 
@@ -936,6 +943,10 @@ def observe(
                    "to use the iPhone backup on this machine"),
     apply_changes: bool = typer.Option(False, "--apply",
                                        help="Write; default is a dry-run report"),
+    allow_mass_removal: bool = typer.Option(
+        False, "--allow-mass-removal",
+        help="Mirroring connectors: allow removing a large share of the archive "
+             "at once (refused by default — it usually means an incomplete source)"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Import an export into the observed tier (bulk records, no review gate).
@@ -989,11 +1000,26 @@ def observe(
                 if prior:
                     typer.echo(f"  note: this exact file was already imported on "
                                f"{prior['started_at'][:10]} ({prior['uuid'][:8]})")
+                refusal = obs.mass_removal(plan)
+                if refusal and not allow_mass_removal:
+                    typer.echo(f"  WILL BE REFUSED on --apply: {refusal}")
                 typer.echo("dry run — nothing written. Re-run with --apply to write.")
             return
 
+        refusal = obs.mass_removal(plan)
+        if refusal and not allow_mass_removal:
+            conn.rollback()
+            _fail(refusal)
+        snapshot = None
+        if plan.get("removed"):
+            # Removal is the one write here that a re-import cannot always
+            # undo, so it gets the migration treatment: a snapshot first. It is
+            # named like every other snapshot, so tiered retention prunes it.
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            snapshot = db_mod.snapshot(conn, cfg.backups_dir / f"lifecrm-{ts}.db")
         try:
-            summary = obs.apply_plan(conn, scan, plan)
+            summary = obs.apply_plan(conn, scan, plan,
+                                     allow_mass_removal=allow_mass_removal)
             conn.commit()
         except DomainError as e:
             conn.rollback()
@@ -1002,15 +1028,21 @@ def observe(
         conn.close()
 
     if as_json:
-        _echo_json({**_observe_summary(scan, plan, prior), "applied": summary})
+        _echo_json({**_observe_summary(scan, plan, prior), "applied": summary,
+                    "snapshot": str(snapshot) if snapshot else None})
         return
     for line in c.report_lines(scan, plan):
         typer.echo(line)
     typer.echo(f"applied: {summary['added']} added, {summary['updated']} updated, "
                f"{summary['refreshed']} refreshed; {summary['identical']} identical "
                f"skipped"
+               + (f"; {summary['removed']} removed" if summary.get("removed") else "")
+               + (f" ({summary['retracted_cited']} cited by journal entries kept "
+                  f"hidden, not deleted)" if summary.get("retracted_cited") else "")
                + (f"; {summary['conflicts']} conflict(s) kept existing"
                   if summary["conflicts"] else ""))
+    if snapshot:
+        typer.echo(f"snapshot before removing: {snapshot}")
     typer.echo(f"import {summary['import_uuid']} — undo with: "
                f"python -m lifecrm imports retract {summary['import_uuid']}")
     unresolved = _unresolved_count(cfg)

@@ -6,12 +6,10 @@ SQLite file. The `ios_messages` connector reads that file into the observed
 tier. It never talks to the phone, never reads a live database in place, and
 never sends anything.
 
-> **Read this first.** An unencrypted backup is your entire phone — messages,
-> photos, notes, health data, saved Wi-Fi networks — sitting readable on disk.
-> Importing texts also puts a decade of conversations into `lifecrm.db`, which
-> is itself unencrypted. `docs/next-brief.md` open decision #1 (encryption at
-> rest) exists for exactly this moment: settle it before the first real
-> `--apply`. The connector is dry-run by default, so looking costs nothing.
+Encryption at rest is decided *not required* (2026-09-24): this is a
+personal tool on a personal machine, not a released product. The backup must
+be unencrypted only because an encrypted one cannot be read without its
+password.
 
 ## Making the backup (Windows)
 
@@ -62,7 +60,6 @@ One observation per message, keyed on the message GUID:
 |---|---|
 | `imessage`, `sms`, `rcs` | the message, by the service that carried it |
 | `text_reaction` | a tapback added or removed — loved, liked, laughed, a custom emoji, a sticker |
-| `text_unsend` | a message its sender unsent |
 | `text_event` | something that happened to the thread: a member added or removed, someone changing their number, a rename (the new name is kept), someone leaving, the icon or background changed, a location share started or stopped, an audio message kept, SharePlay |
 
 A thread event names who did it and — for membership changes — who it was done
@@ -105,19 +102,42 @@ score — and prints the `handles link` command for each candidate. Nothing is
 linked until you run one. Linking one handle attributes every message that
 ever involved it, past and future.
 
-## The archive remembers (open decision #2, as implemented)
+## The archive mirrors the phone (decided 2026-09-24)
 
-- **Deleted on the phone:** absent from the next backup; the observation stays.
-- **Unsent:** the row is still there with its text cleared. It is *not*
-  re-imported as a message — that would blank the body the archive already
-  holds — and is recorded as its own `text_unsend` observation.
+Deleted and unsent messages do not stay in the archive.
+
+- **Deleted on the phone:** absent from the next backup, so its observation
+  is removed — the row, its participants and its search-index entry. The
+  dry-run report shows what an `--apply` would remove, by stream and by chat.
+- **Unsent:** never imported; removed if an earlier import already has it.
+- **Recovered on the phone** (Recently Deleted): back on the next import.
 - **Edited:** re-imported with the current text and the edit time as
-  `last_modified_at`, so it updates through the normal newer-wins path; the
-  audit log keeps the previous body, and `value_json.versions` carries the
-  full history from `message_summary_info`.
+  `last_modified_at`, so it updates through the normal newer-wins path;
+  `value_json.versions` carries the version history from
+  `message_summary_info`.
 
-This is the provisional answer from `docs/observed-tier.md`. Confirm it before
-the first real import — it is the recoverable direction, but it is a choice.
+What removal can never do:
+
+- **Remove a message the connector merely failed to read.** Removal keys on
+  what the phone's database still *holds*, not on what was imported this time
+  — an undecodable body is counted in the report and the message stays.
+- **Reach another phone's archive.** Only rows first imported from the same
+  account (the phone's own number) are candidates.
+- **Destroy a journal entry's provenance.** A message a confirmed entry cites
+  is hidden (`status='retracted'`) instead of deleted.
+- **Take most of the archive at once by accident.** A partial backup —
+  Messages in iCloud with *Optimize Storage* on keeps only recent texts on the
+  phone — looks exactly like mass deletion. Removing more than 100 records
+  *and* more than 10% of the phone's archive in one import is refused unless
+  you add `--allow-mass-removal`; the dry run warns before you get there.
+- **Happen without an undo.** Any import that removes something first takes a
+  standard database snapshot (`backups\lifecrm-<time>.db`, pruned by the usual
+  tiered retention); `lifecrm restore` brings it back.
+
+Residue worth knowing about: snapshots hold a removed message's text until
+retention prunes them, and the audit log — append-only by design — keeps the
+old and new text of any *edit* that message ever had. The audit row for a
+removal itself records only message ids, never text.
 
 ## Phone numbers
 
