@@ -407,3 +407,28 @@ def test_export_is_deterministic_for_observations(conn, cfg, tmp_path):
     export_jsonl(conn, b)
     assert (a / "observations.jsonl").read_text(encoding="utf-8") == \
            (b / "observations.jsonl").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- mirroring
+
+def test_mirroring_needs_an_account_to_scope_deletions(conn, cfg, tmp_path):
+    """The account is what keeps one source's deletions out of another's
+    archive; a scan that cannot name it removes nothing, whatever it claims."""
+    scan = _scan(tmp_path, cfg)
+    _apply(conn, scan)
+    anonymous = dict(scan, account=None, present_ids=[])     # "all deleted" — whose?
+    plan = obs.build_plan(conn, anonymous)
+    assert plan["removed"] == []
+    assert "does not say which account" in plan["mirror_note"]
+
+    named = dict(scan, present_ids=[])
+    assert len(obs.build_plan(conn, named)["removed"]) == 3
+
+
+def test_a_connector_that_does_not_mirror_removes_nothing(conn, cfg, tmp_path):
+    scan = _scan(tmp_path, cfg)
+    _apply(conn, scan)
+    remembering = {k: v for k, v in scan.items() if k != "present_ids"}
+    remembering["records"] = []
+    plan = obs.build_plan(conn, remembering)
+    assert plan["removed"] == [] and "mirror_note" not in plan

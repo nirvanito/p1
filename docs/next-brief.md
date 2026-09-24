@@ -288,7 +288,9 @@ decision to even consider.
    domain/observations.py (a connector declares `present_ids`; what its
    source no longer holds is removed, scoped per account, with a snapshot
    first, a mass-removal guard, and cited provenance hidden rather than
-   deleted). ai_chat still remembers; not asked to change.
+   deleted). **AI chats mirror too** (same day): a conversation deleted in the
+   app is removed on the next import, scoped to its vendor and account. Future
+   connectors: decide per connector when each lands.
 3. Export destination for `lifecrm export` (in-repo ignored dir vs outside).
 4. Whether `health import` folds into `observe health` once a second
    metric-shaped connector exists.

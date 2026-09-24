@@ -856,22 +856,12 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
         latest = max(recs, key=lambda x: (x["started_at"], x["external_id"]))
         lines.append(f"  {stream}: {len(info['new'])} new, {len(info['upd'])} changed "
                      f"| {span} | e.g. {_sample(latest)}")
-    removed = plan.get("removed") or []
-    if not by_stream and not removed:
+    if not by_stream and not plan.get("removed"):
         lines.append("  nothing new — the backup matches the database")
-    if removed:
-        per_stream: dict[str, int] = {}
-        per_chat: dict[str, int] = {}
-        for row in removed:
-            per_stream[row["stream"]] = per_stream.get(row["stream"], 0) + 1
-            chat = row["title"] or (json.loads(row["value_json"]).get("chat")
-                                    if row["value_json"] else None) or "?"
-            per_chat[chat] = per_chat.get(chat, 0) + 1
-        top = sorted(per_chat.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
-        lines.append(
-            f"  remove: {len(removed)} no longer on the phone (deleted or unsent) — "
-            + ", ".join(f"{n} {s}" for s, n in sorted(per_stream.items()))
-            + " | from " + ", ".join(f"{c} ({n})" for c, n in top))
+    lines += base.removal_lines(
+        plan, "no longer on the phone (deleted or unsent)",
+        lambda row: row["title"] or (json.loads(row["value_json"]).get("chat")
+                                     if row["value_json"] else None))
 
     tail = []
     if plan["identical"]:

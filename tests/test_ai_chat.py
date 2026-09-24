@@ -313,3 +313,130 @@ def test_cli_connectors_lists_streams(tmp_path, monkeypatch):
     assert "ai_chat" in r.output
     assert "never imported" in r.output
     assert "claude_chat" in r.output
+
+
+# ---------------------------------------------------------------- mirroring
+# The owner's decision (2026-09-24): the archive mirrors the account. A
+# conversation deleted in the app is gone from the next export, and so from
+# the archive.
+
+OLD_CHAT = {
+    "title": "Old chat", "create_time": 1772000000, "update_time": 1772000100,
+    "conversation_id": "cg2", "current_node": "z1",
+    "mapping": {
+        "z0": {"id": "z0", "parent": None, "children": ["z1"], "message": None},
+        "z1": {"id": "z1", "parent": "z0", "children": [], "message": {
+            "id": "z1", "author": {"role": "user"}, "create_time": 1772000050,
+            "content": {"content_type": "text", "parts": ["an old question"]},
+            "metadata": {}}}}}
+
+
+def _claude_variant(tmp_path, drop=(), blank=()):
+    data = json.loads((FIXTURES / "ai_chat_claude.json").read_text(encoding="utf-8"))
+    data = [c for c in data if c["uuid"] not in drop]
+    for conv in data:
+        for m in conv["chat_messages"]:
+            if m["uuid"] in blank:
+                m["text"], m["content"] = "", []
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    out = tmp_path / "conversations.json"
+    out.write_text(json.dumps(data), encoding="utf-8")
+    return out
+
+
+def _chatgpt_zip(tmp_path, with_old_chat, with_user=True):
+    data = json.loads((FIXTURES / "ai_chat_chatgpt.json").read_text(encoding="utf-8"))
+    if with_old_chat:
+        data.append(OLD_CHAT)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    z = tmp_path / "chatgpt-export.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("conversations.json", json.dumps(data))
+        if with_user:
+            zf.writestr("user.json", json.dumps(
+                {"id": "user-1", "email": "me@example.com", "name": "Casey"}))
+    return z
+
+
+def _apply(conn, scan):
+    from lifecrm.domain import observations as obs
+    plan = obs.build_plan(conn, scan)
+    result = obs.apply_plan(conn, scan, plan)
+    conn.commit()
+    return plan, result
+
+
+def _ids(conn, stream):
+    return sorted(r["external_id"] for r in conn.execute(
+        "SELECT external_id FROM observations WHERE stream=?", (stream,)))
+
+
+def test_a_conversation_deleted_in_claude_is_removed(tmp_path, cfg, conn):
+    _apply(conn, ai_chat.scan(claude_export(tmp_path / "a"), cfg))
+    assert _ids(conn, "claude_chat") == ["m1", "m2", "m5"]
+    plan, result = _apply(conn, ai_chat.scan(
+        _claude_variant(tmp_path / "b", drop=("c2-latenight",)), cfg))
+    assert [r["external_id"] for r in plan["removed"]] == ["m5"]
+    assert result["removed"] == 1
+    assert _ids(conn, "claude_chat") == ["m1", "m2"]
+
+
+def test_a_conversation_deleted_in_chatgpt_is_removed(tmp_path, cfg, conn):
+    _apply(conn, ai_chat.scan(_chatgpt_zip(tmp_path / "a", with_old_chat=True), cfg))
+    assert "z1" in _ids(conn, "chatgpt_chat")
+    plan, _ = _apply(conn, ai_chat.scan(_chatgpt_zip(tmp_path / "b", with_old_chat=False), cfg))
+    assert [r["external_id"] for r in plan["removed"]] == ["z1"]
+    assert "z1" not in _ids(conn, "chatgpt_chat")
+    assert _ids(conn, "chatgpt_chat"), "the conversation still in the export stays"
+
+
+def test_a_turn_the_connector_does_not_import_still_counts_as_present(tmp_path, cfg, conn):
+    """m1 loses its text in the second export, so it is not emitted — but it
+    is still in the export, and must not be mistaken for a deletion."""
+    _apply(conn, ai_chat.scan(claude_export(tmp_path / "a"), cfg))
+    scan = ai_chat.scan(_claude_variant(tmp_path / "b", blank=("m1",)), cfg)
+    assert "m1" not in _by_id(scan) and "m1" in scan["present_ids"]
+    from lifecrm.domain import observations as obs
+    assert obs.build_plan(conn, scan)["removed"] == []
+
+
+def test_a_claude_export_never_removes_chatgpt_messages(tmp_path, cfg, conn):
+    """Even under the same account name, each vendor mirrors only its own
+    stream."""
+    gpt = ai_chat.scan(_chatgpt_zip(tmp_path / "g", with_old_chat=True), cfg)
+    gpt["account"] = "acct-1"                  # collide with the Claude account
+    _apply(conn, gpt)
+    claude = ai_chat.scan(claude_export(tmp_path / "c"), cfg)
+    assert claude["account"] == "acct-1" and claude["mirror_streams"] == ["claude_chat"]
+    from lifecrm.domain import observations as obs
+    assert obs.build_plan(conn, claude)["removed"] == []
+
+
+def test_an_export_that_does_not_name_its_account_removes_nothing(tmp_path, cfg, conn):
+    _apply(conn, ai_chat.scan(_chatgpt_zip(tmp_path / "a", True, with_user=False), cfg))
+    scan = ai_chat.scan(_chatgpt_zip(tmp_path / "b", False, with_user=False), cfg)
+    assert scan["account"] is None
+    from lifecrm.domain import observations as obs
+    plan = obs.build_plan(conn, scan)
+    assert plan["removed"] == []
+    assert "does not say which account" in plan["mirror_note"]
+    text = "\n".join(ai_chat.report_lines(scan, plan))
+    assert "not mirroring deletions" in text
+
+
+def test_cli_removes_a_deleted_conversation_with_a_snapshot_first(tmp_path, monkeypatch):
+    root = cli_project(tmp_path, monkeypatch)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    r = runner.invoke(app, ["observe", "ai_chat", str(claude_export(tmp_path / "a")),
+                            "--apply"])
+    assert r.exit_code == 0, r.output
+    later = _claude_variant(tmp_path / "b", drop=("c2-latenight",))
+
+    r = runner.invoke(app, ["observe", "ai_chat", str(later)])
+    assert "remove: 1 no longer in the export (deleted)" in r.output
+    assert "(untitled) (1)" in r.output
+
+    r = runner.invoke(app, ["observe", "ai_chat", str(later), "--apply"])
+    assert r.exit_code == 0, r.output
+    assert "1 removed" in r.output and "snapshot before removing:" in r.output
+    assert list((root / "backups").glob("lifecrm-*.db"))

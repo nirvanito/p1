@@ -71,7 +71,7 @@ and each row is self-describing.
 Deliberate choices worth knowing:
 
 - **All ChatGPT branches are imported.** Regenerated answers and edited
-  prompts leave every branch in the export. The archive remembers all of them;
+  prompts leave every branch in the export, and all of them are imported;
   each row records `on_current_path` so recall can prefer the answer you kept.
 - **Media stays out of the database.** An attachment is a count in the detail
   blob, never a blob in SQLite.
@@ -88,6 +88,35 @@ is a no-op for everything already stored:
 - **update** — the record changed *and* is strictly newer. Applied, audit-logged.
 - **conflict** — the record changed but is *not* newer. **Never applied**,
   surfaced in the report so you decide.
+
+## Deleted conversations: the archive mirrors the account
+
+An export is the account's whole history, so a conversation you delete in
+Claude or ChatGPT is gone from the next export — and the next import removes
+it here too (decided 2026-09-24). The dry run shows what would go, by
+conversation:
+
+```
+  remove: 12 no longer in the export (deleted) — 12 claude_chat | from Slovenia trip planning (12)
+```
+
+The guards are the same as for texts (docs/texts.md):
+
+- **Only what the export no longer holds.** Every message id in the export
+  counts as present — including system turns and anything else this importer
+  skips — so a message it cannot read is never mistaken for a deleted one.
+- **Only this vendor, only this account.** A Claude export never removes
+  ChatGPT conversations, and one account's export never touches another's.
+  An export that does not name its account — ChatGPT without `user.json` —
+  removes nothing, and the report says so.
+- **Never most of the archive at once.** Removing more than 100 messages and
+  more than 10% of that account's archive in one import is refused without
+  `--allow-mass-removal` — a truncated or wrong export looks like mass deletion.
+- **Snapshot first.** An import that removes anything takes a standard
+  database snapshot beforehand.
+
+ChatGPT's abandoned branches are still in its export, so they stay: only what
+the export itself drops is removed.
 
 ## Attribution: link the account once
 
@@ -113,8 +142,6 @@ exists to answer.
   use your configured home timezone. A conversation held while travelling lands
   on the home-timezone day. The export does not say where you were, and
   guessing would be worse than the documented rule.
-- **Deleted conversations** vanish from later exports. Their observations stay
-  — the archive remembers. Retract the import if you want them gone.
 - **Memory.** A large export is parsed whole. A 100 MB `conversations.json`
   wants a few hundred MB of RAM for the duration of the run.
 

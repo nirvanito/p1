@@ -378,6 +378,12 @@ def _mirror_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     present = scan.get("present_ids")
     if present is None:
         return {"removed": [], "mirror_scope": 0}
+    if not scan.get("account"):
+        # The account is what keeps one source's deletions out of another's
+        # archive. An export that does not say whose it is removes nothing.
+        return {"removed": [], "mirror_scope": 0,
+                "mirror_note": "this source does not say which account it is, "
+                               "so deletions cannot be scoped to it safely"}
     present = set(present)
     mirror_streams = tuple(scan.get("mirror_streams") or ())
     if not mirror_streams:

@@ -151,6 +151,30 @@ def handle_for(raw: str | None) -> tuple[str, str] | None:
     return ("app_account", f"messages:{s}")
 
 
+# ---------------------------------------------------------------- mirroring
+
+def removal_lines(plan: dict, why: str, label) -> list[str]:
+    """Report lines for what a mirroring import would remove, or why it will
+    remove nothing. `label(row)` names the thread a removed row belongs to."""
+    lines = []
+    if plan.get("mirror_note"):
+        lines.append(f"  not mirroring deletions: {plan['mirror_note']}")
+    removed = plan.get("removed") or []
+    if not removed:
+        return lines
+    per_stream: dict[str, int] = {}
+    per_thread: dict[str, int] = {}
+    for row in removed:
+        per_stream[row["stream"]] = per_stream.get(row["stream"], 0) + 1
+        name = label(row) or "?"
+        per_thread[name] = per_thread.get(name, 0) + 1
+    top = sorted(per_thread.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+    lines.append(f"  remove: {len(removed)} {why} — "
+                 + ", ".join(f"{n} {s}" for s, n in sorted(per_stream.items()))
+                 + " | from " + ", ".join(f"{t} ({n})" for t, n in top))
+    return lines
+
+
 # ---------------------------------------------------------------- files
 
 def file_hash(path: Path) -> str:

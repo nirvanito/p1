@@ -122,7 +122,8 @@ What removal can never do:
   what the phone's database still *holds*, not on what was imported this time
   — an undecodable body is counted in the report and the message stays.
 - **Reach another phone's archive.** Only rows first imported from the same
-  account (the phone's own number) are candidates.
+  account (the phone's own number) are candidates, and a database that does
+  not say whose phone it is removes nothing.
 - **Destroy a journal entry's provenance.** A message a confirmed entry cites
   is hidden (`status='retracted'`) instead of deleted.
 - **Take most of the archive at once by accident.** A partial backup —

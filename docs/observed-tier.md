@@ -267,8 +267,9 @@ the observed tier is real.
    direction. Confirm before the first *text* import, where the stakes are
    higher and the choice is unrecoverable the other way. **Decided per
    connector, 2026-09-24:** texts *mirror* the phone — deleted and unsent
-   messages are removed (docs/texts.md, "The archive mirrors the phone");
-   ai_chat still remembers. Mirroring is a shared capability: a connector
+   messages are removed (docs/texts.md, "The archive mirrors the phone") —
+   and AI chats mirror the account (docs/ai-chat.md). Mirroring is a shared
+   capability, and needs the source to name its account: a connector
    whose scan is its source's complete state declares `present_ids`, and
    `build_plan`/`apply_plan` remove what the source no longer holds.
 4. **Encryption at rest.** A decade of texts, finance and photo metadata in one

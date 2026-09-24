@@ -62,8 +62,9 @@ provenance, closable loops, and entry links.
   are pure readers (`connectors/base.py` contract); dedupe, newer-wins
   classification, conflict surfacing, transactional apply, retraction and
   mirroring live once in `domain/observations.py` (a connector that declares
-  `present_ids` has what its source no longer holds removed — texts do; the
-  owner chose "mirror the phone" over "remember", 2026-09-24). Importers emit
+  `present_ids` has what its source no longer holds removed, scoped to its
+  own streams and a named account — texts and AI chats do; the owner chose
+  "mirror the source" over "remember", 2026-09-24). Importers emit
   *handles*, never names —
   linking one handle attributes every observation that referenced it, with no
   backfill pass. See `docs/observed-tier.md`, `docs/ai-chat.md`, and

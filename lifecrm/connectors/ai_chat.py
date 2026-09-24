@@ -22,6 +22,13 @@ the conversation's final path, so recall can prefer the answer that was kept.
 Identity is the vendor's own message id, so re-importing a later export of the
 same account is a no-op for everything already stored.
 
+The archive mirrors the account (owner's decision, 2026-09-24): an export is
+the account's whole history, so a conversation deleted in the app is removed
+here by the next import. Each scan reports every message id in the export —
+including turns this connector does not import — and removal is scoped to the
+export's own vendor stream and account. An export that does not name its
+account (ChatGPT without user.json) removes nothing.
+
 Known limitation, by design: chat exports carry no per-message timezone, so
 journal dates use the configured home timezone. A conversation held while
 travelling lands on the home-timezone day. The export does not say where you
@@ -91,6 +98,7 @@ def _claude_text(msg: dict) -> tuple[str, int]:
 
 def _read_claude(data: list, cfg: Config) -> dict:
     records, accounts = [], {}
+    present: set[str] = set()          # every message id in the export
     skipped: dict[str, int] = {}
     empty = no_time = 0
     for conv in data:
@@ -115,6 +123,8 @@ def _read_claude(data: list, cfg: Config) -> dict:
             if not isinstance(msg, dict):
                 continue
             mid = msg.get("uuid")
+            if mid:
+                present.add(str(mid))  # in the export, whether imported or not
             sender = msg.get("sender")
             if not mid or sender not in _KEEP_ROLES:
                 skipped[f"message role '{sender}'"] = \
@@ -162,7 +172,7 @@ def _read_claude(data: list, cfg: Config) -> dict:
                          kind="app_account")
     return {"records": records, "handles": handles, "account": account,
             "skipped": skipped, "empty": empty, "no_time": no_time,
-            "unmapped": []}
+            "unmapped": [], "present": present}
 
 
 # ---------------------------------------------------------------- ChatGPT
@@ -194,6 +204,7 @@ def _chatgpt_text(content: dict) -> tuple[str, int]:
 
 def _read_chatgpt(data: list, target: Path, cfg: Config) -> dict:
     records = []
+    present: set[str] = set()          # every message id in the export
     skipped: dict[str, int] = {}
     content_types: dict[str, int] = {}
     empty = no_time = 0
@@ -220,6 +231,7 @@ def _read_chatgpt(data: list, target: Path, cfg: Config) -> dict:
             msg = (node or {}).get("message")
             if not isinstance(msg, dict):
                 continue                       # root node carries no message
+            present.add(str(msg.get("id") or node_id))
             role = (msg.get("author") or {}).get("role")
             if role not in _KEEP_ROLES:
                 skipped[f"message role '{role}'"] = \
@@ -284,7 +296,7 @@ def _read_chatgpt(data: list, target: Path, cfg: Config) -> dict:
                 if k not in _TEXT_TYPES]
     return {"records": records, "handles": handles, "account": account,
             "skipped": skipped, "empty": empty, "no_time": no_time,
-            "unmapped": unmapped}
+            "unmapped": unmapped, "present": present}
 
 
 # ---------------------------------------------------------------- shared
@@ -326,6 +338,11 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         handles=result["handles"],
         unmapped=result["unmapped"],
         skipped=skipped,
+        # The export is the account's whole history, so the archive mirrors
+        # it — within this vendor's stream only: a Claude export must never
+        # remove ChatGPT conversations.
+        present_ids=result["present"],
+        mirror_streams=["claude_chat" if flavor == "claude" else "chatgpt_chat"],
         flavor=flavor,
         member=member,
         conversations=len(data))
@@ -362,8 +379,10 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
                 f"..{max(r['journal_date'] for r in recs)}") if recs else "-"
         lines.append(f"  {stream}: {len(info['new'])} new, {info['upd']} changed "
                      f"| {span} | e.g. {_sample(recs)}")
-    if not by_stream:
+    if not by_stream and not plan.get("removed"):
         lines.append("  nothing new — export matches the database")
+    lines += base.removal_lines(plan, "no longer in the export (deleted)",
+                                lambda row: row["title"])
 
     tail = []
     if plan["identical"]:
