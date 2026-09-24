@@ -265,7 +265,9 @@ the observed tier is real.
    retracted (the archive mirrors)? **Provisionally decided as stay**, because
    that is what the ai_chat connector does today and it is the recoverable
    direction. Confirm before the first *text* import, where the stakes are
-   higher and the choice is unrecoverable the other way.
+   higher and the choice is unrecoverable the other way. *Implemented for
+   texts as "stay" — including unsends and edits — in docs/texts.md; still
+   awaiting the owner's confirmation before a real import.*
 4. **Encryption at rest.** A decade of texts, finance and photo metadata in one
    unencrypted SQLite is the largest liability this project will ever hold, and
    it makes `dashboard --host 0.0.0.0` considerably more dangerous than it is

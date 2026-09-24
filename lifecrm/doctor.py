@@ -246,6 +246,32 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
                  f"entity — see: python -m lifecrm handles list")
         else:
             _add("ok", "unresolved_handles")
+
+        # A snapshot connector that stops being fed looks exactly like a
+        # healthy one. Connectors that expect a steady flow declare how stale
+        # is too stale; the check applies once the connector is in use, and
+        # measures the newest record, not the newest run — re-importing an old
+        # backup does not make the data fresh.
+        from .connectors import base as conn_base
+        for cname, c in sorted(conn_base.registry().items()):
+            limit = getattr(c, "stale_after_days", None)
+            if not limit:
+                continue
+            marks = ",".join("?" for _ in c.streams)
+            latest = conn.execute(
+                f"SELECT MAX(started_at) latest FROM observations "
+                f"WHERE status='active' AND stream IN ({marks})",
+                c.streams).fetchone()["latest"]
+            if latest is None:
+                continue
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=limit)
+                      ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if latest < cutoff:
+                _add("warn", f"{cname}_data_age",
+                     f"newest {cname} record is {latest[:10]} — nothing newer in "
+                     f"over {limit} days; is the backup/export still running?")
+            else:
+                _add("ok", f"{cname}_data_age")
     except sqlite3.OperationalError:
         pass   # pre-v4 schema; pending_migrations already failed above
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +101,54 @@ def journal_date_for_iso(iso: str, cfg: Config) -> str:
     """
     dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return days.journal_date_for(dt, cfg.timezone, cfg.day_rollover_hour)
+
+
+# ---------------------------------------------------------------- handles
+
+def normalize_phone(raw: str) -> str:
+    """One canonical spelling per phone number, so a number seen in texts, a
+    contact card and a calendar invite is one handle, not three.
+
+    '+' plus digits when the source says so. Otherwise North American numbers
+    are recognised by shape — 10 digits whose area code starts 2-9, or 11
+    digits starting with 1 — and given +1. Anything else stays as bare digits:
+    a national-format number from another country cannot be completed without
+    knowing the country, and guessing would merge two different people.
+    """
+    s = raw.strip()
+    digits = re.sub(r"\D", "", s)
+    if s.startswith("+"):
+        return "+" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    if len(digits) == 10 and digits[0] in "23456789":
+        return "+1" + digits
+    return digits
+
+
+_PHONE_SHAPE = re.compile(r"^\+?[\d\s().\-]+$")
+
+
+def handle_for(raw: str | None) -> tuple[str, str] | None:
+    """Classify a raw address as a (kind, value) handle, or None if empty.
+
+    Emails are lower-cased; phone-shaped strings are normalized. Anything else
+    — a Business Chat urn, an alphanumeric sender id like 'AMAZON' — is still
+    an identifier worth keeping (it can be linked or ignored), so it becomes
+    an app_account handle rather than being dropped.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s[:2].lower() in ("e:", "p:") and len(s) > 2:      # account prefixes
+        s = s[2:].strip()
+    if not s:
+        return None
+    if "@" in s and not s.lower().startswith("urn:"):
+        return ("email", s.lower())
+    if _PHONE_SHAPE.match(s) and re.search(r"\d", s):
+        return ("phone", normalize_phone(s))
+    return ("app_account", f"messages:{s}")
 
 
 # ---------------------------------------------------------------- files
@@ -177,8 +226,8 @@ def _load_json(raw: bytes, name: str):
 # ---------------------------------------------------------------- registry
 
 def registry() -> dict[str, Connector]:
-    from . import ai_chat
-    return {ai_chat.name: ai_chat}
+    from . import ai_chat, ios_messages
+    return {ai_chat.name: ai_chat, ios_messages.name: ios_messages}
 
 
 def get(name: str) -> Connector:

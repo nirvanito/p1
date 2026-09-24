@@ -38,7 +38,8 @@ provenance, closable loops, and entry links.
   dashboard (Datasette over a snapshot — never the live db),
   ask (cited answers; deterministic retrieval, optional local model),
   observe/connectors/imports/handles (observed tier — bulk imports that never
-  pass the review gate; dry-run by default),
+  pass the review gate; dry-run by default; connectors ai_chat, ios_messages;
+  `handles list --suggest` offers entity candidates, never links),
   entities (match/list/show/merge/alias-add), entry (show/edit/retract/
   restore/merge/close/reopen), link (add/list/rm), categories, kinds, admin.
 
@@ -62,7 +63,10 @@ provenance, closable loops, and entry links.
   classification, conflict surfacing, transactional apply and retraction live
   once in `domain/observations.py`. Importers emit *handles*, never names —
   linking one handle attributes every observation that referenced it, with no
-  backfill pass. See `docs/observed-tier.md` and `docs/ai-chat.md`.
+  backfill pass. See `docs/observed-tier.md`, `docs/ai-chat.md`, and
+  `docs/texts.md` — iPhone backup -> iMessage/SMS/RCS, with
+  `connectors/typedstream.py` decoding `attributedBody` (written from the
+  format; crabstep/imessage-exporter are GPL-3.0 — never copy their code).
 - `lifecrm/recall.py` + `lifecrm/llm.py` — `lifecrm ask`: rules parse the
   question (window + metrics), SQL answers it, every fact carries a citable
   id. The local model (Ollama over stdlib HTTP, optional) may only PHRASE

@@ -199,7 +199,10 @@ Budget's SQLite if adopted). Stream `txn`: `value`+`unit='usd'`, merchant in
 `title`, `counterparty` handles (`card` kind exists for this). NO
 auto-categorization — that is a derived layer.
 
-4.4 **Texts — the crown jewel and the worst acquisition.** iPhone has no
+4.4 **Texts — the crown jewel and the worst acquisition.** *Built
+2026-09-24, ahead of the gate, at the owner's request: `ios_messages`
+connector + `connectors/typedstream.py`; see docs/texts.md. Unproven until a
+real backup — its checklist is at the end of that doc.* iPhone has no
 API. Path: Apple Devices app makes a local unencrypted backup on Windows →
 parse `sms.db` (Manifest.db → hashed file names → Messages SQLite) → streams
 `imessage`/`sms`, `phone` handles per participant, group chats =
@@ -226,7 +229,10 @@ empty `days` rows); check dashboard queries stay fast; add
 
 5.1 **Handle-review ergonomics** (after texts land): `handles list` gains
 `--suggest` using display_name ↔ existing entity/alias matches — suggestions
-only, confirmation stays manual. Gate: >50 unresolved handles.
+only, confirmation stays manual. Gate: >50 unresolved handles. *Built
+2026-09-24 with 4.4: `entities.match` gained order-free word matching (plus
+accent folding), and texts supply display names from the phone's own address
+book.*
 
 5.2 **`/review-week` skill.** Reads last 7 days (entries, closed/open loops,
 day summaries, health trends, observation counts) → draft brief through the
@@ -274,7 +280,15 @@ decision to even consider.
 
 1. Encryption at rest (before texts/finance land — the liability jumps an
    order of magnitude at 4.3/4.4). SQLCipher vs BitLocker-only vs deferred.
+   **Still open, and now live:** the texts connector exists (2026-09-24), so
+   this gates the first real `observe ios_messages --apply`. An unencrypted
+   iPhone backup on disk is part of the same exposure (docs/texts.md).
 2. Deletion semantics per connector (provisional: archive remembers).
+   **Implemented for texts (2026-09-24), pending your confirmation:** deleted
+   on the phone -> observation stays; unsent -> recorded as a `text_unsend`
+   observation and the archived body is never blanked; edited -> newer-wins
+   update, previous body kept in the audit log and `value_json.versions`.
+   Confirm before the first real text import (docs/texts.md).
 3. Export destination for `lifecrm export` (in-repo ignored dir vs outside).
 4. Whether `health import` folds into `observe health` once a second
    metric-shaped connector exists.

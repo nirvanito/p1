@@ -293,6 +293,13 @@ def _op_observe_retract(conn, cfg, tmp_path):
     obs.retract_import(conn, result["import_uuid"])
 
 
+def _op_observe_ios_messages(conn, cfg, tmp_path):
+    from test_ios_messages import make_backup
+    from lifecrm.connectors import ios_messages
+    scan = ios_messages.scan(make_backup(tmp_path / "backup"), cfg)
+    obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
+
+
 def _op_handle_link(conn, cfg, tmp_path):
     scan = _ai_chat_scan(cfg, tmp_path)
     obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
@@ -320,6 +327,7 @@ DOMAIN_OPS = {
     "health restore": _op_health_restore,
     "observe apply": _op_observe_apply,
     "observe retract": _op_observe_retract,
+    "observe ios_messages": _op_observe_ios_messages,
     "handles link": _op_handle_link,
 }
 
