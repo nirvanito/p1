@@ -1,14 +1,16 @@
 """Entities: canonical names, aliases, resolution, and merge.
 
 Resolution order: exact canonical name → exact alias → fuzzy candidates
-(difflib ratio >= 0.75, plus substring hits). Candidates are returned scored
-for a human (or the /log skill) to decide — never auto-picked. An alias mapping
-to several entities is a supported state.
+(difflib ratio or word-level agreement >= 0.75, plus substring hits).
+Candidates are returned scored for a human (or the /log skill) to decide —
+never auto-picked. An alias mapping to several entities is a supported state.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
+import unicodedata
 from difflib import SequenceMatcher
 
 from ..config import ENTITY_TYPES
@@ -16,6 +18,47 @@ from . import audit
 from .util import DomainError, new_uuid, now_utc, slugify
 
 FUZZY_THRESHOLD = 0.75
+_WORD = re.compile(r"\w+")
+
+
+def _fold(text: str) -> str:
+    """Case- and accent-insensitive: a contact card's 'José Núñez' and an
+    entity typed as 'Jose Nunez' are the same words."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def _word_score(query: str, label: str) -> float:
+    """Word-level agreement, independent of order: 'Reilly, Jake' against
+    'Jake Reilly', or a contact card's 'Alex Chen' against 'Alexander Chen'.
+
+    Whole-string similarity misses both: reordering and a longer first name
+    wreck a character diff. Here each word of the shorter name takes its best
+    partner in the longer one — identical 1.0; one a prefix of the other
+    ('alex'/'alexander') 0.85; a lone initial of the other ('w'/'whitfield')
+    0.8; else character similarity — and words left unpartnered count
+    against the total. Capped below 1.0, so it can never pass for an exact
+    name or alias match.
+    """
+    q, l = _WORD.findall(_fold(query)), _WORD.findall(_fold(label))
+    if not q or not l:
+        return 0.0
+    short, longer = (q, l) if len(q) <= len(l) else (l, q)
+    total = 0.0
+    for a in short:
+        best = 0.0
+        for b in longer:
+            if a == b:
+                s = 1.0
+            elif min(len(a), len(b)) >= 3 and (a.startswith(b) or b.startswith(a)):
+                s = 0.85
+            elif min(len(a), len(b)) == 1 and a[0] == b[0]:
+                s = 0.8
+            else:
+                s = SequenceMatcher(None, a, b).ratio()
+            best = max(best, s)
+        total += best
+    return min(0.95, total / len(longer))
 
 
 def _validate_type(entity_type: str) -> None:
@@ -88,7 +131,7 @@ def match(conn: sqlite3.Connection, name: str, entity_type: str | None = None) -
     best: dict[int, dict] = {}
     for r in rows:
         label = r["label"].lower().strip()
-        score = SequenceMatcher(None, q, label).ratio()
+        score = max(SequenceMatcher(None, q, label).ratio(), _word_score(q, label))
         substring = len(q) >= 3 and (q in label or label in q)
         if score >= FUZZY_THRESHOLD or substring:
             cand = {"id": r["id"], "uuid": r["uuid"], "name": r["name"], "type": r["type"],

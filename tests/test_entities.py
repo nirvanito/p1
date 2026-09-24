@@ -108,3 +108,25 @@ def test_rename_keeps_old_name_as_alias(conn):
     m = entities.match(conn, "Jake")
     assert m["status"] == "alias"
     assert entities.match(conn, "Jake Reilly")["status"] == "exact"
+
+
+# ---------------------------------------------------------------- word-level
+
+@pytest.mark.parametrize("query,expected", [
+    ("Reilly, Jake", "Jake Reilly"),        # reordered
+    ("Alex Chen", "Alexander Chen"),        # a longer first name
+    ("Dana W.", "Dana Whitfield"),          # an initial
+    ("José Núñez", "Jose Nunez"),           # accents on one side only
+])
+def test_word_level_candidates(conn, query, expected):
+    ent = entities.create(conn, "person", expected)
+    result = entities.match(conn, query)
+    assert result["status"] == "candidates"
+    assert result["matches"][0]["id"] == ent["id"]
+    assert result["matches"][0]["score"] < 1.0       # never passes for exact
+
+
+@pytest.mark.parametrize("query,other", [("Sam Ortiz", "Sam Smith"), ("Mom", "Tom")])
+def test_word_level_does_not_invent_matches(conn, query, other):
+    entities.create(conn, "person", other)
+    assert entities.match(conn, query)["status"] == "none"

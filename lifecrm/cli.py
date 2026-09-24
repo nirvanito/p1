@@ -1078,6 +1078,8 @@ def imports_retract(
 def handles_list(
     show_all: bool = typer.Option(False, "--all", help="Include resolved and ignored"),
     limit: int = typer.Option(50, "--limit"),
+    suggest: bool = typer.Option(False, "--suggest",
+                                 help="Offer existing entities matching each name"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Machine identifiers seen in imports, noisiest first.
@@ -1085,9 +1087,14 @@ def handles_list(
     This is the review queue that makes the observed tier answerable. Linking
     ONE handle to an entity resolves every observation that ever referenced
     it — past and future — with no backfill pass.
+
+    --suggest matches each unresolved handle's display name (what the source
+    called it — a contact card's name, for texts) against your entities and
+    aliases. Suggestions only: nothing is linked until you run `handles link`.
     """
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
+    suggestions: dict[tuple[str, str], list[dict]] = {}
     try:
         if show_all:
             rows = conn.execute(
@@ -1101,10 +1108,22 @@ def handles_list(
                 "WHERE h.entity_id IS NULL AND h.ignored=0 "
                 "ORDER BY h.observation_count DESC, h.kind, h.value LIMIT ?",
                 (limit,)).fetchall()
+        if suggest:
+            for r in rows:
+                if r["entity_id"] is None and r["display_name"]:
+                    found = entities_mod.match(conn, r["display_name"])["matches"][:3]
+                    if found:
+                        suggestions[(r["kind"], r["value"])] = found
     finally:
         conn.close()
     if as_json:
-        _echo_json([dict(r) for r in rows])
+        out = []
+        for r in rows:
+            item = dict(r)
+            if suggest:
+                item["suggestions"] = suggestions.get((r["kind"], r["value"]), [])
+            out.append(item)
+        _echo_json(out)
         return
     if not rows:
         typer.echo("no unresolved handles" if not show_all else "no handles yet")
@@ -1119,10 +1138,19 @@ def handles_list(
         span = f"{r['first_seen_at'][:10]}..{r['last_seen_at'][:10]}"
         typer.echo(f"{r['observation_count']:6}  {r['kind']}:{r['value']}  "
                    f"{who}  {span}  {r['display_name'] or ''}")
+        for m in suggestions.get((r["kind"], r["value"]), []):
+            typer.echo(f"          maybe: {m['name']} ({m['type']}, id {m['id']}) "
+                       f"{m['score']:.2f} via {m['via']} -> handles link "
+                       f"{r['kind']}:{r['value']} --entity {m['id']}")
     if not show_all:
         typer.echo("")
         typer.echo("link one with: python -m lifecrm handles link "
                    "<kind:value> --entity <id>")
+        typer.echo("or create it:  python -m lifecrm handles link "
+                   "<kind:value> --new \"<name>\"")
+        if not suggest and any(r["display_name"] for r in rows):
+            typer.echo("see candidate entities for named handles: "
+                       "python -m lifecrm handles list --suggest")
 
 
 @handles_app.command("link")
