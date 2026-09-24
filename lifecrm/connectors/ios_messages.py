@@ -8,9 +8,12 @@ database in place, and never sends anything.
 
 Accepted targets
 ----------------
+- nothing at all: `default_target` finds the one backup on this machine where
+  Apple's tools write them, and refuses to guess between several phones.
 - a backup folder (the one holding Manifest.db) — the normal case. The
   Messages database is located through Manifest.db, and the phone's own
   address book is read from the same backup to name the handles.
+- the MobileSync\\Backup folder above it, when it holds exactly one backup.
 - a folder holding sms.db (or chat.db) and, optionally, AddressBook.sqlitedb.
 - a bare sms.db / chat.db file. A Mac's ~/Library/Messages/chat.db has the
   same schema; it is copied through SQLite's backup API, never read in place.
@@ -26,6 +29,11 @@ One observation per message, keyed on the message GUID:
                          'Loved "see you at 6"', and letting that into message
                          search and "last talked to" counts would be noise
   text_unsend            a message the sender unsent
+  text_event             something that happened to the thread: a member
+                         added or removed, a number changed, a rename, an
+                         icon or background change, someone leaving, a
+                         location share started or stopped, an audio message
+                         kept, SharePlay
 
 Participants are **handles, never names**: phone numbers, email addresses,
 and — for Business Chat and alphanumeric senders — an app_account handle. The
@@ -53,8 +61,6 @@ Known limitations, by design
   zone per message.
 - Attachments are recorded by name, type and path inside the phone. The files
   stay in the backup — media never enters the database.
-- Group events (member added, renamed, photo changed) are counted, not
-  imported, in this version.
 - An Android phone's reactions arrive over SMS as ordinary text
   ('Loved "..."') and are imported as the messages they are.
 """
@@ -63,6 +69,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import plistlib
 import shutil
 import sqlite3
@@ -74,7 +81,7 @@ from ..domain.util import DomainError, canonical_json
 from . import base, typedstream
 
 name = "ios_messages"
-streams = ("imessage", "sms", "rcs", "text_reaction", "text_unsend")
+streams = ("imessage", "sms", "rcs", "text_reaction", "text_unsend", "text_event")
 # Texts flow daily; a newest message this old means backups have stopped.
 stale_after_days = 14
 
@@ -98,7 +105,16 @@ _MESSAGE_COLUMNS = (
     "date_retracted", "message_summary_info", "item_type",
     "destination_caller_id", "account", "is_audio_message",
     "expressive_send_style_id", "balloon_bundle_id",
+    "group_action_type", "other_handle", "group_title", "share_status",
+    "share_direction",
 )
+
+# Thread events: (item_type, group_action_type) -> what happened. item_type 1
+# carries the affected member in other_handle; an "added" row naming the
+# sender themself is that person changing their number.
+_EVENTS_3 = {0: "left", 1: "icon_changed", 2: "icon_removed",
+             4: "background_changed", 6: "background_removed"}
+_MEMBER_EVENTS = ("member_added", "member_removed", "number_changed")
 
 
 # ---------------------------------------------------------------- time
@@ -145,14 +161,8 @@ def _backup_files(target: Path) -> dict:
     has no row. Each path comes back with its -wal sibling when one exists:
     a backup can hold writes that were never checkpointed into the main file.
     """
-    manifest_plist = target / "Manifest.plist"
-    if manifest_plist.exists():
-        try:
-            meta = plistlib.loads(manifest_plist.read_bytes())
-        except Exception:
-            meta = {}
-        if isinstance(meta, dict) and meta.get("IsEncrypted"):
-            raise _fail_encrypted(target)
+    if _is_encrypted(target):
+        raise _fail_encrypted(target)
     try:
         man = sqlite3.connect(f"{(target / 'Manifest.db').resolve().as_uri()}?mode=ro",
                               uri=True)
@@ -208,27 +218,93 @@ def _device(target: Path) -> dict:
     return out
 
 
+def _is_encrypted(folder: Path) -> bool:
+    manifest_plist = folder / "Manifest.plist"
+    if not manifest_plist.exists():
+        return False
+    try:
+        meta = plistlib.loads(manifest_plist.read_bytes())
+    except Exception:
+        return False
+    return isinstance(meta, dict) and bool(meta.get("IsEncrypted"))
+
+
+# ---------------------------------------------------------------- finding backups
+
+def backup_roots() -> list[Path]:
+    """Where Apple's tools write device backups: the Apple Devices app (and
+    Microsoft Store iTunes), desktop iTunes, then a Mac's Finder."""
+    roots = []
+    if os.environ.get("USERPROFILE"):
+        roots.append(Path(os.environ["USERPROFILE"]) / "Apple" / "MobileSync" / "Backup")
+    if os.environ.get("APPDATA"):
+        roots.append(Path(os.environ["APPDATA"]) / "Apple Computer" / "MobileSync"
+                     / "Backup")
+    roots.append(Path.home() / "Library" / "Application Support" / "MobileSync"
+                 / "Backup")
+    return list(dict.fromkeys(roots))
+
+
+def find_backups(root: Path) -> list[dict]:
+    """Every device backup directly under `root`, with what identifies it."""
+    if not root.is_dir():
+        return []
+    found = []
+    for d in sorted(root.iterdir()):
+        if d.is_dir() and (d / "Manifest.db").exists():
+            found.append({"path": d, "encrypted": _is_encrypted(d), **_device(d)})
+    return found
+
+
+def _choose(found: list[dict], searched: str) -> Path:
+    """The one backup there is — never a guess between several phones."""
+    if not found:
+        raise DomainError(
+            f"no iPhone backup found in {searched} — make one first "
+            f"(docs/texts.md), or pass the backup folder's path")
+    if len(found) == 1:
+        return found[0]["path"]
+    listing = "; ".join(
+        f"{b['path']} ({b.get('device') or 'unknown device'}, "
+        f"{b.get('backup_date') or 'undated'}{', encrypted' if b['encrypted'] else ''})"
+        for b in found)
+    raise DomainError(f"{len(found)} iPhone backups found — pass one of them: {listing}")
+
+
+def default_target(cfg: Config) -> Path:
+    """The backup to read when no path is given: the only one on this
+    machine, looked for where Apple's tools put them."""
+    roots = backup_roots()
+    return _choose([b for root in roots for b in find_backups(root)],
+                   ", ".join(str(r) for r in roots))
+
+
 def _resolve(target: Path) -> dict:
-    """{'messages', 'messages_wal', 'contacts', 'contacts_wal', 'kind'}."""
+    """{'messages', 'messages_wal', 'contacts', 'contacts_wal', 'kind', 'folder'}."""
     if target.is_dir():
         if (target / "Manifest.db").exists():
-            return {**_backup_files(target), "kind": "backup"}
+            return {**_backup_files(target), "kind": "backup", "folder": target}
         for db in ("sms.db", "chat.db"):
             if (target / db).exists():
                 book = target / "AddressBook.sqlitedb"
                 return {"messages": target / db, "messages_wal": None,
                         "contacts": book if book.exists() else None,
-                        "contacts_wal": None, "kind": "folder"}
+                        "contacts_wal": None, "kind": "folder", "folder": target}
+        backups = find_backups(target)
+        if backups:          # the MobileSync\Backup folder itself: pick its one backup
+            return _resolve(_choose(backups, str(target)))
         listing = ", ".join(sorted(p.name for p in target.iterdir())[:10]) or "(empty)"
         raise DomainError(
             f"{target.name} is neither an iOS backup (no Manifest.db) nor a "
             f"folder holding sms.db or chat.db (has: {listing})")
     return {"messages": target, "messages_wal": None, "contacts": None,
-            "contacts_wal": None, "kind": "file"}
+            "contacts_wal": None, "kind": "file", "folder": target}
 
 
-def _snapshot(src: Path, wal: Path | None, tmp: Path, label: str) -> sqlite3.Connection:
-    """A private, consistent copy of a database, opened query-only.
+def _snapshot(src: Path, wal: Path | None, tmp: Path,
+              label: str) -> tuple[sqlite3.Connection, bool]:
+    """A private, consistent copy of a database, opened query-only, and
+    whether a -wal (writes never checkpointed into the main file) was read.
 
     A backup's hashed files are copied under their real names so SQLite finds
     the -wal beside the main file. A bare file goes through the backup API,
@@ -238,7 +314,8 @@ def _snapshot(src: Path, wal: Path | None, tmp: Path, label: str) -> sqlite3.Con
     """
     dest = tmp / f"{label}.db"
     sibling_wal = src.with_name(src.name + "-wal")
-    if wal is None and sibling_wal.exists()             and not src.with_name(src.name + "-shm").exists():
+    sibling_shm = src.with_name(src.name + "-shm")
+    if wal is None and sibling_wal.exists() and not sibling_shm.exists():
         # Copied files: SQLite cannot open a WAL database read-only without
         # its -shm, so take both halves. (A live database has its -shm, and
         # the backup API below reads it consistently.)
@@ -259,7 +336,7 @@ def _snapshot(src: Path, wal: Path | None, tmp: Path, label: str) -> sqlite3.Con
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON")
         conn.execute("SELECT name FROM sqlite_master LIMIT 1")
-        return conn
+        return conn, wal is not None or sibling_wal.exists()
     except sqlite3.DatabaseError as e:
         raise DomainError(f"cannot read {src.name} as a database: {e}") from e
 
@@ -374,6 +451,28 @@ def _reaction(code: int) -> tuple[str, bool] | None:
     return None
 
 
+def _event(r: dict) -> dict | None:
+    """A thread event's detail, or None when the row is not one we know."""
+    kind, action = r["item_type"], r["group_action_type"] or 0
+    if kind == 1 and r["other_handle"]:
+        if action == 0:
+            return {"event": "number_changed" if r["other_handle"] == r["handle_id"]
+                    else "member_added"}
+        if action == 1:
+            return {"event": "member_removed"}
+    if kind == 2 and r["group_title"] is not None:
+        return {"event": "renamed", "name": r["group_title"]}
+    if kind == 3 and action in _EVENTS_3:
+        return {"event": _EVENTS_3[action]}
+    if kind == 4 and action == 0:
+        return {"event": "location_stopped" if r["share_status"] else "location_started"}
+    if kind == 5:
+        return {"event": "audio_kept"}
+    if kind == 6:
+        return {"event": "shareplay"}
+    return None
+
+
 def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -433,6 +532,7 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
     owners: dict[str, int] = {}
     skipped: dict[str, int] = {}
     unmapped: dict[str, int] = {}
+    examples: dict[str, tuple[str, str]] = {}      # raw address -> its handle
     counts = {"messages": 0, "chats": len(chats)}
 
     def skip(reason: str) -> None:
@@ -451,9 +551,6 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
         if not r["guid"]:
             skip("message without a GUID")
             continue
-        if r["item_type"] not in (None, 0):
-            skip("group event (member added/removed, renamed, photo)")
-            continue
         sent = apple_iso(r["date"])
         if sent is None:
             skip("message with no usable timestamp")
@@ -464,6 +561,19 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
                    if h in handle_ids]
         is_group = chat.get("style") == _GROUP_STYLE or len(members) > 1
         from_me = bool(r["is_from_me"])
+        event = None
+        if r["item_type"] not in (None, 0):
+            event = _event(r)
+            if event is None:
+                label = (f"thread event item_type {r['item_type']}/"
+                         f"{r['group_action_type'] or 0}")
+                unmapped[label] = unmapped.get(label, 0) + 1
+                continue
+            if r["item_type"] == 4 and r["other_handle"] \
+                    and r["share_direction"] is not None:
+                # A location share is filed against the other party; the
+                # direction flag says whose location it was.
+                from_me = from_me or not r["share_direction"]
         owner = base.handle_for(r["destination_caller_id"] or r["account"])
         if owner:
             owners[owner[1]] = owners.get(owner[1], 0) + 1
@@ -476,18 +586,30 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
                 p = {**seen(h, owner=is_owner), "role": role}
                 if p not in participants:
                     participants.append(p)
+                if not is_owner and len(examples) < 50 and str(raw).strip() != h[1]:
+                    examples.setdefault(str(raw).strip(), h)
+            return h
 
         sender_raw = None if from_me else handle_ids.get(r["handle_id"])
         if from_me:
             add(None, "sender", is_owner=True)
         elif sender_raw:
             add(sender_raw, "sender")
-        for m in members or ([handle_ids[r["handle_id"]]]
-                             if r["handle_id"] in handle_ids else []):
-            if base.handle_for(m) != base.handle_for(sender_raw):
-                add(m, "recipient")
-        if not from_me:
-            add(None, "recipient", is_owner=True)
+        if event is not None:
+            # A thread event names who did it and, for membership changes,
+            # who it was done to — not everyone in the room.
+            member_raw = handle_ids.get(r["other_handle"])
+            if event["event"] in _MEMBER_EVENTS and member_raw:
+                h = add(member_raw, "participant")
+                if h:
+                    event["member"] = f"{h[0]}:{h[1]}"
+        else:
+            for m in members or ([handle_ids[r["handle_id"]]]
+                                 if r["handle_id"] in handle_ids else []):
+                if base.handle_for(m) != base.handle_for(sender_raw):
+                    add(m, "recipient")
+            if not from_me:
+                add(None, "recipient", is_owner=True)
 
         detail = {"chat": chat.get("guid") or chat.get("chat_identifier")}
         if is_group:
@@ -498,6 +620,14 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
                   "ended_at": None, "utc_offset_sec": None, "direction": direction,
                   "value": None, "unit": None, "media_path": None,
                   "participants": participants}
+
+        # --- thread events: membership, renames, location shares ---------
+        if event is not None:
+            records.append({**common, "stream": "text_event", "external_id": r["guid"],
+                            "started_at": sent, "title": title, "body": None,
+                            "value_json": _json({**detail, **event}),
+                            "origin_app": "messages", "last_modified_at": sent})
+            continue
 
         # --- tapbacks ----------------------------------------------------
         code = r["associated_message_type"] or 0
@@ -583,29 +713,41 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
         skipped["link-preview payload attachment"] = payloads
     account = max(owners, key=owners.get) if owners else None
     return {"records": records, "handles": handles, "account": account,
-            "skipped": skipped, "unmapped": unmapped, "counts": counts}
+            "skipped": skipped, "unmapped": unmapped, "counts": counts,
+            "examples": examples}
 
 
 # ---------------------------------------------------------------- scan
 
+def _content_hash(*paths: Path | None) -> str:
+    """One hash over the database and its -wal: new messages can live only in
+    the -wal, and a backup that changed must not look like one that didn't."""
+    h = hashlib.sha256()
+    for p in paths:
+        if p is not None and p.exists():
+            h.update(base.file_hash(p).encode())
+    return h.hexdigest()
+
+
 def scan(target: Path, cfg: Config) -> base.Scan:
     files = _resolve(target)
-    info = _device(target) if files["kind"] == "backup" else {}
+    folder = files["folder"]
+    info = _device(folder) if files["kind"] == "backup" else {}
     tmp = tempfile.TemporaryDirectory(prefix="lifecrm-msg-")
     try:
         tmp_path = Path(tmp.name)
-        msg_conn = _snapshot(files["messages"], files["messages_wal"], tmp_path, "messages")
+        msg_conn, wal_read = _snapshot(files["messages"], files["messages_wal"],
+                                       tmp_path, "messages")
         book_conn = None
         try:
+            contacts = {}
             if files["contacts"] is not None:
                 try:
-                    book_conn = _snapshot(files["contacts"], files["contacts_wal"],
-                                          tmp_path, "contacts")
+                    book_conn, _ = _snapshot(files["contacts"], files["contacts_wal"],
+                                             tmp_path, "contacts")
                     contacts = _contact_names(book_conn)
                 except (DomainError, sqlite3.DatabaseError):
                     contacts = {}          # names are a courtesy; never fail on them
-            else:
-                contacts = {}
             result = _read(msg_conn, contacts, cfg)
         finally:
             msg_conn.close()
@@ -620,15 +762,31 @@ def scan(target: Path, cfg: Config) -> base.Scan:
                for (k, v), label in sorted(result["handles"].items())]
     skipped = [f"{v} × {k}" for k, v in sorted(result["skipped"].items())]
     unmapped = [{"what": k, "count": v} for k, v in sorted(result["unmapped"].items())]
+
+    # The facts a first real import has to check, stated by the import itself
+    # rather than left for someone to go and find out (docs/texts.md).
+    dates = [r["journal_date"] for r in records if r["stream"] in ("imessage", "sms", "rcs")]
+    names = dict(result["handles"])
+    facts = {
+        "folder": str(folder.resolve()),
+        "wal_read": wal_read,
+        "oldest_message": min(dates) if dates else None,
+        "newest_message": max(dates) if dates else None,
+        "normalized": [{"raw": raw, "handle": f"{h[0]}:{h[1]}", "name": names.get(h)}
+                       for raw, h in sorted(result["examples"].items())[:5]],
+    }
     return base.empty_scan(
         name,
         account=result["account"],
-        source_file=target.name,
-        source_hash=base.file_hash(files["messages"]),
+        source_file=folder.name,
+        source_hash=_content_hash(files["messages"], files["messages_wal"]
+                                  or files["messages"].with_name(
+                                      files["messages"].name + "-wal")),
         records=records,
         handles=handles,
         unmapped=unmapped,
         skipped=skipped,
+        facts=facts,
         target_kind=files["kind"],
         contacts_read=files["contacts"] is not None,
         named_handles=sum(1 for h in handles if h["display_name"]
@@ -650,6 +808,12 @@ def _sample(rec: dict) -> str:
         return f"{rec['journal_date']} {who}: {what}"
     if rec["stream"] == "text_unsend":
         return f"{rec['journal_date']} {who}: unsent a message"
+    if rec["stream"] == "text_event":
+        d = json.loads(rec["value_json"])
+        what = d.get("event", "?").replace("_", " ")
+        if d.get("name"):
+            what += f" to '{d['name']}'"
+        return f"{rec['journal_date']} {who}: {what}"
     body = " ".join((rec["body"] or "[attachment]").split())
     if len(body) > 60:
         body = body[:59] + "…"
@@ -664,8 +828,21 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
     if scan.get("backup_date"):
         head += f", taken {scan['backup_date']}"
     lines = [head + f"; {scan['messages_seen']} message row(s), {scan['chats']} chat(s))"]
+    facts = scan.get("facts") or {}
+    if facts.get("folder"):
+        lines.append(f"  read from: {facts['folder']}")
     if scan["account"]:
         lines.append(f"  account: {scan['account']}")
+    if facts.get("oldest_message"):
+        lines.append(f"  messages span {facts['oldest_message']}..{facts['newest_message']} "
+                     f"— check the oldest against what the phone shows")
+    lines.append("  sms.db-wal: " + ("read — writes not yet folded into the main file "
+                                     "are included" if facts.get("wal_read") else "none"))
+    if facts.get("normalized"):
+        lines.append("  normalized, e.g.: " + "; ".join(
+            f"{n['raw']} -> {n['handle'].split(':', 1)[1]}"
+            + (f" ({n['name']})" if n.get("name") else "")
+            for n in facts["normalized"]))
 
     by_stream: dict[str, dict] = {}
     for rec in plan["new"]:

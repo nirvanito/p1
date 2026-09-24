@@ -20,30 +20,35 @@ never sends anything.
 2. Under *Backups*, choose **Back up all of the data on your iPhone to this
    computer**, and make sure **Encrypt local backup is unticked**. An encrypted
    backup cannot be read without its password; the connector says so and stops.
-3. Back up now. The backup lands in one of:
-
-   ```
-   %USERPROFILE%\Apple\MobileSync\Backup\<device id>\
-   %APPDATA%\Apple Computer\MobileSync\Backup\<device id>\
-   ```
-
-   The `<device id>` folder — the one holding `Manifest.db` — is the target.
+3. Back up now. You do not need to find where it went — see below.
 
 ## Importing
 
 Dry-run first; it is the review step:
 
 ```
-.venv\Scripts\python.exe -m lifecrm observe ios_messages "C:\...\Backup\<device id>"
+.venv\Scripts\python.exe -m lifecrm observe ios_messages
 ```
 
-The report names the device and backup date, then shows per stream how many
-records are new or changed, the date span, and the latest one as a sample. It
-lists what was skipped and what was not understood, with counts. **Read the
-samples**: garbled text, a wrong year, or a large "could not be decoded" count
-means stop and look. When it looks right, add `--apply`.
+With no path, it looks where Apple's tools write backups —
+`%USERPROFILE%\Apple\MobileSync\Backup` (Apple Devices), then
+`%APPDATA%\Apple Computer\MobileSync\Backup` (desktop iTunes), then a Mac's
+`~/Library/Application Support/MobileSync/Backup` — and uses the backup it
+finds there. If there are several (two phones, or an old one), it lists them
+with device name and date and asks you to pass one; it never guesses which
+phone you meant. A path works too: the `<device id>` folder that holds
+`Manifest.db`, or the `Backup` folder above it when that holds just one.
+
+The report says which folder it read, names the device and backup date, then
+shows per stream how many records are new or changed, the date span, and the
+latest one as a sample. It lists what was skipped and what was not understood,
+with counts. **Read the samples**: garbled text, a wrong year, or a large
+"could not be decoded" count means stop and look. When it looks right, add
+`--apply`. `--json` carries the same facts for scripts.
 
 Re-running on the same backup is a no-op; a later backup adds only what is new.
+(The no-op check hashes the database *and* its `-wal`, so a backup whose new
+messages sit only in the write-ahead log is not mistaken for an unchanged one.)
 
 Also accepted: a folder holding `sms.db` (or a Mac's `chat.db`) with an
 optional `AddressBook.sqlitedb` beside it, or a bare `sms.db`/`chat.db` file.
@@ -58,6 +63,11 @@ One observation per message, keyed on the message GUID:
 | `imessage`, `sms`, `rcs` | the message, by the service that carried it |
 | `text_reaction` | a tapback added or removed — loved, liked, laughed, a custom emoji, a sticker |
 | `text_unsend` | a message its sender unsent |
+| `text_event` | something that happened to the thread: a member added or removed, someone changing their number, a rename (the new name is kept), someone leaving, the icon or background changed, a location share started or stopped, an audio message kept, SharePlay |
+
+A thread event names who did it and — for membership changes — who it was done
+to, not everyone in the room. An event type not yet mapped is counted under
+"not understood" rather than imported half-understood.
 
 - **Body.** Most text on current iOS is not in `message.text` but in
   `attributedBody`, an archived NSAttributedString. `connectors/typedstream.py`
@@ -121,10 +131,10 @@ knowing the country, and guessing could merge two people.
 
 - Journal dates use the configured home timezone; the database records no
   zone per message. Texts sent while travelling land on the home-time day.
-- Group events (member added/removed, renamed, photo changed) are counted, not
-  imported, in this version.
 - An Android phone's reactions arrive over SMS as ordinary text and are
-  imported as the messages they are.
+  imported as the messages they are. Recognising `Loved "…"` in a body would
+  mean reinterpreting what someone wrote — the kind of derived guess the
+  observed tier keeps out of stored records.
 - Messages kept only in iCloud (Messages in iCloud with storage optimization)
   may be missing from a local backup.
 
@@ -137,16 +147,21 @@ import run — re-importing an old backup does not make the data fresh.
 ## First-real-import checklist (unproven until a real backup)
 
 Everything above is tested against a synthetic backup built with the real
-schemas. These are the facts only a real phone can settle — note the answers
-here:
+schemas and layout. What only a real phone can settle, the dry-run report now
+states outright — the first run answers this list; note the answers here:
 
-- [ ] Which backup folder the installed app actually uses.
-- [ ] The "could not be decoded" count: near zero, or a real share?
-- [ ] "not understood" lines: association types or services not yet mapped.
-- [ ] Group-event volume, and whether it is worth importing.
-- [ ] Whether the backup holds `sms.db-wal` (uncheckpointed writes).
-- [ ] Spot-check five handles' normalization against the contacts on the phone.
-- [ ] The oldest message date against what the phone shows.
+| check | the report line that answers it |
+|---|---|
+| [ ] Which backup folder the installed app actually uses | `read from: …` |
+| [ ] The "could not be decoded" count — near zero, or a real share? | `skipped: N × message whose attributedBody could not be decoded`, and `not understood: … kept without its text` |
+| [ ] Association types, services or thread events not yet mapped | `not understood: …` |
+| [ ] Thread-event volume | `text_event: N new` |
+| [ ] Whether the backup holds uncheckpointed writes | `sms.db-wal: read …` or `none` |
+| [ ] Handle normalization against the phone's contacts | `normalized, e.g.: 5125559876 -> +15125559876 (Dana Whitfield)` — five, raw to stored |
+| [ ] The oldest message against what the phone shows | `messages span …` |
+
+Answers so far: none — no real backup has been read. The owner's own phone is
+Android; the first real run will be on an iPhone owner's own machine.
 
 ## Credits
 

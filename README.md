@@ -107,7 +107,7 @@ from newer records, conflicts surfaced instead of overwritten.
 .venv/Scripts/python -m lifecrm health import hc-export.zip           # dry-run report
 .venv/Scripts/python -m lifecrm health import hc-export.zip --apply   # then write
 .venv/Scripts/python -m lifecrm health retract --source-file hc-export.zip  # undo it
-.venv/Scripts/python -m lifecrm observe ios_messages "<iPhone backup folder>"  # texts; see docs/texts.md
+.venv/Scripts/python -m lifecrm observe ios_messages     # texts: finds the iPhone backup; see docs/texts.md
 .venv/Scripts/python -m lifecrm handles list --suggest    # who is who, from the phone's contacts
 
 .venv/Scripts/python -m lifecrm dashboard      # charts at /-/dashboards (Ctrl+C stops)

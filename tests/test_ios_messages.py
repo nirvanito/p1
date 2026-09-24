@@ -14,6 +14,7 @@ from the phone stays.
 import hashlib
 import json
 import plistlib
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 
@@ -54,7 +55,9 @@ CREATE TABLE message (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT UNIQUE 
   attributedBody BLOB, thread_originator_guid TEXT, date_edited INTEGER DEFAULT 0,
   date_retracted INTEGER DEFAULT 0, message_summary_info BLOB,
   destination_caller_id TEXT, is_audio_message INTEGER DEFAULT 0,
-  expressive_send_style_id TEXT, balloon_bundle_id TEXT);
+  expressive_send_style_id TEXT, balloon_bundle_id TEXT,
+  group_action_type INTEGER DEFAULT 0, other_handle INTEGER DEFAULT 0,
+  group_title TEXT, share_status INTEGER DEFAULT 0, share_direction INTEGER DEFAULT 0);
 CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT,
   filename TEXT, uti TEXT, mime_type TEXT, transfer_name TEXT,
   is_sticker INTEGER DEFAULT 0, hide_attachment INTEGER DEFAULT 0);
@@ -133,7 +136,8 @@ def _messages(variant: str) -> list[dict]:
              service="iMessage",
              date=_ns("2026-09-02T09:05:00Z"), attachments=[1, 2]),
         dict(guid="M10", chat=3, handle_id=3, text=None, service="iMessage",
-             date=_ns("2026-09-02T08:00:00Z"), item_type=1),     # member added
+             date=_ns("2026-09-02T08:00:00Z"), item_type=1,      # Sam added
+             group_action_type=0, other_handle=4),               # the landline
         dict(guid="M11", chat=1, handle_id=1, text="no clock", service="iMessage",
              date=0),
         dict(guid="M12", chat=4, handle_id=5, text="Your package was delivered",
@@ -152,14 +156,43 @@ def _messages(variant: str) -> list[dict]:
         dict(guid="M17", chat=3, handle_id=1, text=None, service="iMessage",
              date=_ns("2026-09-02T09:02:00Z"), associated_message_type=3,
              associated_message_guid="p:0/M4"),
+        # --- thread events -------------------------------------------------
+        dict(guid="E1", chat=3, handle_id=3, service="iMessage", item_type=1,
+             group_action_type=1, other_handle=4,                  # removed
+             date=_ns("2026-09-03T08:00:00Z")),
+        dict(guid="E2", chat=3, handle_id=1, service="iMessage", item_type=2,
+             group_title="Crag rats", date=_ns("2026-09-03T08:05:00Z")),
+        dict(guid="E3", chat=3, handle_id=4, service="iMessage", item_type=3,
+             group_action_type=0, date=_ns("2026-09-03T08:10:00Z")),  # left
+        dict(guid="E4", chat=3, is_from_me=1, service="iMessage", item_type=3,
+             group_action_type=1, date=_ns("2026-09-03T08:15:00Z")),  # icon
+        dict(guid="E5", chat=1, handle_id=1, service="iMessage", item_type=1,
+             group_action_type=0, other_handle=1,                  # own number
+             date=_ns("2026-09-03T08:20:00Z")),
+        dict(guid="E6", chat=1, handle_id=1, service="iMessage", item_type=4,
+             group_action_type=0, share_status=0, other_handle=1,
+             share_direction=0,                                    # mine, shared
+             date=_ns("2026-09-03T08:25:00Z")),
+        dict(guid="E7", chat=1, handle_id=1, is_from_me=1, service="iMessage",
+             item_type=5, date=_ns("2026-09-03T08:30:00Z")),       # audio kept
+        dict(guid="E8", chat=1, handle_id=1, service="iMessage", item_type=6,
+             date=_ns("2026-09-03T08:35:00Z")),                    # SharePlay
+        dict(guid="E9", chat=1, handle_id=1, service="iMessage", item_type=9,
+             date=_ns("2026-09-03T08:40:00Z")),                    # unknown
     ]
     if variant == "deleted":
         rows = [r for r in rows if r["guid"] != "M1"]
     return rows
 
 
-def _write_sms_db(path, variant="after"):
+def _write_sms_db(path, variant="after", wal_to=None):
+    """Write the database. With wal_to=(main, wal), it is built in WAL mode
+    and both halves are copied out BEFORE any checkpoint — a main file that
+    on its own holds no tables at all, exactly the state a backup can catch."""
     conn = sqlite3.connect(path)
+    if wal_to:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
     conn.executescript(SMS_SCHEMA)
     conn.executemany("INSERT INTO handle (id, service) VALUES (?, ?)", HANDLES)
     for guid, style, ident, service, name, members in CHATS:
@@ -189,6 +222,9 @@ def _write_sms_db(path, variant="after"):
             conn.execute("INSERT INTO message_attachment_join VALUES (?, ?)",
                          (cur.lastrowid, a))
     conn.commit()
+    if wal_to:
+        shutil.copyfile(path, wal_to[0])
+        shutil.copyfile(f"{path}-wal", wal_to[1])
     conn.close()
 
 
@@ -213,32 +249,40 @@ def _write_address_book(path):
     conn.close()
 
 
-def make_backup(root, variant="after", contacts=True, encrypted=False):
+def make_backup(root, variant="after", contacts=True, encrypted=False, wal=False,
+                udid="00008110-TESTUDID", device="Test iPhone"):
     """An iPhone backup folder, laid out as the Apple Devices app writes one."""
-    backup = root / "00008110-TESTUDID"
+    backup = root / udid
     backup.mkdir(parents=True, exist_ok=True)
     (backup / "Manifest.plist").write_bytes(plistlib.dumps(
         {"IsEncrypted": encrypted, "Version": "10.0"}))
     (backup / "Info.plist").write_bytes(plistlib.dumps(
-        {"Device Name": "Test iPhone", "Last Backup Date": datetime(2026, 9, 20, 8, 0)}))
+        {"Device Name": device, "Last Backup Date": datetime(2026, 9, 20, 8, 0)}))
     if encrypted:
-        (backup / "Manifest.db").write_bytes(b"\x9a" * 4096)   # ciphertext
+        (backup / "Manifest.db").write_bytes(bytes([0x9A]) * 4096)   # ciphertext
         return backup
-    files = [("HomeDomain", "Library/SMS/sms.db", _write_sms_db)]
-    if contacts:
-        files.append(("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb",
-                      lambda p, v=None: _write_address_book(p)))
     man = sqlite3.connect(backup / "Manifest.db")
     man.execute("CREATE TABLE Files (fileID TEXT PRIMARY KEY, domain TEXT, "
                 "relativePath TEXT, flags INTEGER, file BLOB)")
-    for domain, rel, writer in files:
+
+    def place(domain, rel):
         file_id = hashlib.sha1(f"{domain}-{rel}".encode()).hexdigest()
         (backup / file_id[:2]).mkdir(exist_ok=True)
+        man.execute("INSERT INTO Files VALUES (?, ?, ?, 1, NULL)", (file_id, domain, rel))
         target = backup / file_id[:2] / file_id
         if target.exists():
             target.unlink()
-        writer(target, variant)
-        man.execute("INSERT INTO Files VALUES (?, ?, ?, 1, NULL)", (file_id, domain, rel))
+        return target
+
+    sms = place("HomeDomain", "Library/SMS/sms.db")
+    if wal:
+        scratch = root / f"scratch-{udid}.db"
+        _write_sms_db(scratch, variant,
+                      wal_to=(sms, place("HomeDomain", "Library/SMS/sms.db-wal")))
+    else:
+        _write_sms_db(sms, variant)
+    if contacts:
+        _write_address_book(place("HomeDomain", "Library/AddressBook/AddressBook.sqlitedb"))
     man.commit()
     man.close()
     return backup
@@ -358,10 +402,10 @@ def test_handles_are_normalized_and_named_from_the_phones_contacts(cfg, tmp_path
 def test_skips_and_unknowns_are_counted_not_hidden(cfg, tmp_path):
     scan = im.scan(make_backup(tmp_path), cfg)
     skipped = " | ".join(scan["skipped"])
-    assert "1 × group event" in skipped
     assert "1 × message with no usable timestamp" in skipped
     assert "1 × message whose attributedBody could not be decoded" in skipped
     assert {"what": "association type 3", "count": 1} in scan["unmapped"]
+    assert {"what": "thread event item_type 9/0", "count": 1} in scan["unmapped"]
 
 
 def test_the_report_reads_like_the_other_connectors(cfg, conn, tmp_path):
@@ -431,7 +475,7 @@ def test_reimporting_the_same_backup_is_a_no_op(cfg, conn, tmp_path):
     _apply(conn, im.scan(backup, cfg))
     plan = obs.build_plan(conn, im.scan(backup, cfg))
     assert not plan["new"] and not plan["updates"] and not plan["conflicts"]
-    assert plan["identical"] == 13
+    assert plan["identical"] == 22
 
 
 def test_an_unsend_after_import_keeps_the_archived_text(cfg, conn, tmp_path):
@@ -504,6 +548,128 @@ def test_handle_for(raw, expected):
     assert base.handle_for(raw) == expected
 
 
+# ---------------------------------------------------------------- thread events
+
+def test_thread_events_say_what_happened_and_to_whom(cfg, tmp_path):
+    recs = _by_guid(im.scan(make_backup(tmp_path), cfg), "text_event")
+    events = {g: _detail(r)["event"] for g, r in recs.items()}
+    assert events == {
+        "M10": "member_added", "E1": "member_removed", "E2": "renamed",
+        "E3": "left", "E4": "icon_changed", "E5": "number_changed",
+        "E6": "location_started", "E7": "audio_kept", "E8": "shareplay"}
+
+    added = recs["M10"]
+    assert added["body"] is None and added["title"] == "Climbing crew"
+    assert _detail(added)["member"] == "phone:+15125550000"
+    assert {(p["value"], p["role"]) for p in added["participants"]} == {
+        ("sam@icloud.com", "sender"), ("+15125550000", "participant")}
+
+    assert _detail(recs["E2"])["name"] == "Crag rats"
+    assert recs["E4"]["direction"] == "out"               # you changed the icon
+    assert recs["E6"]["direction"] == "out"               # your location, shared
+
+
+def test_the_event_sample_reads_as_a_sentence(cfg, conn, tmp_path):
+    scan = im.scan(make_backup(tmp_path), cfg)
+    text = "\n".join(im.report_lines(scan, obs.build_plan(conn, scan)))
+    assert "text_event: 9 new" in text
+    assert "them: shareplay" in text
+
+
+# ---------------------------------------------------------------- finding the backup
+
+def test_no_path_finds_the_one_backup(cfg, tmp_path, monkeypatch):
+    root = tmp_path / "Apple" / "MobileSync" / "Backup"
+    backup = make_backup(root)
+    monkeypatch.setattr(im, "backup_roots", lambda: [tmp_path / "nowhere", root])
+    assert im.default_target(cfg) == backup
+
+
+def test_no_path_refuses_to_guess_between_phones(cfg, tmp_path, monkeypatch):
+    root = tmp_path / "Backup"
+    make_backup(root, udid="AAAA", device="Casey's iPhone")
+    make_backup(root, udid="BBBB", device="Old iPhone", contacts=False)
+    monkeypatch.setattr(im, "backup_roots", lambda: [root])
+    with pytest.raises(DomainError, match="2 iPhone backups found.*Casey's iPhone.*Old iPhone"):
+        im.default_target(cfg)
+
+
+def test_no_path_and_no_backup_says_where_it_looked(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(im, "backup_roots", lambda: [tmp_path / "Backup"])
+    with pytest.raises(DomainError, match="no iPhone backup found in .*Backup.*docs/texts.md"):
+        im.default_target(cfg)
+
+
+def test_the_backup_roots_follow_the_windows_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "me"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "me" / "AppData" / "Roaming"))
+    roots = im.backup_roots()
+    assert roots[0] == tmp_path / "me" / "Apple" / "MobileSync" / "Backup"
+    assert roots[1] == tmp_path / "me" / "AppData" / "Roaming" / "Apple Computer" \
+        / "MobileSync" / "Backup"
+
+
+def test_the_backup_folder_above_one_backup_is_accepted(cfg, tmp_path):
+    root = tmp_path / "Backup"
+    make_backup(root)
+    scan = im.scan(root, cfg)
+    assert scan["source_file"] == "00008110-TESTUDID"
+    assert scan["device"] == "Test iPhone"
+
+
+# ---------------------------------------------------------------- the -wal
+
+def test_writes_only_in_the_wal_are_read(cfg, tmp_path):
+    """A backup can catch the database mid-flight: here the main file holds no
+    tables at all, and every message lives in sms.db-wal."""
+    backup = make_backup(tmp_path, wal=True)
+    file_id = hashlib.sha1(b"HomeDomain-Library/SMS/sms.db").hexdigest()
+    alone = tmp_path / "main-alone.db"
+    shutil.copyfile(backup / file_id[:2] / file_id, alone)
+    tables = sqlite3.connect(alone).execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name='message'").fetchone()[0]
+    assert tables == 0, "fixture should leave the main file without the data"
+
+    scan = im.scan(backup, cfg)
+    assert len(_by_guid(scan, "imessage")) == 7
+    assert scan["facts"]["wal_read"] is True
+
+
+def test_a_changed_wal_is_a_changed_backup(cfg, tmp_path):
+    before = im.scan(make_backup(tmp_path / "a", variant="before", wal=True), cfg)
+    after = im.scan(make_backup(tmp_path / "b", variant="after", wal=True), cfg)
+    assert before["source_hash"] != after["source_hash"]
+
+
+def test_a_copied_folder_with_a_wal_and_no_shm(cfg, tmp_path):
+    folder = tmp_path / "copied"
+    folder.mkdir()
+    _write_sms_db(tmp_path / "scratch.db",
+                  wal_to=(folder / "sms.db", folder / "sms.db-wal"))
+    scan = im.scan(folder, cfg)
+    assert len(_by_guid(scan, "imessage")) == 7 and scan["facts"]["wal_read"]
+
+
+# ---------------------------------------------------------------- the checklist, answered
+
+def test_the_report_states_what_the_first_real_import_must_check(cfg, conn, tmp_path):
+    scan = im.scan(make_backup(tmp_path), cfg)
+    facts = scan["facts"]
+    assert facts["folder"].endswith("00008110-TESTUDID")
+    assert (facts["oldest_message"], facts["newest_message"]) == ("2019-03-03", "2026-09-03")
+    assert facts["wal_read"] is False
+    assert {"raw": "5125559876", "handle": "phone:+15125559876",
+            "name": "Dana Whitfield"} in facts["normalized"]
+    assert {"raw": "Sam@iCloud.com", "handle": "email:sam@icloud.com",
+            "name": "Sam Ortiz"} in facts["normalized"]
+
+    text = "\n".join(im.report_lines(scan, obs.build_plan(conn, scan)))
+    assert "read from: " in text and "00008110-TESTUDID" in text
+    assert "messages span 2019-03-03..2026-09-03" in text
+    assert "sms.db-wal: none" in text
+    assert "5125559876 -> +15125559876 (Dana Whitfield)" in text
+
+
 # ---------------------------------------------------------------- staleness
 
 def _status(report, name):
@@ -552,7 +718,7 @@ def test_cli_dry_run_apply_and_suggest(tmp_path, monkeypatch):
 
     r = runner.invoke(app, ["observe", "ios_messages", str(backup), "--apply"])
     assert r.exit_code == 0, r.output
-    assert "applied: 13 added" in r.output
+    assert "applied: 22 added" in r.output
 
     r = runner.invoke(app, ["handles", "list", "--suggest", "--json"])
     assert r.exit_code == 0, r.output
@@ -569,3 +735,26 @@ def test_cli_dry_run_apply_and_suggest(tmp_path, monkeypatch):
                                    "WHERE value='+15125551234'", "--json"])
     assert json.loads(r.output)[0]["entity_id"] is None    # suggested, not linked
     assert runner.invoke(app, ["doctor"]).exit_code == 0
+
+
+def test_cli_observe_without_a_path_uses_the_backup_on_this_machine(tmp_path, monkeypatch):
+    from conftest import cli_project
+    from typer.testing import CliRunner
+
+    from lifecrm.cli import app
+    runner = CliRunner()
+    cli_project(tmp_path, monkeypatch)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    root = tmp_path / "MobileSync" / "Backup"
+    make_backup(root)
+    monkeypatch.setattr(im, "backup_roots", lambda: [root])
+
+    r = runner.invoke(app, ["observe", "ios_messages", "--json"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.output)
+    assert out["facts"]["folder"].endswith("00008110-TESTUDID")
+    assert out["new"] == 22
+
+    r = runner.invoke(app, ["observe", "ai_chat"])
+    assert r.exit_code == 1
+    assert "ai_chat needs a path" in r.output

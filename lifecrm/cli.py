@@ -891,7 +891,7 @@ def _observe_summary(scan: dict, plan: dict, prior=None) -> dict:
             "duplicates_in_export": plan["dup_incoming"],
             "conflicts": plan["conflicts"], "invalid": plan["invalid"],
             "handles": scan.get("handles", []), "unmapped": scan.get("unmapped", []),
-            "skipped": scan.get("skipped", []),
+            "skipped": scan.get("skipped", []), "facts": scan.get("facts"),
             "previously_imported_as": prior["uuid"] if prior else None}
 
 
@@ -931,7 +931,9 @@ def connectors() -> None:
 @app.command()
 def observe(
     connector: str = typer.Argument(..., help="Connector name — see: lifecrm connectors"),
-    target: str = typer.Argument(..., help="Export .zip, directory, or .json file"),
+    target: str = typer.Argument(
+        None, help="Export .zip, directory, or .json file. ios_messages: omit it "
+                   "to use the iPhone backup on this machine"),
     apply_changes: bool = typer.Option(False, "--apply",
                                        help="Write; default is a dry-run report"),
     as_json: bool = typer.Option(False, "--json"),
@@ -949,11 +951,17 @@ def observe(
     from .connectors import base as conn_base
     from .domain import observations as obs
     cfg = _cfg()
-    p = Path(target)
-    if not p.exists():
-        _fail(f"not found: {p}")
     try:
         c = conn_base.get(connector)
+        if target is None:
+            finder = getattr(c, "default_target", None)
+            if finder is None:
+                _fail(f"{connector} needs a path to read — the export file or folder")
+            p = finder(cfg)
+        else:
+            p = Path(target)
+            if not p.exists():
+                _fail(f"not found: {p}")
         scan = c.scan(p, cfg)
     except DomainError as e:
         _fail(str(e))
