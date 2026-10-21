@@ -640,20 +640,6 @@ def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
 
 # ---------------------------------------------------------------- ask
 
-def _evidence_index(bundle: dict) -> dict:
-    """id -> one-line description, for printing what an answer relied on."""
-    from .recall import fmt_value
-    index = {}
-    for m in bundle["metrics"]:
-        index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
-                          f"over {m['days']} day(s), {m['origin']}")
-    for e in bundle["entries"]:
-        index[e["id"]] = f"{e['date']} entry: {e['title']}"
-    for p in bundle["passages"]:
-        index[p["id"]] = f"{p['date']} transcript (source {p['source_id']})"
-    return index
-
-
 @app.command()
 def ask(
     question: str = typer.Argument(None, help="A question about your own data"),
@@ -678,7 +664,6 @@ def ask(
     of facts, and its citations are checked against the evidence before you
     see them. Without a model you still get the statistics and the sources.
     """
-    from . import llm as llm_mod
     from . import recall as recall_mod
     from .domain import recall as recall_domain
     cfg = _cfg()
@@ -706,37 +691,16 @@ def ask(
 
     conn = _conn(cfg, readonly=True)
     try:
-        bundle = recall_mod.build_evidence(
-            conn, cfg, question, days=days,
-            max_entries=int(cfg.ask.get("max_entries", 8)),
-            max_passages=int(cfg.ask.get("max_passages", 4)))
+        result = recall_mod.answer(
+            conn, cfg, question, days=days, use_llm=not no_llm, model=model,
+            warn=lambda msg: typer.echo(msg, err=True))
     except sqlite3.Error as e:
         _fail(f"retrieval failed: {e}")
     finally:
         conn.close()
-
-    evidence_text = recall_mod.render_evidence(bundle)
-    answer_text = recall_mod.deterministic_answer(bundle)
-    source = "deterministic"
-    llm_state = {"available": False, "reason": "--no-llm"} if no_llm \
-        else llm_mod.status(cfg)
-
-    if not no_llm and llm_state["available"] and bundle["has_evidence"]:
-        try:
-            phrased = llm_mod.answer(cfg, evidence_text, question,
-                                     model=model or llm_state["model"])
-        except Exception as e:                      # transport, timeout, 404
-            typer.echo(f"local model unavailable ({e}) — deterministic answer",
-                       err=True)
-            phrased = ""
-        if phrased:
-            answer_text = phrased
-            source = f"model:{model or llm_state['model']}"
-
-    # Both paths cite evidence ids, so both get checked the same way — the
-    # printed sources are what the answer actually used, never everything
-    # that was retrieved.
-    citations = recall_mod.check_citations(answer_text, bundle)
+    bundle, answer_text = result["evidence"], result["answer"]
+    source, citations = result["answer_source"], result["citations"]
+    evidence_text, llm_state = result["evidence_text"], result["model"]
 
     if not no_log:
         wconn = _conn(cfg)
@@ -744,10 +708,7 @@ def ask(
             wconn, question, answered=bundle["has_evidence"],
             answer_summary=answer_text))
     if as_json:
-        _echo_json({"question": question, "answer": answer_text,
-                    "answer_source": source, "citations": citations,
-                    "evidence": bundle, "evidence_text": evidence_text,
-                    "model": llm_state})
+        _echo_json(result)
         return
 
     typer.echo(answer_text)
@@ -759,7 +720,7 @@ def ask(
         if citations["uncited"]:
             typer.echo("warning: the model cited no evidence — verify it "
                        "against --evidence", err=True)
-    index = _evidence_index(bundle)
+    index = recall_mod.evidence_index(bundle)
     used = citations["cited"]
     if used and not show_evidence:
         typer.echo("")
@@ -1509,49 +1470,17 @@ def entities_alias_add(entity_id: int, alias: str) -> None:
 
 # ---------------------------------------------------------------- entry corrections
 
-def _entry_provenance(conn: sqlite3.Connection, entry_id: int) -> list[dict]:
-    out = []
-    for r in conn.execute(
-            "SELECT es.*, s.type AS source_type, s.journal_date AS source_date "
-            "FROM entry_sources es JOIN sources s ON s.id=es.source_id "
-            "WHERE es.entry_id=?", (entry_id,)):
-        item = {"source_id": r["source_id"], "source_type": r["source_type"],
-                "source_date": r["source_date"], "char_start": r["char_start"],
-                "char_end": r["char_end"], "segment_start": r["segment_start"],
-                "segment_end": r["segment_end"]}
-        if r["transcript_id"] is not None and r["char_start"] is not None:
-            t = conn.execute("SELECT text FROM transcripts WHERE id=?",
-                             (r["transcript_id"],)).fetchone()
-            if t:
-                item["transcript_excerpt"] = t["text"][r["char_start"]:r["char_end"]]
-        elif r["transcript_id"] is not None and r["segment_start"] is not None:
-            segs = conn.execute(
-                "SELECT text FROM transcript_segments WHERE transcript_id=? "
-                "AND idx BETWEEN ? AND ? ORDER BY idx",
-                (r["transcript_id"], r["segment_start"], r["segment_end"])).fetchall()
-            item["transcript_excerpt"] = " ".join(s["text"] for s in segs)
-        out.append(item)
-    return out
-
-
 @entry_app.command("show")
 def entry_show(entry_uuid: str, as_json: bool = typer.Option(False, "--json")) -> None:
     """Entry with categories, entities, measurements, provenance, and revisions."""
-    from .domain import entries as entries_dom
+    from . import views
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
     try:
         try:
-            row = entries_dom.get_by_uuid(conn, entry_uuid)
-            snap = entries_dom.snapshot(conn, row["id"])
+            snap = views.entry_detail(conn, entry_uuid)
         except DomainError as e:
             _fail(str(e))
-        snap["provenance"] = _entry_provenance(conn, row["id"])
-        snap["revisions"] = [dict(r) for r in conn.execute(
-            "SELECT revised_at, actor, change_kind, note FROM entry_revisions "
-            "WHERE entry_uuid=? ORDER BY id", (entry_uuid,))]
-        from .domain import links as links_dom
-        snap["links"] = links_dom.for_entry(conn, entry_uuid)
     finally:
         conn.close()
     if as_json:

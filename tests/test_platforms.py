@@ -5,7 +5,7 @@ These run on any OS; Mac-specific behavior is exercised by pointing the
 functions at a fake home directory rather than by needing a Mac.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -123,3 +123,84 @@ def test_persona_keys_referenced_by_closures_exist():
                     assert spec["closes"] in keyed
                 for _t, k in spec.get("links", []):
                     assert k in keyed, k
+
+
+# ---------------------------------------------------------------- Mac Contacts store
+
+def make_abcddb(path, people):
+    """A minimal AddressBook-v22.abcddb with the columns Contacts writes.
+    `people`: list of dicts with first/last/org/phones/emails/city/note/bday
+    (bday as Core Data seconds)."""
+    import sqlite3
+    c = sqlite3.connect(path)
+    c.executescript("""
+        CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER,
+            ZUNIQUEID TEXT, ZFIRSTNAME TEXT, ZLASTNAME TEXT, ZMIDDLENAME TEXT,
+            ZNICKNAME TEXT, ZORGANIZATION TEXT, ZJOBTITLE TEXT, ZBIRTHDAY REAL,
+            ZCREATIONDATE REAL, ZMODIFICATIONDATE REAL, ZNOTE INTEGER);
+        CREATE TABLE ZABCDPHONENUMBER (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER,
+            ZFULLNUMBER TEXT, ZLABEL TEXT, ZORDERINGINDEX INTEGER);
+        CREATE TABLE ZABCDEMAILADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER,
+            ZADDRESS TEXT, ZLABEL TEXT, ZORDERINGINDEX INTEGER);
+        CREATE TABLE ZABCDPOSTALADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER,
+            ZSTREET TEXT, ZCITY TEXT, ZSTATE TEXT, ZZIPCODE TEXT, ZCOUNTRYNAME TEXT,
+            ZLABEL TEXT);
+        CREATE TABLE ZABCDNOTE (Z_PK INTEGER PRIMARY KEY, ZCONTACT INTEGER, ZTEXT TEXT);
+    """)
+    for i, p in enumerate(people, start=1):
+        c.execute("INSERT INTO ZABCDRECORD (Z_PK, Z_ENT, ZUNIQUEID, ZFIRSTNAME, ZLASTNAME, "
+                  "ZORGANIZATION, ZBIRTHDAY, ZCREATIONDATE, ZMODIFICATIONDATE) "
+                  "VALUES (?,?,?,?,?,?,?,?,?)",
+                  (i, 22, f"UID-{i}:ABPerson", p.get("first"), p.get("last"), p.get("org"),
+                   p.get("bday"), 700000000.0, 750000000.0 + i))
+        for n, ph in enumerate(p.get("phones", [])):
+            c.execute("INSERT INTO ZABCDPHONENUMBER (ZOWNER, ZFULLNUMBER, ZLABEL, ZORDERINGINDEX) "
+                      "VALUES (?,?,?,?)", (i, ph, "_$!<Mobile>!$_", n))
+        for n, em in enumerate(p.get("emails", [])):
+            c.execute("INSERT INTO ZABCDEMAILADDRESS (ZOWNER, ZADDRESS, ZLABEL, ZORDERINGINDEX) "
+                      "VALUES (?,?,?,?)", (i, em, "_$!<Home>!$_", n))
+        if p.get("city"):
+            c.execute("INSERT INTO ZABCDPOSTALADDRESS (ZOWNER, ZCITY, ZSTATE, ZLABEL) "
+                      "VALUES (?,?,?,?)", (i, p["city"], p.get("state"), "_$!<Home>!$_"))
+        if p.get("note"):
+            c.execute("INSERT INTO ZABCDNOTE (ZCONTACT, ZTEXT) VALUES (?,?)", (i, p["note"]))
+    c.execute("INSERT INTO ZABCDRECORD (Z_PK, Z_ENT) VALUES (99, 19)")   # a group
+    c.commit()
+    c.close()
+
+
+def test_mac_contacts_store_reads_names_numbers_addresses_notes(tmp_path):
+    import sqlite3
+    from lifecrm.connectors import _abcddb
+    db = tmp_path / "AddressBook-v22.abcddb"
+    # 1993-03-14 12:00 UTC and a no-year (1604) birthday
+    bday = (datetime(1993, 3, 14, 12, tzinfo=timezone.utc) - _abcddb.APPLE_EPOCH).total_seconds()
+    noyear = (datetime(1604, 8, 21, 12, tzinfo=timezone.utc) - _abcddb.APPLE_EPOCH).total_seconds()
+    make_abcddb(db, [
+        {"first": "Jake", "last": "Morales", "phones": ["(512) 555-0142"],
+         "emails": ["jake.morales@example.com"], "city": "Austin", "state": "TX",
+         "note": "Grew up in El Paso.", "bday": bday},
+        {"org": "Ellis Dental", "phones": ["+1 512 555 0199"], "bday": noyear},
+    ])
+    conn = sqlite3.connect(db)
+    cards = _abcddb.read_contacts(conn)
+    assert [c["display_name"] for c in cards] == ["Jake Morales", "Ellis Dental"]
+    jake = cards[0]
+    assert jake["phones"] == [("Mobile", "(512) 555-0142")]
+    assert jake["emails"] == [("Home", "jake.morales@example.com")]
+    assert jake["addresses"][0]["city"] == "Austin"
+    assert jake["note"] == "Grew up in El Paso."
+    assert jake["birthday"] == "1993-03-14"
+    assert cards[1]["birthday"] == "--08-21"
+    assert jake["modified_at"].endswith("Z")
+
+
+def test_mac_contacts_birthday_survives_either_storage_convention():
+    from lifecrm.connectors import _abcddb
+    def secs(dt):
+        return (dt - _abcddb.APPLE_EPOCH).total_seconds()
+    noon = datetime(1993, 3, 14, 12, tzinfo=timezone.utc)
+    chicago_midnight = datetime(1993, 3, 14, 6, tzinfo=timezone.utc)
+    tokyo_midnight = datetime(1993, 3, 13, 15, tzinfo=timezone.utc)
+    for dt in (noon, chicago_midnight, tokyo_midnight):
+        assert _abcddb.birthday(secs(dt)) == "1993-03-14", dt

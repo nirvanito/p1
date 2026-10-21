@@ -538,3 +538,70 @@ def check_citations(answer: str, bundle: dict) -> dict:
     known = evidence_ids(bundle)
     return {"cited": sorted(cited & known), "unknown": sorted(cited - known),
             "uncited": bool(known) and not (cited & known)}
+
+
+# ---------------------------------------------------------------- the whole pipeline
+
+def evidence_index(bundle: dict) -> dict:
+    """id -> one-line description, for printing what an answer relied on.
+
+    Covers every evidence list a bundle may carry; a list a given build does
+    not produce is simply absent."""
+    index = {}
+    for m in bundle.get("metrics", []):
+        index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
+                          f"over {m['days']} day(s), {m['origin']}")
+    for e in bundle.get("entries", []):
+        index[e["id"]] = f"{e['date']} entry: {e['title']}"
+    for p in bundle.get("passages", []):
+        index[p["id"]] = f"{p['date']} transcript (source {p['source_id']})"
+    for o in bundle.get("observations", []):
+        index[o["id"]] = (f"{o['date']} {o['stream']} (observed, import "
+                          f"{str(o.get('import_uuid') or '')[:8]})")
+    return index
+
+
+def answer(conn: sqlite3.Connection, cfg: Config, question: str, *,
+           days: int | None = None, use_llm: bool = True,
+           model: str | None = None, warn=None) -> dict:
+    """Everything `lifecrm ask` does short of logging the question.
+
+    Returns exactly the `ask --json` shape: {question, answer, answer_source,
+    citations, evidence, evidence_text, model}. `conn` should be read-only;
+    sqlite3 errors from retrieval propagate to the caller. `warn(msg)` hears
+    about a local model that failed mid-answer (the deterministic answer is
+    used instead). The CLI, the web UI and the voice loop all call this, so
+    they can never disagree about what the data says.
+    """
+    from . import llm as llm_mod
+
+    bundle = build_evidence(
+        conn, cfg, question, days=days,
+        max_entries=int(cfg.ask.get("max_entries", 8)),
+        max_passages=int(cfg.ask.get("max_passages", 4)))
+    evidence_text = render_evidence(bundle)
+    answer_text = deterministic_answer(bundle)
+    source = "deterministic"
+    llm_state = ({"available": False, "reason": "--no-llm"} if not use_llm
+                 else llm_mod.status(cfg))
+
+    if use_llm and llm_state["available"] and bundle["has_evidence"]:
+        try:
+            phrased = llm_mod.answer(cfg, evidence_text, question,
+                                     model=model or llm_state["model"])
+        except Exception as e:                      # transport, timeout, 404
+            if warn:
+                warn(f"local model unavailable ({e}) — deterministic answer")
+            phrased = ""
+        if phrased:
+            answer_text = phrased
+            source = f"model:{model or llm_state['model']}"
+
+    # Both paths cite evidence ids, so both get checked the same way — the
+    # printed sources are what the answer actually used, never everything
+    # that was retrieved.
+    citations = check_citations(answer_text, bundle)
+    return {"question": question, "answer": answer_text,
+            "answer_source": source, "citations": citations,
+            "evidence": bundle, "evidence_text": evidence_text,
+            "model": llm_state}
