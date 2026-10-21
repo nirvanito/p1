@@ -204,3 +204,13 @@ def test_mac_contacts_birthday_survives_either_storage_convention():
     tokyo_midnight = datetime(1993, 3, 13, 15, tzinfo=timezone.utc)
     for dt in (noon, chicago_midnight, tokyo_midnight):
         assert _abcddb.birthday(secs(dt)) == "1993-03-14", dt
+
+
+def test_connector_settings_come_from_their_own_table(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        "[connectors.android_sms]\naccount = '+15125550100'\n"
+        "[voice]\nmodel = 'small'\n", encoding="utf-8")
+    cfg = load_config(tmp_path)
+    assert cfg.connector_settings("android_sms") == {"account": "+15125550100"}
+    assert cfg.connector_settings("nope") == {}
+    assert cfg.extra["voice"] == {"model": "small"}

@@ -45,6 +45,15 @@ class Config:
     whisper: dict = field(default_factory=dict)
     ingest: dict = field(default_factory=dict)
     ask: dict = field(default_factory=dict)
+    # [connectors.<name>] tables: per-connector settings (an owner's phone
+    # number, a bank CSV's column mapping). Each connector reads its own key.
+    connectors: dict = field(default_factory=dict)
+    # [voice], [web] and any other front-end sections, kept verbatim.
+    extra: dict = field(default_factory=dict)
+
+    def connector_settings(self, name: str) -> dict:
+        value = self.connectors.get(name) or {}
+        return value if isinstance(value, dict) else {}
 
     @property
     def db_path(self) -> Path:
@@ -119,4 +128,7 @@ def load_config(root: Path | None = None) -> Config:
         whisper=raw.get("whisper", {}),
         ingest=raw.get("ingest", {}),
         ask=raw.get("ask", {}),
+        connectors=raw.get("connectors", {}) if isinstance(raw.get("connectors"), dict) else {},
+        extra={k: v for k, v in raw.items()
+               if k not in ("paths", "time", "whisper", "ingest", "ask", "connectors")},
     )
