@@ -34,6 +34,18 @@ link_app = typer.Typer(help="Typed links between entries.", no_args_is_help=True
 categories_app = typer.Typer(help="Category reference table.", no_args_is_help=True)
 kinds_app = typer.Typer(help="Entry-kind reference table.", no_args_is_help=True)
 admin_app = typer.Typer(help="Destructive administrative commands.", no_args_is_help=True)
+@app.callback()
+def _root_option(
+        root: str = typer.Option(
+            None, "--root", metavar="DIR",
+            help="Run against another project root (a demo, a restore target). "
+                 "Same as setting LIFECRM_ROOT.")) -> None:
+    # Set the env var rather than threading a path through every command:
+    # subprocesses (dashboard's datasette) and __main__'s error path agree.
+    if root:
+        os.environ["LIFECRM_ROOT"] = str(Path(root).expanduser().resolve())
+
+
 app.add_typer(entities_app, name="entities")
 app.add_typer(entry_app, name="entry")
 app.add_typer(link_app, name="link")
@@ -1802,3 +1814,27 @@ def purge_day(journal_date: str,
 def version() -> None:
     typer.echo(f"lifecrm {__version__} (schema v{SCHEMA_VERSION}, "
                f"contract v{CONTRACT_VERSION})")
+
+
+# ---------------------------------------------------------------- plug-ins
+
+def _register_command_modules() -> None:
+    """Each module in lifecrm/commands/ defines `register(app)` and adds its
+    own commands, so a feature that only adds commands never edits this file.
+    Registered last: a plug-in may import this module's helpers (_cfg, _conn,
+    _fail, ...), which all exist by now."""
+    import importlib
+    import pkgutil
+
+    from . import commands as pkg
+
+    for info in sorted(pkgutil.iter_modules(pkg.__path__), key=lambda m: m.name):
+        if info.name.startswith("_"):
+            continue
+        mod = importlib.import_module(f"{pkg.__name__}.{info.name}")
+        register = getattr(mod, "register", None)
+        if callable(register):
+            register(app)
+
+
+_register_command_modules()

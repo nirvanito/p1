@@ -250,8 +250,25 @@ def _load_json(raw: bytes, name: str):
 # ---------------------------------------------------------------- registry
 
 def registry() -> dict[str, Connector]:
-    from . import ai_chat, ios_messages
-    return {ai_chat.name: ai_chat, ios_messages.name: ios_messages}
+    """Every module in this package that defines `name` and `scan()`.
+
+    Discovered rather than listed, so adding a connector is adding one file;
+    helper modules (base, typedstream, ...) define no `scan` and are skipped.
+    """
+    import importlib
+    import pkgutil
+
+    from .. import connectors as pkg
+
+    found: dict[str, Connector] = {}
+    for info in sorted(pkgutil.iter_modules(pkg.__path__), key=lambda m: m.name):
+        if info.name.startswith("_") or info.name == "base":
+            continue
+        mod = importlib.import_module(f"{pkg.__name__}.{info.name}")
+        if callable(getattr(mod, "scan", None)) and isinstance(
+                getattr(mod, "name", None), str):
+            found[mod.name] = mod
+    return found
 
 
 def get(name: str) -> Connector:

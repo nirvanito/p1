@@ -1,0 +1,5 @@
+# Shell scripts and launchd plists run on macOS: LF always, whatever the
+# checkout machine's core.autocrlf says. PowerShell is happy either way.
+*.sh    text eol=lf
+*.plist text eol=lf
+*.ps1   text eol=crlf

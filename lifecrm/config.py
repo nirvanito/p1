@@ -60,14 +60,15 @@ class Config:
 
 
 def _resolve(root: Path, value: str) -> Path:
-    p = Path(value)
+    p = Path(value).expanduser()
     return p if p.is_absolute() else root / p
 
 
 def _optional_path(value: str | None) -> Path | None:
     """Unset or empty paths become None — Path('') is '.', which exists and
-    would silently point inbox scans at the current directory."""
-    return Path(value) if value else None
+    would silently point inbox scans at the current directory. `~` expands,
+    so a Mac config can say '~/Library/Mobile Documents/...'."""
+    return Path(value).expanduser() if value else None
 
 
 def load_config(root: Path | None = None) -> Config:
