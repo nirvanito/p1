@@ -1,10 +1,17 @@
 # Texts from an iPhone (iMessage, SMS, RCS)
 
-The iPhone has no API for its messages. What it does have is a local backup,
-and an **unencrypted** local backup stores the Messages database as a plain
-SQLite file. The `ios_messages` connector reads that file into the observed
-tier. It never talks to the phone, never reads a live database in place, and
-never sends anything.
+The iPhone has no API for its messages. There are two ways in, and both end
+in the same Messages database schema:
+
+| connector | reads | where it works |
+|---|---|---|
+| `ios_messages` | the iPhone's `sms.db`, out of an **unencrypted** local backup | Windows (Apple Devices / iTunes) or a Mac (Finder) |
+| `mac_messages` | the Mac's own `~/Library/Messages/chat.db`, kept in sync by Messages in iCloud | a Mac signed in to Messages |
+
+Neither talks to the phone, reads a live database in place, or sends
+anything: every database is copied through SQLite's backup API (or, for a
+backup's files, copied whole) and read from the copy. Calls are a separate
+connector — see `docs/calls.md`.
 
 Encryption at rest is decided *not required* (2026-09-24): this is a
 personal tool on a personal machine, not a released product. The backup must
@@ -19,6 +26,21 @@ password.
    computer**, and make sure **Encrypt local backup is unticked**. An encrypted
    backup cannot be read without its password; the connector says so and stops.
 3. Back up now. You do not need to find where it went — see below.
+
+## Making the backup (Mac, Finder)
+
+1. Connect the iPhone by cable (or over Wi-Fi once paired) and select it in
+   the Finder sidebar, under *Locations*. Trust the computer on the phone.
+2. On the *General* tab, under *Backups*, choose **Back up all of the data on
+   your iPhone to this Mac** and make sure **Encrypt local backup is
+   unticked**.
+3. Click **Back Up Now**. Finder writes it to
+   `~/Library/Application Support/MobileSync/Backup/<device id>/`, which is
+   where `observe ios_messages` looks.
+4. Reading that folder needs **Full Disk Access** — see below.
+
+On a Mac, most people will not need a backup at all: `mac_messages` reads the
+same conversations straight from Messages.
 
 ## Importing
 
@@ -51,6 +73,94 @@ messages sit only in the write-ahead log is not mistaken for an unchanged one.)
 Also accepted: a folder holding `sms.db` (or a Mac's `chat.db`) with an
 optional `AddressBook.sqlitedb` beside it, or a bare `sms.db`/`chat.db` file.
 A bare file is copied through SQLite's backup API, never opened in place.
+(A Mac's own `chat.db` belongs to `mac_messages`, below — under
+`ios_messages` its deletions would be mirrored against the phone's.)
+
+## Reading a Mac's Messages directly (`mac_messages`)
+
+With **Messages in iCloud** on (Messages > Settings > iMessage > *Enable
+Messages in iCloud*), the Mac's `~/Library/Messages/chat.db` holds the same
+conversations as the phone and stays current on its own. Turn on **Text
+Message Forwarding** on the iPhone (Settings > Apps > Messages) so SMS/RCS
+threads reach the Mac too.
+
+```
+.venv/bin/python -m lifecrm observe mac_messages            # dry run
+.venv/bin/python -m lifecrm observe mac_messages --apply
+```
+
+With no path it reads this Mac's `~/Library/Messages/chat.db`. A path works
+too: `~/Library/Messages`, or a copied `chat.db` — a copied `Library` folder
+keeps its Contacts beside it and is read the same way; a lone `chat.db`
+imports without names. An iPhone backup folder or an `sms.db` is refused with
+the `ios_messages` command to use instead.
+
+It is `ios_messages`' reader, unchanged — same streams, same tapbacks,
+thread events, edits, unsends and Recently Deleted handling. What is
+different:
+
+- **Names** come from every Contacts store on the Mac
+  (`~/Library/Application Support/AddressBook/AddressBook-v22.abcddb` and one
+  per account under `Sources/`), by the same rule as the phone's address
+  book, so a card names a handle the same way from either source.
+- **Attachments** that are on disk (`~/Library/Messages/Attachments/...`)
+  become the observation's `media_path`. One not downloaded — kept in iCloud
+  by *Optimize Mac Storage* — is still described in `value_json`; the report
+  counts both.
+- **The account** is the phone number the Mac sends from most, even when the
+  Apple ID email sends more: a count that tipped between the two from one
+  import to the next would move the mirroring scope with it. The report lists
+  every handle the Mac sends from (`also sent from:`), and names the Mac when
+  it read the Mac's own database.
+
+## Full Disk Access (macOS)
+
+macOS guards `~/Library/Messages`, `~/Library/Application Support/MobileSync`
+(Finder backups), `AddressBook` (Contacts) and `CallHistoryDB` with its
+privacy system. A process without permission gets *Operation not permitted*,
+or from SQLite *unable to open database file* / *authorization denied* —
+which looks like a broken file. The connectors report it as what it is, in one
+line:
+
+```
+macOS did not allow reading /Users/alex/Library/Messages/chat.db (unable to open database file) — give the app you run this from Full Disk Access (…)
+```
+
+Grant it once: **System Settings > Privacy & Security > Full Disk Access**,
+click **+**, add the app you run the command from (Terminal, iTerm, or your
+editor), then quit and reopen that app. A scheduled run (launchd) needs the
+same for the venv's `python`. Contacts that cannot be listed do not stop an
+import — the messages come in, and the report says the names could not be
+read.
+
+## Which to use when — and both at once
+
+- **Mac + iPhone:** `mac_messages`, every day. No cable, no backup, and the
+  Mac's attachments link to real files. Use an iPhone backup through
+  `ios_messages` too when the phone holds older history than iCloud keeps on
+  the Mac, or before turning Messages in iCloud on.
+- **Windows + iPhone:** `ios_messages` from an Apple Devices backup; there is
+  no other way in.
+
+Both can be imported into one database, in either order, as often as you
+like:
+
+- **One message is one record.** iMessage GUIDs are the same on every
+  device, so the second import finds the first one's rows *identical*. The
+  attachment path in `value_json` is kept relative to the Messages folder
+  (`Attachments/ab/11/<guid>/IMG_0001.HEIC`) for exactly this reason — the
+  phone says `Library/SMS/`, the Mac `Library/Messages/`.
+- The one thing the two can honestly disagree on is **where a photo's file
+  is**: the Mac knows its path, the phone's backup does not. Whichever
+  source recorded the message first keeps its `media_path`; the report folds
+  those into one line (`N message(s) already archived from another device
+  differ only in where the attachment file is`) rather than a conflict per
+  photo. Import from the Mac first and the files are linked.
+- **Neither can delete the other's history.** Each connector mirrors only
+  rows *it* first brought in, so an iPhone backup missing this morning's
+  texts cannot remove what the Mac imported, and a Mac whose iCloud history
+  starts later than the phone's cannot remove the phone's old years. A
+  message deleted everywhere disappears through whichever source imported it.
 
 ## What comes in
 
@@ -76,8 +186,10 @@ to, not everyone in the room. An event type not yet mapped is counted under
 - **value_json** carries the chat id, group flag, service, reply target,
   edit time and version history, attachment names/types/paths, audio flag,
   send effect, and app (for app messages) — only the fields that apply.
-- **Attachments** are described, not copied: name, type, and the path inside
-  the phone. The file stays in the backup; media never enters the database.
+- **Attachments** are described, not copied: name, type, and the path
+  relative to the Messages folder. The file stays where it is — in the
+  backup, or on the Mac, where `media_path` points at it; media never enters
+  the database.
 - **Participants are handles**: phone numbers (normalized — see below), email
   addresses, and, for Business Chat and alphanumeric senders like `AMAZON`, an
   `app_account` handle so they can be linked or ignored.
@@ -87,9 +199,11 @@ to, not everyone in the room. An event type not yet mapped is counted under
 ## Names: contacts suggest, you decide
 
 The backup's own address book (`AddressBook.sqlitedb`: `ABPerson` names
-joined to `ABMultiValue` numbers and addresses) gives each handle its
-`display_name` — what your phone calls that number. It never links a handle to
-an entity. A number on two cards keeps both names (`Dad / Mom`).
+joined to `ABMultiValue` numbers and addresses) — or, for `mac_messages`,
+every Contacts store on the Mac — gives each handle its `display_name`: what
+your phone calls that number ("First Last", else the nickname, else the
+company). It never links a handle to an entity. A number on two cards keeps
+both names (`Dad / Mom`), across stores too.
 
 ```
 .venv\Scripts\python.exe -m lifecrm handles list --suggest
@@ -110,6 +224,12 @@ Deleted and unsent messages do not stay in the archive.
   is removed — the row, its participants and its search-index entry. The
   dry-run report shows what an `--apply` would remove, by stream and by chat.
 - **Unsent:** never imported; removed if an earlier import already has it.
+- **In Recently Deleted** (iOS 16+ / macOS 13+): deleted. Messages keeps the
+  row for about 30 days so it can be recovered, but moves its chat link from
+  `chat_message_join` to `chat_recoverable_message_join`; the reader treats
+  such a message as gone — not imported, not reported present — and the
+  report counts it (`skipped: N × deleted message waiting in Recently
+  Deleted`). A row still linked to its conversation as well counts as present.
 - **Recovered on the phone** (Recently Deleted): back on the next import.
 - **Edited:** re-imported with the current text and the edit time as
   `last_modified_at`, so it updates through the normal newer-wins path;
@@ -163,7 +283,10 @@ knowing the country, and guessing could merge two people.
 
 `lifecrm doctor` warns (`ios_messages_data_age`) when the newest imported text
 is more than 14 days old. It measures the newest *message*, not the newest
-import run — re-importing an old backup does not make the data fresh.
+import run — re-importing an old backup does not make the data fresh. The two
+connectors share their streams and doctor measures freshness per stream, so
+the one check covers texts from either source; `mac_messages` declares no
+second check that would only repeat it.
 
 ## First-real-import checklist (unproven until a real backup)
 
@@ -180,9 +303,18 @@ states outright — the first run answers this list; note the answers here:
 | [ ] Whether the backup holds uncheckpointed writes | `sms.db-wal: read …` or `none` |
 | [ ] Handle normalization against the phone's contacts | `normalized, e.g.: 5125559876 -> +15125559876 (Dana Whitfield)` — five, raw to stored |
 | [ ] The oldest message against what the phone shows | `messages span …` |
+| [ ] Mac: Recently Deleted really is `chat_recoverable_message_join` | delete a test message, re-run: `skipped: 1 × deleted message waiting in Recently Deleted` |
+| [ ] Mac + phone: the same message really is identical from both | import both; the second should show no `CONFLICT` lines — if they name `value_json`, the chat ids differ between devices (newer versions prefix some with `any;`) |
+| [ ] Mac: how many attachments are on disk vs in iCloud | `attachments: N on this Mac …, M not downloaded` |
+| [ ] Mac: which handles it sends from, and the account picked | `account: …`, `also sent from: …` |
 
-Answers so far: none — no real backup has been read. The owner's own phone is
-Android; the first real run will be on an iPhone owner's own machine.
+Answers so far: none — no real backup or Mac has been read. The owner's own
+phone is Android; the first real run will be on an iPhone owner's own machine.
+
+The Recently Deleted rule is read from the schema as Messages has written it
+since iOS 16 / macOS 13 (`chat_recoverable_message_join (chat_id, message_id,
+delete_date, …)`), not yet from a real database: the checklist row above is
+the confirmation.
 
 ## Credits
 

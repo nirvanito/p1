@@ -17,6 +17,9 @@ Accepted targets
 - a folder holding sms.db (or chat.db) and, optionally, AddressBook.sqlitedb.
 - a bare sms.db / chat.db file. A Mac's ~/Library/Messages/chat.db has the
   same schema; it is copied through SQLite's backup API, never read in place.
+  To import a Mac's own Messages, use the `mac_messages` connector instead: it
+  reads the same database with this module's machinery, but under its own
+  name, so its deletions are mirrored separately from the phone's.
 
 What comes in
 -------------
@@ -51,8 +54,11 @@ Deletion semantics — the archive mirrors the phone (owner's decision, 2026-09-
   only what is missing from that set, scoped to rows first imported from the
   same account. A message this connector cannot read today is still on the
   phone and stays archived.
-- A message recovered on the phone (Recently Deleted) returns as a new
-  observation on the next import.
+- A message in Recently Deleted (iOS 16+ / macOS 13+) is deleted: it is
+  still a row in `message`, but its chat link has moved from
+  chat_message_join to chat_recoverable_message_join. It is not imported and
+  not reported present, so an archived copy is removed. Recovered on the
+  phone, it returns as a new observation on the next import.
 - An edited message is re-emitted with its current text; the edit time is its
   last_modified_at, so it updates through newer-wins. Its version history
   from message_summary_info rides along in value_json.
@@ -65,8 +71,14 @@ Known limitations, by design
 ----------------------------
 - Journal dates use the configured home timezone; the database records no
   zone per message.
-- Attachments are recorded by name, type and path inside the phone. The files
-  stay in the backup — media never enters the database.
+- Attachments are recorded by name, type and path. The path is kept relative
+  to the Messages folder ('Attachments/ab/11/<guid>/IMG_0001.HEIC'): the phone
+  says Library/SMS/, a Mac Library/Messages/, and one message seen by both
+  must compare identical. The files stay where they are — media never enters
+  the database.
+- A folder macOS guards (Messages, MobileSync, AddressBook) is unreadable
+  without Full Disk Access; that is reported as the missing permission it is,
+  not as a broken file.
 - An Android phone's reactions arrive over SMS as ordinary text
   ('Loved "..."') and are imported as the messages they are.
 """
@@ -80,11 +92,13 @@ import plistlib
 import shutil
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
+from .. import platforms
 from ..config import Config
 from ..domain.util import DomainError, canonical_json
-from . import base, typedstream
+from . import _abcddb, base, typedstream
 
 name = "ios_messages"
 streams = ("imessage", "sms", "rcs", "text_reaction", "text_event")
@@ -149,6 +163,53 @@ def apple_iso(value) -> str | None:
     return base.iso_utc(APPLE_EPOCH + seconds)
 
 
+# ---------------------------------------------------------------- macOS privacy
+
+# Folders macOS guards with its privacy system (TCC). A process without Full
+# Disk Access gets EPERM reading anything inside them — or, through SQLite,
+# 'unable to open database file' / 'authorization denied' — which reads like
+# a broken file when it is a missing permission.
+_PROTECTED = ("Messages", "MobileSync", "AddressBook", "CallHistoryDB")
+FULL_DISK_ACCESS = (
+    "give the app you run this from Full Disk Access (System Settings > Privacy "
+    "& Security > Full Disk Access: add Terminal, iTerm or your editor, then quit "
+    "and reopen it) and run it again — see docs/texts.md")
+
+
+def is_protected(path: Path) -> bool:
+    """Whether `path` lies in one of the Library folders macOS guards."""
+    parts = Path(path).parts
+    return "Library" in parts and any(p in parts for p in _PROTECTED)
+
+
+def access_denied(path: Path, detail: str) -> DomainError:
+    if is_protected(path) or platforms.is_mac():
+        return DomainError(f"macOS did not allow reading {path} ({detail}) — "
+                           f"{FULL_DISK_ACCESS}")
+    return DomainError(f"permission denied reading {path} ({detail})")
+
+
+def _sqlite_denied(path: Path, e: sqlite3.DatabaseError) -> DomainError | None:
+    """The Full Disk Access error when SQLite's failure is macOS refusing the
+    file, else None. SQLite never says EPERM: it says it cannot open the file."""
+    text = str(e)
+    if ("unable to open database file" in text or "authorization denied" in text) \
+            and (is_protected(path) or platforms.is_mac()):
+        return access_denied(path, text)
+    return None
+
+
+@contextmanager
+def privacy_guard(target: Path):
+    """Turn a PermissionError anywhere inside into one DomainError line: the
+    CLI reports DomainErrors, and anything else would be a traceback."""
+    try:
+        yield
+    except PermissionError as e:
+        where = Path(e.filename) if e.filename else target
+        raise access_denied(where, e.strerror or "permission denied") from e
+
+
 # ---------------------------------------------------------------- opening
 
 def _fail_encrypted(target: Path) -> DomainError:
@@ -158,8 +219,9 @@ def _fail_encrypted(target: Path) -> DomainError:
         f"(Apple Devices: untick 'Encrypt local backup') — see docs/texts.md")
 
 
-def _backup_files(target: Path) -> dict:
-    """Locate the Messages and address-book databases inside a backup folder.
+def backup_files(target: Path, wanted: dict[str, tuple[str, str]]) -> dict:
+    """Locate databases inside a backup folder: {label: (domain, path)} ->
+    {label: Path | None, label + '_wal': Path | None}.
 
     Manifest.db maps (domain, relativePath) to the hashed file name; the name
     is also SHA1('<domain>-<path>'), which is the fallback when the manifest
@@ -177,10 +239,12 @@ def _backup_files(target: Path) -> dict:
             man.close()
             if "not a database" in str(e) or "encrypted" in str(e):
                 raise _fail_encrypted(target) from e
-            raise DomainError(f"{target.name}/Manifest.db has no Files table — "
-                              f"is this an iOS backup folder? ({e})") from e
+            raise (_sqlite_denied(target / "Manifest.db", e) or DomainError(
+                f"{target.name}/Manifest.db has no Files table — "
+                f"is this an iOS backup folder? ({e})")) from e
     except sqlite3.DatabaseError as e:
-        raise DomainError(f"cannot open {target.name}/Manifest.db: {e}") from e
+        raise (_sqlite_denied(target / "Manifest.db", e) or DomainError(
+            f"cannot open {target.name}/Manifest.db: {e}")) from e
 
     def locate(domain: str, rel: str) -> Path | None:
         row = man.execute("SELECT fileID FROM Files WHERE domain=? AND "
@@ -190,13 +254,19 @@ def _backup_files(target: Path) -> dict:
         p = target / file_id[:2] / file_id
         return p if p.exists() else None
 
+    out = {}
     try:
-        out = {"messages": locate(*SMS_DB),
-               "messages_wal": locate(SMS_DB[0], SMS_DB[1] + "-wal"),
-               "contacts": locate(*ADDRESS_BOOK),
-               "contacts_wal": locate(ADDRESS_BOOK[0], ADDRESS_BOOK[1] + "-wal")}
+        for label, (domain, rel) in wanted.items():
+            out[label] = locate(domain, rel)
+            out[label + "_wal"] = locate(domain, rel + "-wal")
     finally:
         man.close()
+    return out
+
+
+def _backup_files(target: Path) -> dict:
+    """The Messages and address-book databases inside a backup folder."""
+    out = backup_files(target, {"messages": SMS_DB, "contacts": ADDRESS_BOOK})
     if out["messages"] is None:
         raise DomainError(
             f"{target.name} is an iOS backup with no Messages database "
@@ -205,8 +275,8 @@ def _backup_files(target: Path) -> dict:
     return out
 
 
-def _device(target: Path) -> dict:
-    """Device name and backup date from Info.plist, when present."""
+def backup_info(target: Path) -> dict:
+    """A backup's Info.plist as a dict — empty when absent or unreadable."""
     info = target / "Info.plist"
     if not info.exists():
         return {}
@@ -214,6 +284,12 @@ def _device(target: Path) -> dict:
         data = plistlib.loads(info.read_bytes())
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _device(target: Path) -> dict:
+    """Device name and backup date from Info.plist, when present."""
+    data = backup_info(target)
     out = {}
     if isinstance(data.get("Device Name"), str):
         out["device"] = data["Device Name"]
@@ -252,12 +328,13 @@ def backup_roots() -> list[Path]:
 
 def find_backups(root: Path) -> list[dict]:
     """Every device backup directly under `root`, with what identifies it."""
-    if not root.is_dir():
-        return []
-    found = []
-    for d in sorted(root.iterdir()):
-        if d.is_dir() and (d / "Manifest.db").exists():
-            found.append({"path": d, "encrypted": _is_encrypted(d), **_device(d)})
+    with privacy_guard(root):           # a Mac's MobileSync needs Full Disk Access
+        if not root.is_dir():
+            return []
+        found = []
+        for d in sorted(root.iterdir()):
+            if d.is_dir() and (d / "Manifest.db").exists():
+                found.append({"path": d, "encrypted": _is_encrypted(d), **_device(d)})
     return found
 
 
@@ -320,11 +397,14 @@ def _snapshot(src: Path, wal: Path | None, tmp: Path,
     dest = tmp / f"{label}.db"
     sibling_wal = src.with_name(src.name + "-wal")
     sibling_shm = src.with_name(src.name + "-shm")
-    if wal is None and sibling_wal.exists() and not sibling_shm.exists():
-        # Copied files: SQLite cannot open a WAL database read-only without
-        # its -shm, so take both halves. (A live database has its -shm, and
-        # the backup API below reads it consistently.)
-        wal = sibling_wal
+    try:
+        if wal is None and sibling_wal.exists() and not sibling_shm.exists():
+            # Copied files: SQLite cannot open a WAL database read-only without
+            # its -shm, so take both halves. (A live database has its -shm, and
+            # the backup API below reads it consistently.)
+            wal = sibling_wal
+    except PermissionError as e:
+        raise access_denied(src, e.strerror or "permission denied") from e
     try:
         if wal is not None:
             shutil.copyfile(src, dest)
@@ -342,8 +422,11 @@ def _snapshot(src: Path, wal: Path | None, tmp: Path,
         conn.execute("PRAGMA query_only = ON")
         conn.execute("SELECT name FROM sqlite_master LIMIT 1")
         return conn, wal is not None or sibling_wal.exists()
+    except PermissionError as e:
+        raise access_denied(src, e.strerror or "permission denied") from e
     except sqlite3.DatabaseError as e:
-        raise DomainError(f"cannot read {src.name} as a database: {e}") from e
+        raise (_sqlite_denied(src, e) or DomainError(
+            f"cannot read {src.name} as a database: {e}")) from e
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -352,17 +435,18 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 # ---------------------------------------------------------------- contacts
 
-def _contact_names(conn: sqlite3.Connection | None) -> dict[tuple[str, str], str]:
-    """(kind, value) -> the name on the phone's contact card.
+def _card_label(first, last, nickname, org) -> str:
+    """The name a contact card goes by: 'First Last', else the nickname, else
+    the organization. One rule for the phone's and the Mac's address books,
+    so the same card names a handle the same way from either."""
+    full = " ".join(x.strip() for x in (first, last) if x and x.strip())
+    return full or (nickname or "").strip() or (org or "").strip()
 
-    iOS's AddressBook.sqlitedb is its own schema, not the Mac's Core Data
+
+def _ios_contact_sets(conn: sqlite3.Connection) -> dict[tuple[str, str], set[str]]:
+    """iOS's AddressBook.sqlitedb is its own schema, not the Mac's Core Data
     store: ABPerson holds the names, ABMultiValue the numbers and addresses
-    (property 3 = phone, 4 = email), joined on record_id. A number on two
-    cards keeps both names — "Mom / Dad" is the honest label for a shared
-    landline, and picking one would be a guess.
-    """
-    if conn is None:
-        return {}
+    (property 3 = phone, 4 = email), joined on record_id."""
     person_cols = _columns(conn, "ABPerson")
     if not person_cols or not _columns(conn, "ABMultiValue"):
         return {}
@@ -376,13 +460,73 @@ def _contact_names(conn: sqlite3.Connection | None) -> dict[tuple[str, str], str
             f"JOIN ABMultiValue mv ON mv.record_id = p.ROWID "
             f"WHERE mv.property IN (3, 4) AND mv.value IS NOT NULL"):
         row = dict(zip(pick + ["property", "value"], r))
-        full = " ".join(x for x in (row.get("First"), row.get("Last")) if x).strip()
-        label = full or (row.get("Nickname") or "").strip() \
-            or (row.get("Organization") or "").strip()
+        label = _card_label(row.get("First"), row.get("Last"), row.get("Nickname"),
+                            row.get("Organization"))
         h = base.handle_for(row["value"])
         if label and h:
             names.setdefault(h, set()).add(label)
-    return {h: " / ".join(sorted(v)) for h, v in names.items()}
+    return names
+
+
+def _mac_contact_sets(conn: sqlite3.Connection) -> dict[tuple[str, str], set[str]]:
+    """A Mac Contacts store (AddressBook-v22.abcddb), read by _abcddb."""
+    names: dict[tuple[str, str], set[str]] = {}
+    for card in _abcddb.read_contacts(conn):
+        label = _card_label(card["first"], card["last"], card["nickname"], card["org"])
+        if not label:
+            continue
+        for _, raw in card["phones"] + card["emails"]:
+            h = base.handle_for(raw)
+            if h:
+                names.setdefault(h, set()).add(label)
+    return names
+
+
+def _contact_sets(conn: sqlite3.Connection) -> dict[tuple[str, str], set[str]]:
+    if _abcddb.is_abcddb(conn):
+        return _mac_contact_sets(conn)
+    return _ios_contact_sets(conn)
+
+
+def _join_names(sets: dict[tuple[str, str], set[str]]) -> dict[tuple[str, str], str]:
+    # A number on two cards keeps both names — "Mom / Dad" is the honest label
+    # for a shared landline, and picking one would be a guess.
+    return {h: " / ".join(sorted(v)) for h, v in sets.items()}
+
+
+def _contact_names(conn: sqlite3.Connection | None) -> dict[tuple[str, str], str]:
+    """(kind, value) -> the name on the contact card, from one address book —
+    the phone's AddressBook.sqlitedb or a Mac's AddressBook-v22.abcddb, told
+    apart by their tables."""
+    if conn is None:
+        return {}
+    return _join_names(_contact_sets(conn))
+
+
+def contact_names(stores: list[tuple[Path, Path | None]],
+                  tmp: Path) -> tuple[dict[tuple[str, str], str], int]:
+    """Names from every address book given, as (path, -wal or None) pairs,
+    merged into one map; and how many of the stores could be read.
+
+    Each store is snapshotted like the Messages database (a Mac keeps one per
+    account, all live and held open by Contacts). Names are a courtesy: a
+    store that cannot be read is skipped, never fatal.
+    """
+    merged: dict[tuple[str, str], set[str]] = {}
+    read = 0
+    for i, (path, wal) in enumerate(stores):
+        conn = None
+        try:
+            conn, _ = _snapshot(path, wal, tmp, f"contacts{i}")
+            for h, labels in _contact_sets(conn).items():
+                merged.setdefault(h, set()).update(labels)
+            read += 1
+        except (DomainError, sqlite3.DatabaseError, ValueError):
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    return _join_names(merged), read
 
 
 # ---------------------------------------------------------------- messages
@@ -478,7 +622,58 @@ def _event(r: dict) -> dict | None:
     return None
 
 
-def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
+_MESSAGES_ROOTS = ("Library/SMS/", "Library/Messages/")
+
+
+def attachment_path(filename: str | None) -> str | None:
+    """An attachment's path relative to the Messages folder.
+
+    The phone stores '~/Library/SMS/Attachments/ab/11/<guid>/IMG_0001.HEIC'
+    (or, on old iOS, '/var/mobile/Library/SMS/...'); a Mac stores
+    '~/Library/Messages/Attachments/...'. The part after the Messages folder
+    is the same on both, and it is what value_json keeps — otherwise every
+    message with a photo, read once from the phone and once from the Mac,
+    would compare as a conflict.
+    """
+    if not filename:
+        return None
+    s = str(filename).replace("\\", "/")
+    for root in _MESSAGES_ROOTS:
+        i = s.find(root)
+        if i >= 0:
+            return s[i + len(root):] or None
+    return s[2:] if s.startswith("~/") else s
+
+
+def _recoverable(conn: sqlite3.Connection, tables: set[str]) -> set[int]:
+    """Message ROWIDs in Recently Deleted (iOS 16+ / macOS 13+).
+
+    Deleting a message keeps its row in `message` for about 30 days so it can
+    be recovered, but moves its chat link from chat_message_join to
+    chat_recoverable_message_join. The owner chose "mirror the source", and
+    the owner has deleted it — so it counts as gone. A row in both tables is
+    still shown in its conversation, and counts as present.
+    """
+    if "chat_recoverable_message_join" not in tables:
+        return set()
+    if "message_id" not in _columns(conn, "chat_recoverable_message_join"):
+        return set()
+    held = set()
+    if "chat_message_join" in tables:
+        held = {r[0] for r in conn.execute("SELECT message_id FROM chat_message_join")}
+    return {r[0] for r in conn.execute(
+        "SELECT message_id FROM chat_recoverable_message_join")} - held
+
+
+def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config,
+          attachments_root: Path | None = None) -> dict:
+    """Every message row -> records, handles and what was skipped.
+
+    `attachments_root` is the folder the database's attachment paths are
+    relative to (a Mac's ~/Library/Messages). When given, a message whose
+    attachment file is on disk there gets it as media_path; a backup's files
+    are hashed out of reach, so the phone passes nothing.
+    """
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     missing = {"message", "handle"} - tables
@@ -506,6 +701,8 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
                 "SELECT chat_id, message_id FROM chat_message_join ORDER BY chat_id DESC"):
             msg_chat[mid] = chat_id          # lowest chat id wins when duplicated
     attachments: dict[int, list] = {}
+    local_files: dict[int, str] = {}               # message ROWID -> first file on disk
+    files_seen = {"on_disk": 0, "not_on_disk": 0}
     payloads = 0
     if {"attachment", "message_attachment_join"} <= tables:
         acols = _columns(conn, "attachment")
@@ -524,11 +721,22 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
                 continue
             if a.get("hide_attachment"):
                 continue
+            rel = attachment_path(fname)
             item = {"name": a.get("transfer_name") or Path(fname).name or None,
-                    "mime": a.get("mime_type"),
-                    "path": fname[2:] if fname.startswith("~/") else (fname or None)}
+                    "mime": a.get("mime_type"), "path": rel}
             if a.get("is_sticker"):
                 item["sticker"] = True
+            if attachments_root is not None and rel:
+                local = attachments_root / rel
+                try:
+                    on_disk = local.is_file()
+                except (OSError, ValueError):  # a Mac file name this OS cannot spell
+                    on_disk = False
+                if on_disk:
+                    files_seen["on_disk"] += 1
+                    local_files.setdefault(r[0], str(local))
+                else:              # offloaded to iCloud, or never downloaded
+                    files_seen["not_on_disk"] += 1
             attachments.setdefault(r[0], []).append(
                 {k: v for k, v in item.items() if v is not None})
 
@@ -540,6 +748,7 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
     examples: dict[str, tuple[str, str]] = {}      # raw address -> its handle
     present: set[str] = set()                      # GUIDs the phone still holds
     counts = {"messages": 0, "chats": len(chats)}
+    recently_deleted = _recoverable(conn, tables)
 
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
@@ -561,6 +770,10 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
         # like a deleted one — not imported, and removed if it already was.
         if apple_iso(r["date_retracted"]):
             skip("unsent message (not kept — the archive mirrors the phone)")
+            continue
+        if r["rowid"] in recently_deleted:
+            skip("deleted message waiting in Recently Deleted (not kept — the "
+                 "archive mirrors the phone)")
             continue
         present.add(r["guid"])        # on the phone, even if skipped below
         sent = apple_iso(r["date"])
@@ -706,6 +919,7 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
         records.append({**common, "stream": stream, "external_id": r["guid"],
                         "started_at": sent, "title": title, "body": body,
                         "value_json": _json(detail),
+                        "media_path": local_files.get(r["rowid"]),
                         "origin_app": "messages",
                         "last_modified_at": edited_at or sent})
 
@@ -714,7 +928,8 @@ def _read(conn: sqlite3.Connection, contacts: dict, cfg: Config) -> dict:
     account = max(owners, key=owners.get) if owners else None
     return {"records": records, "handles": handles, "account": account,
             "skipped": skipped, "unmapped": unmapped, "counts": counts,
-            "examples": examples, "present": present}
+            "examples": examples, "present": present, "owners": owners,
+            "attachment_files": files_seen}
 
 
 # ---------------------------------------------------------------- scan
@@ -729,42 +944,33 @@ def _content_hash(*paths: Path | None) -> str:
     return h.hexdigest()
 
 
-def scan(target: Path, cfg: Config) -> base.Scan:
-    files = _resolve(target)
-    folder = files["folder"]
-    info = _device(folder) if files["kind"] == "backup" else {}
+def read_database(db: Path, wal: Path | None,
+                  contact_stores: list[tuple[Path, Path | None]], cfg: Config,
+                  attachments_root: Path | None = None) -> tuple[dict, bool, int]:
+    """Snapshot a Messages database and read it: (result, -wal read, address
+    books read). Shared by this connector and mac_messages."""
     tmp = tempfile.TemporaryDirectory(prefix="lifecrm-msg-")
     try:
         tmp_path = Path(tmp.name)
-        msg_conn, wal_read = _snapshot(files["messages"], files["messages_wal"],
-                                       tmp_path, "messages")
-        book_conn = None
+        msg_conn, wal_read = _snapshot(db, wal, tmp_path, "messages")
         try:
-            contacts = {}
-            if files["contacts"] is not None:
-                try:
-                    book_conn, _ = _snapshot(files["contacts"], files["contacts_wal"],
-                                             tmp_path, "contacts")
-                    contacts = _contact_names(book_conn)
-                except (DomainError, sqlite3.DatabaseError):
-                    contacts = {}          # names are a courtesy; never fail on them
-            result = _read(msg_conn, contacts, cfg)
+            contacts, books = contact_names(contact_stores, tmp_path)
+            result = _read(msg_conn, contacts, cfg, attachments_root)
         finally:
             msg_conn.close()
-            if book_conn is not None:
-                book_conn.close()
     finally:
         tmp.cleanup()
+    return result, wal_read, books
 
+
+def scan_parts(result: dict, folder: Path, wal_read: bool) -> dict:
+    """The sorted, scan-shaped pieces of a _read result, and the facts a first
+    real import has to check — stated by the import itself rather than left
+    for someone to go and find out (docs/texts.md)."""
     records = sorted(result["records"],
                      key=lambda r: (r["stream"], r["started_at"], r["external_id"]))
     handles = [{"kind": k, "value": v, "display_name": label}
                for (k, v), label in sorted(result["handles"].items())]
-    skipped = [f"{v} × {k}" for k, v in sorted(result["skipped"].items())]
-    unmapped = [{"what": k, "count": v} for k, v in sorted(result["unmapped"].items())]
-
-    # The facts a first real import has to check, stated by the import itself
-    # rather than left for someone to go and find out (docs/texts.md).
     dates = [r["journal_date"] for r in records if r["stream"] in ("imessage", "sms", "rcs")]
     names = dict(result["handles"])
     facts = {
@@ -775,24 +981,44 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         "normalized": [{"raw": raw, "handle": f"{h[0]}:{h[1]}", "name": names.get(h)}
                        for raw, h in sorted(result["examples"].items())[:5]],
     }
+    return {
+        "records": records,
+        "handles": handles,
+        "skipped": [f"{v} × {k}" for k, v in sorted(result["skipped"].items())],
+        "unmapped": [{"what": k, "count": v} for k, v in sorted(result["unmapped"].items())],
+        "facts": facts,
+        "named_handles": sum(1 for h in handles if h["display_name"]
+                             and h["display_name"] != OWNER_LABEL),
+    }
+
+
+def scan(target: Path, cfg: Config) -> base.Scan:
+    with privacy_guard(target):
+        files = _resolve(target)
+        folder = files["folder"]
+        info = _device(folder) if files["kind"] == "backup" else {}
+        books = [(files["contacts"], files["contacts_wal"])] if files["contacts"] else []
+        result, wal_read, _ = read_database(files["messages"], files["messages_wal"],
+                                            books, cfg)
+        source_hash = _content_hash(files["messages"], files["messages_wal"]
+                                    or files["messages"].with_name(
+                                        files["messages"].name + "-wal"))
+        parts = scan_parts(result, folder, wal_read)
     return base.empty_scan(
         name,
         account=result["account"],
         source_file=folder.name,
-        source_hash=_content_hash(files["messages"], files["messages_wal"]
-                                  or files["messages"].with_name(
-                                      files["messages"].name + "-wal")),
-        records=records,
-        handles=handles,
-        unmapped=unmapped,
-        skipped=skipped,
-        facts=facts,
+        source_hash=source_hash,
+        records=parts["records"],
+        handles=parts["handles"],
+        unmapped=parts["unmapped"],
+        skipped=parts["skipped"],
+        facts=parts["facts"],
         present_ids=result["present"],
         mirror_streams=list(streams),
         target_kind=files["kind"],
         contacts_read=files["contacts"] is not None,
-        named_handles=sum(1 for h in handles if h["display_name"]
-                          and h["display_name"] != OWNER_LABEL),
+        named_handles=parts["named_handles"],
         messages_seen=result["counts"]["messages"],
         chats=result["counts"]["chats"],
         **info)
@@ -828,6 +1054,14 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
     if scan.get("backup_date"):
         head += f", taken {scan['backup_date']}"
     lines = [head + f"; {scan['messages_seen']} message row(s), {scan['chats']} chat(s))"]
+    lines += fact_lines(scan, "sms.db-wal", "the phone")
+    return lines + plan_lines(scan, plan)
+
+
+def fact_lines(scan: base.Scan, wal_name: str, device: str) -> list[str]:
+    """What was read: the folder, the account, the span, the -wal, and how a
+    few raw addresses were normalized."""
+    lines = []
     facts = scan.get("facts") or {}
     if facts.get("folder"):
         lines.append(f"  read from: {facts['folder']}")
@@ -835,15 +1069,22 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
         lines.append(f"  account: {scan['account']}")
     if facts.get("oldest_message"):
         lines.append(f"  messages span {facts['oldest_message']}..{facts['newest_message']} "
-                     f"— check the oldest against what the phone shows")
-    lines.append("  sms.db-wal: " + ("read — writes not yet folded into the main file "
-                                     "are included" if facts.get("wal_read") else "none"))
+                     f"— check the oldest against what {device} shows")
+    lines.append(f"  {wal_name}: " + ("read — writes not yet folded into the main file "
+                                      "are included" if facts.get("wal_read") else "none"))
     if facts.get("normalized"):
         lines.append("  normalized, e.g.: " + "; ".join(
             f"{n['raw']} -> {n['handle'].split(':', 1)[1]}"
             + (f" ({n['name']})" if n.get("name") else "")
             for n in facts["normalized"]))
+    return lines
 
+
+def plan_lines(scan: base.Scan, plan: dict, *, gone: str = "on the phone",
+               source: str = "the backup",
+               contacts_from: str = "from the backup's contacts") -> list[str]:
+    """Per-stream counts and samples, removals, conflicts and skips."""
+    lines = []
     by_stream: dict[str, dict] = {}
     for rec in plan["new"]:
         by_stream.setdefault(rec["stream"], {"new": [], "upd": []})["new"].append(rec)
@@ -857,9 +1098,9 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
         lines.append(f"  {stream}: {len(info['new'])} new, {len(info['upd'])} changed "
                      f"| {span} | e.g. {_sample(latest)}")
     if not by_stream and not plan.get("removed"):
-        lines.append("  nothing new — the backup matches the database")
+        lines.append(f"  nothing new — {source} matches the database")
     lines += base.removal_lines(
-        plan, "no longer on the phone (deleted or unsent)",
+        plan, f"no longer {gone} (deleted or unsent)",
         lambda row: row["title"] or (json.loads(row["value_json"]).get("chat")
                                      if row["value_json"] else None))
 
@@ -876,11 +1117,21 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
     people = [h for h in scan["handles"] if h["display_name"] != OWNER_LABEL]
     if people:
         named = scan["named_handles"]
-        source = "from the backup's contacts" if scan["contacts_read"] \
+        names = contacts_from if scan["contacts_read"] \
             else "no address book in this target"
-        lines.append(f"  handles: {len(people)} ({named} named {source}) — review "
+        lines.append(f"  handles: {len(people)} ({named} named {names}) — review "
                      f"with 'lifecrm handles list --suggest'")
+    # One message read from both the phone and a Mac is one record; the only
+    # thing the two can honestly disagree on is where its attachment file is.
+    # That is not worth a line per photo.
+    located = sum(1 for c in plan["conflicts"] if set(c["changes"]) == {"media_path"})
+    if located:
+        lines.append(f"  {located} message(s) already archived from another "
+                     f"device differ only in where the attachment file is — kept "
+                     f"the location first recorded")
     for c in plan["conflicts"]:
+        if set(c["changes"]) == {"media_path"}:
+            continue
         lines.append(f"  CONFLICT {c['stream']} {c['external_id'][:12]}…: differs "
                      f"from the stored record but is not newer — kept existing "
                      f"({', '.join(sorted(c['changes']))})")

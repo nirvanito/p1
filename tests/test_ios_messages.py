@@ -381,9 +381,10 @@ def test_attachments_are_described_not_copied(cfg, tmp_path):
     rec = _by_guid(scan)["M9"]
     assert rec["body"] is None                       # only U+FFFC in the text
     assert rec["media_path"] is None
+    # relative to the Messages folder, so a Mac's copy of it compares identical
     assert _detail(rec)["attachments"] == [{
         "mime": "image/heic", "name": "IMG_0001.HEIC",
-        "path": "Library/SMS/Attachments/ab/11/A1/IMG_0001.HEIC"}]
+        "path": "Attachments/ab/11/A1/IMG_0001.HEIC"}]
     assert "1 × link-preview payload attachment" in scan["skipped"]
 
 
