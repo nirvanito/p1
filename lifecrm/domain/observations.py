@@ -22,6 +22,10 @@ shared by every connector. The classification rules are lifted from
 
 Identity is (stream, external_id) — the source system's own record id — so
 re-importing an export is always safe.
+
+Mirroring (see MASS_REMOVAL_MIN) adds two more: removed, for what a
+mirroring source no longer holds, and reappeared, for a row it hid that the
+source holds again.
 """
 
 from __future__ import annotations
@@ -53,10 +57,16 @@ DIRECTIONS = ("in", "out", "self")
 # state may declare which ids the source still holds (`present_ids`); archived
 # rows it no longer holds are then removed, so the archive mirrors the source
 # instead of remembering it. A removal this large at once looks like an
-# incomplete source — a partial or cloud-optimized backup — more than like
-# deletions, and is refused unless explicitly allowed.
-MASS_REMOVAL_MIN = 100
+# incomplete source — a partial or cloud-optimized backup, a one-card vCard,
+# a truncated export — more than like deletions, and is refused unless
+# explicitly allowed: at least MASS_REMOVAL_MIN records that are more than
+# MASS_REMOVAL_SHARE of the account's archive, or MASS_REMOVAL_MAJORITY of it
+# whatever its size. The floor used to be 100, which let an incomplete source
+# empty any archive of 100 records or fewer — an address book, a notes
+# account, a calendar — without a word.
+MASS_REMOVAL_MIN = 5
 MASS_REMOVAL_SHARE = 0.10
+MASS_REMOVAL_MAJORITY = 0.50
 
 
 # ---------------------------------------------------------------- validation
@@ -327,12 +337,20 @@ def ignore_handle(conn: sqlite3.Connection, kind: str, value: str,
 
 def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     """Compare a connector's scan against the database. Reads only — this is
-    what the dry-run report is built from."""
+    what the dry-run report is built from.
+
+    `reappeared` lists the rows mirroring hid (cited, so retracted instead of
+    deleted) that the source holds again; they also go through classify, so
+    one that changed meanwhile updates or conflicts as usual. Without this a
+    cited record could never come back: classify ignores status, so it read
+    as identical and stayed hidden for good."""
     streams = tuple(sorted({r.get("stream") for r in scan["records"]
                             if r.get("stream")}))
     existing = existing_by_key(conn, streams)
+    back_scope = _reappear_scope(conn, scan)
     seen: set[tuple[str, str]] = set()
     new, updates, refreshed, conflicts, invalid = [], [], [], [], []
+    reappeared = []
     identical = dup_incoming = 0
     for rec in scan["records"]:
         err = validate(rec)
@@ -348,9 +366,13 @@ def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
         if row is None:
             new.append(rec)
             continue
+        back = _reappears(row, rec, back_scope)
+        if back:
+            reappeared.append((row, rec))
         kind, changes = classify(row, rec)
         if kind == "identical":
-            identical += 1
+            if not back:            # coming back is a change, not a skip
+                identical += 1
         elif kind == "refreshed":
             refreshed.append((row, rec))
         elif kind == "update":
@@ -363,7 +385,42 @@ def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     return {"new": new, "updates": updates, "refreshed": refreshed,
             "conflicts": conflicts, "identical": identical,
             "dup_incoming": dup_incoming, "invalid": invalid,
+            "reappeared": reappeared,
             "streams": list(streams), **_mirror_plan(conn, scan)}
+
+
+def _reappear_scope(conn: sqlite3.Connection, scan: dict
+                    ) -> tuple[set[int], set[str], set[str]] | None:
+    """Where a row mirroring hid may come back: (applied import ids of this
+    connector and account, mirror streams, ids the source holds), or None
+    when this scan does not mirror.
+
+    The exact scope `_mirror_plan` removes from, so what one source hid only
+    that source brings back — a second phone, another account, or a
+    connector sharing the streams (mac_messages beside ios_messages) never
+    does. An import that is itself retracted is out: its rows are hidden
+    because the owner undid it, and only `imports restore` brings them back.
+    """
+    present = scan.get("present_ids")
+    mirror_streams = scan.get("mirror_streams")
+    if present is None or not scan.get("account") or not mirror_streams:
+        return None
+    imports = {r["id"] for r in conn.execute(
+        "SELECT id FROM imports WHERE status='applied' AND connector=? "
+        "AND account IS ?", (scan["connector"], scan["account"]))}
+    return imports, set(mirror_streams), set(present)
+
+
+def _reappears(row: sqlite3.Row, rec: dict, scope) -> bool:
+    """True for a row mirroring hid that the source holds again. A retracted
+    row of an applied import can only have been hidden by mirroring:
+    `retract_import` retracts the import with its rows, and `restore_import`
+    puts back everything it hid."""
+    if scope is None or row["status"] != "retracted":
+        return False
+    imports, streams, present = scope
+    return (row["import_id"] in imports and rec["stream"] in streams
+            and rec["external_id"] in present)
 
 
 def _mirror_plan(conn: sqlite3.Connection, scan: dict) -> dict:
@@ -401,13 +458,24 @@ def _mirror_plan(conn: sqlite3.Connection, scan: dict) -> dict:
 
 
 def mass_removal(plan: dict) -> str | None:
-    """The refusal message if this plan removes suspiciously much, else None."""
+    """The refusal message if this plan removes suspiciously much, else None.
+
+    Two bars, either one refuses: a real share of the archive (at least
+    MASS_REMOVAL_MIN records and more than MASS_REMOVAL_SHARE of it), or half
+    of it or more however few records that is — a small archive is exactly
+    where one wrong file removes nearly everything. One record alone is never
+    a mass removal: deleting one of your two notes is not suspicious, and the
+    snapshot taken first covers it either way."""
     n, scope = len(plan.get("removed", ())), plan.get("mirror_scope", 0)
-    if n > MASS_REMOVAL_MIN and n > MASS_REMOVAL_SHARE * scope:
+    if not n:
+        return None
+    if (n > 1 and n >= MASS_REMOVAL_MAJORITY * scope) or (
+            n >= MASS_REMOVAL_MIN and n > MASS_REMOVAL_SHARE * scope):
         return (f"this would remove {n} of {scope} archived record(s) at once — "
                 f"more like an incomplete source (a partial or iCloud-optimized "
-                f"backup) than deletions. Check the source; if it is really what "
-                f"you want, re-run with --allow-mass-removal")
+                f"backup, an export of only part of the account) than deletions. "
+                f"Check the source; if it is really what you want, re-run with "
+                f"--allow-mass-removal")
     return None
 
 
@@ -419,7 +487,8 @@ def _remove(conn: sqlite3.Connection, rows: list, actor: str) -> tuple[int, int]
     retracted, hidden everywhere, rather than deleted: the confirmed tier's
     provenance is never destroyed (the lesson of entry merge, 1.1). Everything
     else is deleted; participants and the search index follow by cascade and
-    trigger.
+    trigger. A hidden row comes back by itself when the source holds it again
+    (`_reappear`); a deleted one returns as a new row.
     """
     deleted = retracted = 0
     now = now_utc()
@@ -445,9 +514,32 @@ def _remove(conn: sqlite3.Connection, rows: list, actor: str) -> tuple[int, int]
     return deleted, retracted
 
 
+def _reappear(conn: sqlite3.Connection, pairs: list, actor: str) -> int:
+    """Rows mirroring hid that the source holds again: active once more,
+    with the participants the source names now. Audited, because a status
+    change is a change to what `ask` and every view can see."""
+    if not pairs:
+        return 0
+    now = now_utc()
+    for row, rec in pairs:
+        conn.execute("UPDATE observations SET status='active', updated_at=? "
+                     "WHERE id=?", (now, row["id"]))
+        _link_participants(conn, row["id"], rec.get("participants", []))
+    audit.log(conn, actor, "mirror_restore", "observations", None,
+              {"restored": len(pairs),
+               "external_ids": sorted({rec["external_id"] for _, rec in pairs})})
+    return len(pairs)
+
+
 def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
-               actor: str = "import", allow_mass_removal: bool = False) -> dict:
-    """Write the plan. The caller owns the transaction; nothing here commits."""
+               actor: str = "import", allow_mass_removal: bool = False,
+               snapshot: str | None = None) -> dict:
+    """Write the plan. The caller owns the transaction; nothing here commits.
+
+    `snapshot` names the database snapshot the caller took before a plan that
+    removes anything. It is recorded with the import's counts, because that
+    snapshot — not `retract_import`, which only hides what an import added —
+    is the undo for a removal."""
     if plan["invalid"]:
         raise DomainError(plan["invalid"][0])
     refusal = mass_removal(plan)
@@ -466,16 +558,21 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
         _link_participants(conn, row["id"], rec.get("participants", []))
     for row, rec in plan["refreshed"]:
         _refresh_modified(conn, row, rec)
+    reappeared = _reappear(conn, plan.get("reappeared", []), actor)
     deleted, retracted = _remove(conn, plan.get("removed", []), actor)
     refresh_handle_stats(conn)
     counts = {"added": len(plan["new"]), "updated": len(plan["updates"]),
               "refreshed": len(plan["refreshed"]),
               "identical": plan["identical"],
               "conflicts": len(plan["conflicts"])}
+    if reappeared:
+        counts["reappeared"] = reappeared
     if deleted or retracted:
         counts["removed"] = deleted
         if retracted:
             counts["retracted_cited"] = retracted
+        if snapshot:
+            counts["snapshot"] = snapshot
     finish_import(conn, import_id, "applied", counts, actor)
     return {**counts, "import_uuid": import_uuid}
 

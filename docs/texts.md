@@ -244,16 +244,27 @@ What removal can never do:
 - **Reach another phone's archive.** Only rows first imported from the same
   account (the phone's own number) are candidates, and a database that does
   not say whose phone it is removes nothing.
-- **Destroy a journal entry's provenance.** A message a confirmed entry cites
-  is hidden (`status='retracted'`) instead of deleted.
+- **Destroy a journal entry's provenance.** A message a confirmed entry (or a
+  relationship) cites is hidden (`status='retracted'`) instead of deleted,
+  and comes back by itself — the same row, active again, reported as
+  `back: N hidden record(s) the source holds again` — when a later backup of
+  the same phone holds it again (recovered from Recently Deleted). `doctor`
+  warns (`cited_observations_hidden`) while an entry or relationship cites a
+  hidden message.
 - **Take most of the archive at once by accident.** A partial backup —
   Messages in iCloud with *Optimize Storage* on keeps only recent texts on the
-  phone — looks exactly like mass deletion. Removing more than 100 records
-  *and* more than 10% of the phone's archive in one import is refused unless
-  you add `--allow-mass-removal`; the dry run warns before you get there.
+  phone — looks exactly like mass deletion. Removing half or more of the
+  phone's archive (one record alone never counts), or five or more records
+  that are over a tenth of it, in one import is refused unless you add
+  `--allow-mass-removal`; the dry run warns before you get there.
 - **Happen without an undo.** Any import that removes something first takes a
-  standard database snapshot (`backups\lifecrm-<time>.db`, pruned by the usual
-  tiered retention); `lifecrm restore` brings it back.
+  database snapshot, `backups\pre-removal-<time>.db`, and prints the undo:
+  `lifecrm restore "<that snapshot>"` (the whole database as it was just
+  before the import). `imports retract` is *not* the undo for a removal — it
+  hides what an import added, and says so when the import also removed
+  something. Pre-removal snapshots are not pruned with the daily backups (a
+  backup later that day would be the day's newest and push this one out);
+  `backup` keeps every one from the 14 most recent days that have one.
 
 Residue worth knowing about: snapshots hold a removed message's text until
 retention prunes them, and the audit log — append-only by design — keeps the

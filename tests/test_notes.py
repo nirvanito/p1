@@ -66,9 +66,9 @@ def _by_id(scan):
     return {r["external_id"]: r for r in scan["records"]}
 
 
-def _apply(conn, scan):
+def _apply(conn, scan, **kw):
     plan = obs.build_plan(conn, scan)
-    result = obs.apply_plan(conn, scan, plan)
+    result = obs.apply_plan(conn, scan, plan, **kw)
     conn.commit()
     return plan, result
 
@@ -597,7 +597,9 @@ def test_a_note_deleted_or_trashed_in_keep_is_removed(tmp_path, cfg, conn):
     later = dict(KEEP)
     del later["2026-10-05T12_00_00.000-05_00.json"]                  # deleted for good
     later["Packing.json"] = {**KEEP["Packing.json"], "isTrashed": True}  # in the trash
-    plan, result = _apply(conn, notes.scan(make_keep(tmp_path / "b", later), cfg))
+    # Two of the four at once is half the archive: past the mass-removal bar.
+    plan, result = _apply(conn, notes.scan(make_keep(tmp_path / "b", later), cfg),
+                          allow_mass_removal=True)
     assert sorted(r["external_id"] for r in plan["removed"]) == [
         "keep:2026-10-05T12_00_00.000-05_00", "keep:Packing"]
     assert result["removed"] == 2
@@ -753,7 +755,7 @@ def test_cli_removes_a_deleted_note_with_a_snapshot_first(tmp_path, monkeypatch)
     r = runner.invoke(app, ["observe", "notes", str(vault), "--apply"])
     assert r.exit_code == 0, r.output
     assert "1 removed" in r.output and "snapshot before removing:" in r.output
-    assert list((root / "backups").glob("lifecrm-*.db"))
+    assert list((root / "backups").glob("pre-removal-*.db"))
 
 
 def test_cli_connectors_lists_notes(tmp_path, monkeypatch):

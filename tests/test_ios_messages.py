@@ -595,7 +595,12 @@ def test_removing_most_of_the_archive_at_once_is_refused(cfg, conn, tmp_path, mo
 @pytest.mark.parametrize("removed,scope,refused", [
     (101, 1000, True),      # past both bars
     (101, 2000, False),     # a real share of a big archive: under 10%
-    (60, 70, False),        # most of a small archive, but under the floor
+    (60, 70, True),         # most of a small archive: half or more always refuses
+    (5, 40, True),          # at the floor and over 10%
+    (4, 30, False),         # under the floor, under half
+    (2, 4, True),           # half of a tiny archive
+    (1, 2, False),          # one record alone is never a mass removal
+    (2, 5, False),
 ])
 def test_the_mass_removal_bar(removed, scope, refused):
     msg = obs.mass_removal({"removed": [None] * removed, "mirror_scope": scope})
@@ -872,7 +877,7 @@ def test_cli_removal_takes_a_snapshot_and_mass_removal_needs_the_flag(
     assert "remove: 1 no longer on the phone" in r.output
     assert "1 removed" in r.output
     assert "snapshot before removing:" in r.output
-    assert list((root / "backups").glob("lifecrm-*.db"))
+    assert list((root / "backups").glob("pre-removal-*.db"))
 
     monkeypatch.setattr(obs, "MASS_REMOVAL_MIN", 5)
     few = str(make_backup(phone / "c", variant="few"))

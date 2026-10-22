@@ -48,8 +48,10 @@ Then write:
 .venv/Scripts/python -m lifecrm observe ai_chat claude-export.zip --apply
 ```
 
-The command prints an import uuid. `lifecrm imports retract <uuid>` undoes the
-whole run (reversible with `lifecrm imports restore <uuid>`).
+The command prints an import uuid. `lifecrm imports retract <uuid>` undoes
+what the run added (reversible with `lifecrm imports restore <uuid>`); a run
+that also removed conversations prints the snapshot that undoes the removal
+(see "Deleted conversations" below).
 
 Accepted targets: the `.zip`, an unzipped directory, or `conversations.json`
 itself.
@@ -109,11 +111,14 @@ The guards are the same as for texts (docs/texts.md):
   ChatGPT conversations, and one account's export never touches another's.
   An export that does not name its account — ChatGPT without `user.json` —
   removes nothing, and the report says so.
-- **Never most of the archive at once.** Removing more than 100 messages and
-  more than 10% of that account's archive in one import is refused without
-  `--allow-mass-removal` — a truncated or wrong export looks like mass deletion.
-- **Snapshot first.** An import that removes anything takes a standard
-  database snapshot beforehand.
+- **Never most of the archive at once.** Removing half or more of that
+  account's archive, or five or more messages that are over a tenth of it, in
+  one import is refused without `--allow-mass-removal` — a truncated or wrong
+  export looks like mass deletion.
+- **Snapshot first.** An import that removes anything first takes a database
+  snapshot (`backups/pre-removal-<time>.db`) and prints the undo,
+  `lifecrm restore "<that snapshot>"`; `imports retract` cannot bring back
+  what an import removed.
 
 ChatGPT's abandoned branches are still in its export, so they stay: only what
 the export itself drops is removed.

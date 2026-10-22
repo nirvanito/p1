@@ -1018,8 +1018,31 @@ def _observe_summary(scan: dict, plan: dict, prior=None) -> dict:
             "handles": scan.get("handles", []), "unmapped": scan.get("unmapped", []),
             "skipped": scan.get("skipped", []), "facts": scan.get("facts"),
             "removed": len(plan.get("removed", [])),
+            "reappeared": len(plan.get("reappeared", [])),
             "mass_removal": _mass_removal(plan),
             "previously_imported_as": prior["uuid"] if prior else None}
+
+
+def _observe_report(c, scan: dict, plan: dict) -> list[str]:
+    """The connector's report, plus the one change no connector reports
+    itself: hidden records the source holds again. Without it a run that
+    brings a record back would still say "nothing new — matches the
+    database"."""
+    lines = c.report_lines(scan, plan)
+    back = plan.get("reappeared") or []
+    if not back:
+        return lines
+    per_stream: dict[str, int] = {}
+    for row, _ in back:
+        per_stream[row["stream"]] = per_stream.get(row["stream"], 0) + 1
+    line = (f"  back: {len(back)} hidden record(s) the source holds again — made "
+            f"active again: "
+            + ", ".join(f"{n} {s}" for s, n in sorted(per_stream.items())))
+    at = next((i for i, text in enumerate(lines)
+               if text.startswith("  nothing new")), None)
+    if at is None:
+        return lines + [line]
+    return lines[:at] + [line] + lines[at + 1:]
 
 
 def _split_handle(handle: str) -> tuple[str, str]:
@@ -1123,7 +1146,7 @@ def observe(
             if as_json:
                 _echo_json(_observe_summary(scan, plan, prior))
             else:
-                for line in c.report_lines(scan, plan):
+                for line in _observe_report(c, scan, plan):
                     typer.echo(line)
                 if prior:
                     typer.echo(f"  note: this exact file was already imported on "
@@ -1141,13 +1164,17 @@ def observe(
         snapshot = None
         if plan.get("removed"):
             # Removal is the one write here that a re-import cannot always
-            # undo, so it gets the migration treatment: a snapshot first. It is
-            # named like every other snapshot, so tiered retention prunes it.
+            # undo, so it gets the migration treatment: a snapshot first. Not
+            # named lifecrm-*: tiered retention keeps one of those per day, the
+            # newest, so the next backup that day — taken after the removal —
+            # would prune the only copy of what this removes. pre-removal-*
+            # has its own retention (lifecrm/retention.py).
             ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            snapshot = db_mod.snapshot(conn, cfg.backups_dir / f"lifecrm-{ts}.db")
+            snapshot = db_mod.snapshot(conn, cfg.backups_dir / f"pre-removal-{ts}.db")
         try:
             summary = obs.apply_plan(conn, scan, plan,
-                                     allow_mass_removal=allow_mass_removal)
+                                     allow_mass_removal=allow_mass_removal,
+                                     snapshot=snapshot.name if snapshot else None)
             conn.commit()
         except DomainError as e:
             conn.rollback()
@@ -1155,24 +1182,41 @@ def observe(
     finally:
         conn.close()
 
+    undo_removal = (f'python -m lifecrm restore "{snapshot}"' if snapshot else None)
     if as_json:
         _echo_json({**_observe_summary(scan, plan, prior), "applied": summary,
-                    "snapshot": str(snapshot) if snapshot else None})
+                    "snapshot": str(snapshot) if snapshot else None,
+                    "undo_removal": undo_removal})
         return
-    for line in c.report_lines(scan, plan):
+    for line in _observe_report(c, scan, plan):
         typer.echo(line)
-    typer.echo(f"applied: {summary['added']} added, {summary['updated']} updated, "
-               f"{summary['refreshed']} refreshed; {summary['identical']} identical "
-               f"skipped"
-               + (f"; {summary['removed']} removed" if summary.get("removed") else "")
-               + (f" ({summary['retracted_cited']} cited by journal entries kept "
-                  f"hidden, not deleted)" if summary.get("retracted_cited") else "")
-               + (f"; {summary['conflicts']} conflict(s) kept existing"
-                  if summary["conflicts"] else ""))
+    parts = [f"{summary['added']} added, {summary['updated']} updated, "
+             f"{summary['refreshed']} refreshed", f"{summary['identical']} identical "
+             f"skipped"]
+    if summary.get("reappeared"):
+        parts.append(f"{summary['reappeared']} hidden record(s) back in the "
+                     f"source, active again")
+    if "removed" in summary:
+        parts.append(f"{summary['removed']} removed"
+                     + (f", {summary['retracted_cited']} hidden instead (cited by "
+                        f"an entry or a relationship, so kept, not deleted)"
+                        if summary.get("retracted_cited") else ""))
+    if summary["conflicts"]:
+        parts.append(f"{summary['conflicts']} conflict(s) kept existing")
+    typer.echo("applied: " + "; ".join(parts))
+    uid = summary["import_uuid"]
     if snapshot:
+        # `imports retract` hides what an import added; it cannot bring back
+        # what one removed. Printing it as "the undo" here would be a lie.
         typer.echo(f"snapshot before removing: {snapshot}")
-    typer.echo(f"import {summary['import_uuid']} — undo with: "
-               f"python -m lifecrm imports retract {summary['import_uuid']}")
+        typer.echo(f"undo the removal with: {undo_removal} — the whole database "
+                   f"as it was just before this import (or re-run observe on the "
+                   f"complete source)")
+        typer.echo(f"import {uid} — imports retract would only hide the "
+                   f"{summary['added']} record(s) it added, not bring back what "
+                   f"it removed")
+    else:
+        typer.echo(f"import {uid} — undo with: python -m lifecrm imports retract {uid}")
     unresolved = _unresolved_count(cfg)
     if unresolved:
         typer.echo(f"{unresolved} unresolved handle(s) — see: "
@@ -1231,15 +1275,32 @@ def imports_retract(
     Reversible with `imports restore`: the rows keep their data. Re-importing
     does NOT bring them back (an unchanged record classifies as identical and
     is skipped).
+
+    What a mirroring import REMOVED is not undone here — deleted rows have no
+    data left to unhide. The note names the snapshot observe took before it.
     """
     from .domain import observations as obs
     cfg = _cfg()
     conn = _conn(cfg)
-    result = _commit_or_rollback(conn, lambda: obs.retract_import(conn, import_uuid))
+
+    def _retract():
+        result = obs.retract_import(conn, import_uuid)
+        return result, conn.execute("SELECT counts_json FROM imports WHERE uuid=?",
+                                    (import_uuid,)).fetchone()["counts_json"]
+    result, counts_json = _commit_or_rollback(conn, _retract)
     typer.echo(f"retracted {result['retracted']} observation(s) from "
                f"{result['connector']} import {import_uuid[:8]} "
                f"({result['source_file'] or 'no file'})")
     typer.echo(f"put them back with: python -m lifecrm imports restore {import_uuid}")
+    counts = json.loads(counts_json) if counts_json else {}
+    gone = counts.get("removed", 0) + counts.get("retracted_cited", 0)
+    if gone:
+        snap = counts.get("snapshot")
+        where = (f'python -m lifecrm restore "{cfg.backups_dir / snap}"' if snap
+                 else "restore the snapshot observe printed before it removed them")
+        typer.echo(f"note: this import also removed {gone} record(s) its source no "
+                   f"longer held — retract does not bring those back; to undo the "
+                   f"removal: {where} (or re-run observe on the complete source)")
 
 
 @imports_app.command("restore")
@@ -1250,7 +1311,8 @@ def imports_restore(
 
     A record mirroring removed because it was deleted at the source (and kept
     hidden because a journal entry cites it) stays hidden: restoring an import
-    never resurrects what was deleted on the phone.
+    never resurrects what was deleted on the phone. It comes back by itself
+    when a later observe of that source holds it again.
     """
     from .domain import observations as obs
     cfg = _cfg()
@@ -1437,8 +1499,10 @@ def handles_ignore(
 def backup() -> None:
     """Snapshot the DB (backup API) locally, and copy it to the cloud backups
     folder (OneDrive, iCloud Drive) when cloud_backups_dir is set.
-    Tiered retention: 14 daily, 12 weekly, 24 monthly, yearly indefinitely."""
-    from .retention import prune_dir
+    Tiered retention: 14 daily, 12 weekly, 24 monthly, yearly indefinitely.
+    The snapshots observe takes before removing anything (pre-removal-*) are
+    pruned by their own rule, never by the daily tier."""
+    from .retention import PRE_REMOVAL_GLOB, prune_dir
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -1463,6 +1527,9 @@ def backup() -> None:
     removed = prune_dir(cfg.backups_dir)
     if removed:
         typer.echo(f"retention pruned {len(removed)} local snapshot(s)")
+    removed = prune_dir(cfg.backups_dir, PRE_REMOVAL_GLOB)
+    if removed:
+        typer.echo(f"retention pruned {len(removed)} pre-removal snapshot(s)")
 
 
 @app.command()

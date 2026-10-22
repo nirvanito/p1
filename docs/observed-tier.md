@@ -210,7 +210,9 @@ records. It never touches the database. Everything else is shared:
 validate(rec)                    -> str | None      # single-line error
 existing_by_key(conn, streams)   -> dict[(stream, external_id), Row]
 classify(row, rec)               -> 'identical'|'refreshed'|'update'|'conflict'
-build_plan(conn, scan)           -> plan            # newer-wins, conflicts surfaced
+build_plan(conn, scan)           -> plan            # newer-wins, conflicts surfaced;
+                                                    # mirroring: removed, reappeared
+mass_removal(plan)               -> str | None      # the refusal, if it removes too much
 apply_plan(conn, scan, plan)     -> counts          # one transaction, one imports row
 retract_import(conn, import_uuid)                   # status='retracted', audited
 restore_import(conn, import_uuid)                   # puts back exactly what retract hid
@@ -238,6 +240,46 @@ Note the naming collision: `lifecrm import` already means "import a text
 transcript as a journal source." Hence `observe` for the new group. `health
 import` should eventually move under it as `observe health <zip>`, but not until
 the observed tier is real.
+
+## Mirroring: removal, and what keeps it safe
+
+A connector whose every scan is its source's complete current state declares
+`present_ids` (what the source still holds) and `mirror_streams`; archived
+rows first imported by the same connector and account, in those streams,
+that the source no longer holds are removed by `apply_plan` (decision #3
+below). Written once in `domain/observations.py`, so every mirroring
+connector gets the same guards:
+
+- **Scoped.** Only rows the same connector *and account* created are
+  candidates; a scan that does not name its account removes nothing.
+- **Never most of the archive at once** (`mass_removal`). Refused without
+  `--allow-mass-removal`: half or more of the account's archive (one record
+  alone never counts), or five or more records that are over a tenth of it.
+  The floor used to be 100 removals, which let a one-card vCard, a partial
+  notes export or a truncated calendar empty any archive of 100 records or
+  fewer.
+- **Cited provenance is hidden, not deleted.** A row an entry
+  (`entry_observations`) or a relationship (`entity_links.observation_uuid`)
+  cites goes to `status='retracted'`. When the source holds it again — a
+  message recovered from Recently Deleted, a card restored — the next
+  mirroring scan of the same connector and account brings that row back
+  (`reappeared` in the plan, `mirror_restore` in the audit log, `back: N
+  hidden record(s) the source holds again` in the report); it also takes
+  the usual newer-wins update if it changed meanwhile. A row hidden by
+  `imports retract` is not touched: its import is retracted, and only
+  `imports restore` brings it back. `doctor` warns
+  (`cited_observations_hidden`) while an active entry or relationship cites
+  a hidden row.
+- **A snapshot first, and that snapshot is the undo.** `observe --apply`
+  snapshots the database to `backups/pre-removal-<time>.db` before any
+  removal, records its name in the import's counts, and prints
+  `lifecrm restore "<snapshot>"` as the undo. `imports retract` only hides
+  what an import *added* — a deleted row has nothing left to unhide — so it
+  is never offered as the undo for a removal, and says so when run on an
+  import that removed something. Pre-removal snapshots have their own
+  retention (every one from the 14 most recent days that have one): sharing
+  the tiered `lifecrm-*` rule, the next backup that day — newer, and taken
+  after the removal — would prune the only copy of what was removed.
 
 ## What this changes in existing code
 

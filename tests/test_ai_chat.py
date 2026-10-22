@@ -439,4 +439,4 @@ def test_cli_removes_a_deleted_conversation_with_a_snapshot_first(tmp_path, monk
     r = runner.invoke(app, ["observe", "ai_chat", str(later), "--apply"])
     assert r.exit_code == 0, r.output
     assert "1 removed" in r.output and "snapshot before removing:" in r.output
-    assert list((root / "backups").glob("lifecrm-*.db"))
+    assert list((root / "backups").glob("pre-removal-*.db"))

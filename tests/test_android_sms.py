@@ -842,4 +842,4 @@ def test_cli_removal_takes_a_snapshot(tmp_path, monkeypatch):
                             str(make_backup(tmp_path / "b", variant="deleted")), "--apply"])
     assert r.exit_code == 0, r.output
     assert "2 removed" in r.output and "snapshot before removing:" in r.output
-    assert list((root / "backups").glob("lifecrm-*.db"))
+    assert list((root / "backups").glob("pre-removal-*.db"))

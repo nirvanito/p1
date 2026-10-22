@@ -64,9 +64,9 @@ def _by_title(scan):
     return {r["title"]: r for r in scan["records"]}
 
 
-def _apply(conn, scan):
+def _apply(conn, scan, **kw):
     plan = obs.build_plan(conn, scan)
-    result = obs.apply_plan(conn, scan, plan)
+    result = obs.apply_plan(conn, scan, plan, **kw)
     conn.commit()
     return plan, result
 
@@ -617,7 +617,8 @@ def test_a_photo_trashed_or_deleted_in_photos_leaves_the_archive(cfg, conn, tmp_
         "apple-photos:AAAA-0001", "apple-photos:CCCC-0003"]
     text = "\n".join(photos.report_lines(scan, plan))
     assert "remove: 2 no longer in the library (trashed or deleted)" in text
-    _, result = _apply(conn, scan)
+    # Two of the three at once is most of the archive: past the mass-removal bar.
+    _, result = _apply(conn, scan, allow_mass_removal=True)
     assert result["removed"] == 2
     left = {r["external_id"] for r in conn.execute(
         "SELECT external_id FROM observations WHERE status='active'")}

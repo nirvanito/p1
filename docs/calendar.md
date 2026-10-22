@@ -72,7 +72,8 @@ dry run — nothing written. Re-run with --apply to write.
 ```
 
 Then write it with `--apply`. The command prints an import uuid;
-`lifecrm imports retract <uuid>` undoes the whole run.
+`lifecrm imports retract <uuid>` undoes what the run added. A run that also
+removed events prints the snapshot that undoes the removal instead.
 
 With no path, `observe calendar` uses `[connectors.calendar] path`, else the
 newest Takeout zip or folder, or `.ical.zip`, in `~/Downloads` that holds a
@@ -203,12 +204,15 @@ The guards:
   why.
 - **Excluded is not deleted.** A calendar in `exclude_calendars` is not
   imported, and nothing already archived from it is removed.
-- **Never most of the archive at once.** More than 100 removals and more than
-  10% of the account's archive in one import is refused without
-  `--allow-mass-removal` — a truncated or wrong export looks like mass deletion.
+- **Never most of the archive at once.** Removing half or more of the
+  account's archive, or five or more events that are over a tenth of it, in
+  one import is refused without `--allow-mass-removal` — a truncated or wrong
+  export looks like mass deletion.
   A file cut off mid-download is refused outright ("ends inside BEGIN:VEVENT").
-- **Snapshot first**, and an event a confirmed journal entry cites is hidden,
-  not deleted.
+- **Snapshot first** (`backups/pre-removal-<time>.db`, with the undo
+  `lifecrm restore "<that snapshot>"` printed), and an event a confirmed
+  journal entry cites is hidden, not deleted — and back, active again, once
+  the calendar holds it again.
 
 ## Attribution: link people and places once
 

@@ -94,7 +94,8 @@ python -m lifecrm observe notes <same path> --apply
 ```
 
 The command prints an import uuid; `lifecrm imports retract <uuid>` undoes
-the whole run. (Run `python` as `.venv\Scripts\python.exe` on Windows and
+what the run added (a run that removed notes prints the snapshot that undoes
+the removal). (Run `python` as `.venv\Scripts\python.exe` on Windows and
 `.venv/bin/python` on a Mac.)
 
 ### With no path
@@ -199,14 +200,16 @@ The guards are the shared ones (docs/texts.md):
   `takeout-…-001.zip`, `-002.zip`, …; if another part also holds Keep notes,
   importing one part would read the rest as deleted. The report says so —
   extract every part into one folder and import the folder.
-- **Never most of the archive at once.** Removing more than 100 notes and
-  more than 10% of that account's archive in one import is refused without
-  `--allow-mass-removal`.
-- **Snapshot first**, and a note a confirmed journal entry cites is hidden,
-  not deleted.
+- **Never most of the archive at once.** Removing half or more of that
+  account's archive, or five or more notes that are over a tenth of it, in
+  one import is refused without `--allow-mass-removal`.
+- **Snapshot first** (`backups/pre-removal-<time>.db`, with the undo
+  `lifecrm restore "<that snapshot>"` printed), and a note a confirmed journal
+  entry cites is hidden, not deleted.
 
-A note recovered at the source (restored from the trash) comes back as new
-on the next import.
+A note recovered at the source (restored from the trash) comes back on the
+next import: as new, or — if an entry cited it, so it was only hidden — as
+the same row, active again.
 
 ## Attribution
 

@@ -161,9 +161,9 @@ def _by_id(scan):
     return {r["external_id"]: r for r in scan["records"]}
 
 
-def _apply(conn, scan):
+def _apply(conn, scan, **kw):
     plan = obs.build_plan(conn, scan)
-    result = obs.apply_plan(conn, scan, plan)
+    result = obs.apply_plan(conn, scan, plan, **kw)
     conn.commit()
     return plan, result
 
@@ -405,7 +405,10 @@ def test_a_note_deleted_on_the_phone_leaves_and_a_locked_one_stays(tmp_path, cfg
     for n in later:
         if n["id"] == "N-BLED":
             n["folder"] = "Recently Deleted"                            # moved to the trash
-    plan, result = _apply(conn, notes.scan(make_store(tmp_path / "b.sqlite", later), cfg))
+    # Both notes of the account at once is the whole archive: past the
+    # mass-removal bar.
+    plan, result = _apply(conn, notes.scan(make_store(tmp_path / "b.sqlite", later), cfg),
+                          allow_mass_removal=True)
     assert sorted(r["external_id"] for r in plan["removed"]) == ["apple:N-BLED", "apple:N-GIFTS"]
     assert result["removed"] == 2
     text = "\n".join(notes.report_lines(notes.scan(tmp_path / "b.sqlite", cfg), plan))

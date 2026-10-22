@@ -174,12 +174,14 @@ What removal can never do — the same guarantees as the iPhone (`docs/texts.md`
   account (number) are candidates.
 - **Destroy a journal entry's provenance.** A text a confirmed entry cites is
   hidden (`status='retracted'`) instead of deleted.
-- **Take most of the archive at once by accident.** Removing more than 100
-  records *and* more than 10% of that phone's archive in one import is
-  refused without `--allow-mass-removal`; the dry run warns first.
+- **Take most of the archive at once by accident.** Removing half or more of
+  that phone's archive, or five or more records that are over a tenth of it,
+  in one import is refused without `--allow-mass-removal`; the dry run warns
+  first.
 - **Happen without an undo.** An import that removes anything first takes a
-  database snapshot (`backups\lifecrm-<time>.db`); `lifecrm restore` brings it
-  back.
+  database snapshot (`backups\pre-removal-<time>.db`) and prints the undo:
+  `lifecrm restore "<that snapshot>"`. `imports retract` cannot bring back
+  what an import removed.
 
 **Changing what the backup includes looks like deleting it.** Turning MMS or
 call logs off, or limiting the backup to some conversations, makes the next

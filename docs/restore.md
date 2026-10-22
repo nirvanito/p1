@@ -13,8 +13,15 @@ the UTC time the snapshot was taken. They live in:
     `~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/backups/`
 
 Also in `backups/`: `pre-restore-*.db` (the database as it was before a
-restore), `pre-migration-*.db` (before a schema upgrade), and an ordinary
-`lifecrm-*.db` that `observe` takes before mirroring deletions from a phone.
+restore), `pre-migration-*.db` (before a schema upgrade), and
+`pre-removal-*.db`, which `observe` takes before a mirroring import removes
+anything (deleted on the phone, in the app, in the address book). That one is
+the undo for the removal — `observe` prints it as `lifecrm restore
+"<snapshot>"`, and `imports retract` names it too, since retracting an import
+cannot bring back what it removed. `restore` with no argument lists only the
+`lifecrm-*.db` snapshots; pass a `pre-*` file's path to restore it.
+`backup` keeps every `pre-removal-*.db` from the 14 most recent days that
+have one, whatever later backups that day do.
 
 Commands below say `python`; use the project's own venv:
 `.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on a Mac, with

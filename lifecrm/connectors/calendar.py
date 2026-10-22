@@ -87,9 +87,10 @@ the next import, scoped to the import's account:
   deletion because today's window ends sooner.
 - An event this connector cannot read, or a rule it cannot expand, is still
   in the calendar — so any such run removes nothing at all, and says why.
-- The shared guards apply: more than 100 removals and more than 10% of the
-  account's archive is refused without --allow-mass-removal, a snapshot is
-  taken first, and a row a confirmed entry cites is hidden, not deleted.
+- The shared guards apply (domain/observations.py): a removal large enough
+  to look like a truncated export is refused without --allow-mass-removal,
+  a snapshot is taken first, and a row a confirmed entry cites is hidden, not
+  deleted.
 
 Known limitations, by design
 ----------------------------

@@ -159,9 +159,9 @@ whole history, 2026-09-24, as for texts and AI chats): a photo trashed
 is scoped to that one library — its Core Data store UUID (`Z_METADATA`) is the
 account — so it never reaches another library, a Takeout or a folder. The
 shared mirroring rules apply: a removal first takes a snapshot, a photo a
-confirmed entry cites is hidden rather than deleted, and removing more than
-100 photos *and* more than 10% of the library at once is refused without
-`--allow-mass-removal`. A **hidden** photo is still in the library: skipped
+confirmed entry cites is hidden rather than deleted, and removing half or
+more of the library, or five or more photos that are over a tenth of it, at
+once is refused without `--allow-mass-removal`. A **hidden** photo is still in the library: skipped
 unless `include_hidden = true`, never removed.
 
 **Folders and Takeouts are remembered, not mirrored.** A folder is often a

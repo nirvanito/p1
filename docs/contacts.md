@@ -69,7 +69,8 @@ dry run — nothing written. Re-run with --apply to write.
 
 Read the card count against what your phone shows, then add `--apply`.
 Re-importing is always safe: an unchanged card is skipped, a changed one
-updates (newer wins), and `lifecrm imports retract <uuid>` undoes a run.
+updates (newer wins), and `lifecrm imports retract <uuid>` undoes what a run
+added (what it removed comes back from the snapshot it prints).
 
 Then resolve the people:
 
@@ -124,11 +125,15 @@ names, anniversaries, and any other property not in the table above.
 A contacts export is your whole address book, so a card you delete in
 Contacts is removed from the archive by the next import — the same decision
 as texts and AI chats (docs/next-brief.md, decision #2). The guards are the
-shared ones: only cards **this account's** imports created can be removed; more
-than 100 cards *and* more than 10% at once is refused without
-`--allow-mass-removal` (an export of one Google account, not all of them,
-looks exactly like mass deletion); a database snapshot is taken first; and a
-card a journal entry cites is hidden, not deleted.
+shared ones: only cards **this account's** imports created can be removed;
+half or more of the address book, or five or more cards that are over a
+tenth of it, at once is refused without `--allow-mass-removal` (an export of
+one Google account, not all of them, or a vCard of a single card, looks
+exactly like mass deletion); a database snapshot (`backups/pre-removal-<time>.db`)
+is taken first and the undo, `lifecrm restore "<that snapshot>"`, is printed
+— `imports retract` cannot bring a removed card back; and a card a journal
+entry or a relationship cites is hidden, not deleted, and active again once
+the address book holds it again.
 
 Which account a source is:
 

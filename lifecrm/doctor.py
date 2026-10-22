@@ -416,6 +416,7 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
 
     try:
         _relationship_checks(conn, _add, _rows)
+        _hidden_citation_check(conn, _add)
     except sqlite3.OperationalError:
         pass   # pre-v5 schema; pending_migrations already failed above
 
@@ -423,6 +424,39 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     warnings = sum(1 for c in checks if c["status"] == "warn")
     return {"checks": checks, "failures": failures, "warnings": warnings,
             "healthy": failures == 0}
+
+
+def _hidden_citation_check(conn: sqlite3.Connection, _add) -> None:
+    """A confirmed record citing an observation nobody can see any more.
+
+    Mirroring hides a cited record instead of deleting it (deleted at the
+    source), and a retracted import hides its rows; either way the entry or
+    the relationship still stands while its provenance is out of sight —
+    `ask` and every view skip the row. Not corruption: the citation is intact
+    and a row mirroring hid comes back when the source holds it again. But
+    whether the record still stands is the owner's call, and until this
+    check nothing said it had happened."""
+    entries = [r["uuid"] for r in conn.execute(
+        "SELECT DISTINCT e.uuid FROM entry_observations eo "
+        "JOIN entries e ON e.id=eo.entry_id "
+        "JOIN observations o ON o.id=eo.observation_id "
+        "WHERE e.status='active' AND o.status='retracted' ORDER BY e.uuid")]
+    links = [r["uuid"] for r in conn.execute(
+        "SELECT l.uuid FROM entity_links l "
+        "JOIN observations o ON o.uuid=l.observation_uuid "
+        "WHERE l.status='active' AND o.status='retracted' ORDER BY l.uuid")]
+    if not entries and not links:
+        _add("ok", "cited_observations_hidden")
+        return
+    found = ([f"entry {u[:8]}" for u in entries[:3]]
+             + [f"relationship {u[:8]}" for u in links[:3]])
+    _add("warn", "cited_observations_hidden",
+         f"{len(entries)} active entr(y/ies) and {len(links)} active "
+         f"relationship(s) cite an observation that is now hidden — deleted at "
+         f"the source (kept because it is cited) or its import retracted: "
+         f"{', '.join(found)} — check them: python -m lifecrm entry show <uuid> / "
+         f"python -m lifecrm entities link list; a record deleted at the source "
+         f"comes back when it is there again")
 
 
 def _relationship_checks(conn: sqlite3.Connection, _add, _rows) -> None:

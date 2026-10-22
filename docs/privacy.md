@@ -13,7 +13,7 @@ accordingly.
 | `data\transcripts\`, `data\staging\` | Transcript text mirrors; drafts and diffs awaiting review (full journal text) | Yes — gitignored, local |
 | `data\dashboard\lifecrm.db` | **A full copy of the database**, taken by `lifecrm dashboard` and served by Datasette. Rewritten on each run, never deleted | Yes — gitignored (`/data/`); delete it when you are done |
 | `data\web\lifecrm.db` | The same kind of full copy, for the web view | Yes — gitignored (`/data/`); delete it when you are done |
-| `backups\` | Local DB snapshots (`lifecrm-*.db`, `pre-migration-*.db`, `pre-restore-*.db`) | Yes — gitignored, local |
+| `backups\` | Local DB snapshots (`lifecrm-*.db`, `pre-migration-*.db`, `pre-restore-*.db`, `pre-removal-*.db`) | Yes — gitignored, local |
 | `archive\`, `archive-data\`, `exports\` | `lifecrm export` output (markdown / jsonl) — the whole journal in plain text | Yes — gitignored; keep them out of synced folders unless you mean to |
 | Phone/health export zips (`*.zip`), iPhone backups | Health Connect exports, unencrypted iPhone backups (every message on the phone) | Yes — `*.zip` is gitignored; iPhone backups live outside the project (`MobileSync\Backup`) |
 | `OneDrive\VoiceJournal\inbox` + `archive\` (Windows) | Your voice recordings and dictated notes | **Cloud-synced** |
@@ -93,9 +93,13 @@ Nothing is deleted automatically except old snapshots. If you want limits:
   each location — the newest per day, then 14 daily, 12 weekly, 24 monthly,
   and one per year kept indefinitely. `pre-migration-*` and `pre-restore-*`
   snapshots are never pruned; delete them by hand once you trust the result.
+  `pre-removal-*` snapshots (taken by `observe` before it removes anything)
+  are pruned by `backup` on their own rule: every one from the 14 most recent
+  days that have one is kept.
 - Texts and AI chats mirror their source (decision #2): a message or
   conversation deleted on the phone or in the app is removed from the
-  database on the next import (snapshot first).
+  database on the next import (snapshot first) — so a removed message's text
+  lives on in that `pre-removal-*` snapshot until it is pruned.
 
 ## Moving everything to another machine
 
