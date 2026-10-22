@@ -158,10 +158,11 @@ def _participants(conn: sqlite3.Connection, obs_ids: list[int]) -> dict[int, lis
 
 
 def _who(stream: str, direction: str | None, origin_app: str | None,
-         parts: list[dict]) -> str | None:
+         parts: list[dict], owners: frozenset | set = frozenset()) -> str | None:
     """One readable line for who said it to whom, computed here so every page
     words it the same way. The owner is 'you': the sender of an outgoing
-    record, a recipient of an incoming one."""
+    record, a recipient of an incoming one — and, on a record with no
+    direction (a calendar event), never listed as a third party."""
     def name(p: dict) -> str:
         return p["entity"] or p["display_name"] or f"{p['kind']}:{p['value']}"
 
@@ -178,7 +179,10 @@ def _who(stream: str, direction: str | None, origin_app: str | None,
         return f"you → {names(receivers)}" if receivers else "you"
     if direction == "in" and senders:
         return f"{names(senders)} → you"
-    return names(parts) or None
+    others = [p for p in parts if p.get("entity_id") not in owners]
+    if not others and parts:
+        return "you"
+    return names(others) or None
 
 
 def _thread_key(detail: dict) -> tuple[str, str] | None:
@@ -198,6 +202,8 @@ _OBS_SELECT = ("SELECT o.*, i.uuid AS import_uuid, i.connector, i.account, "
 def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list,
                full: bool = False) -> list[dict]:
     parts = _participants(conn, [r["id"] for r in rows])
+    owners = (frozenset(_owner_entities(conn, cfg, _merged_into_map(conn)))
+              if rows and _observed(conn) else frozenset())
     out = []
     for r in rows:
         p = parts.get(r["id"], [])
@@ -214,7 +220,7 @@ def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list,
             "origin_app": r["origin_app"],
             "thread": thread[1] if thread else None,
             "participants": p,
-            "who": _who(r["stream"], r["direction"], r["origin_app"], p),
+            "who": _who(r["stream"], r["direction"], r["origin_app"], p, owners),
             "import": {"uuid": r["import_uuid"], "connector": r["connector"],
                        "account": r["account"], "source_file": r["source_file"]},
         }

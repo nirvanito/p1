@@ -1029,6 +1029,7 @@ def _observe_summary(scan: dict, plan: dict, prior=None) -> dict:
             "skipped": scan.get("skipped", []), "facts": scan.get("facts"),
             "removed": len(plan.get("removed", [])),
             "reappeared": len(plan.get("reappeared", [])),
+            "format_upgrades": len(plan.get("format_upgrades", [])),
             "mass_removal": _mass_removal(plan),
             "previously_imported_as": prior["uuid"] if prior else None}
 
@@ -1206,6 +1207,9 @@ def observe(
     if summary.get("reappeared"):
         parts.append(f"{summary['reappeared']} hidden record(s) back in the "
                      f"source, active again")
+    if summary.get("format_upgraded"):
+        parts.append(f"{summary['format_upgraded']} stored in an older format, "
+                     f"rewritten (content unchanged)")
     if "removed" in summary:
         parts.append(f"{summary['removed']} removed"
                      + (f", {summary['retracted_cited']} hidden instead (cited by "
