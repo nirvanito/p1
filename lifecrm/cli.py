@@ -632,14 +632,22 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
 
 
 @app.command()
-def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
-           out: str = typer.Option(..., "--out", help="Output directory")) -> None:
+def export(format: str = typer.Option(..., "--format",
+                                      help="jsonl | markdown | obsidian"),
+           out: str = typer.Option(..., "--out",
+                                   help="Output directory (obsidian: the vault folder)"),
+           dry_run: bool = typer.Option(False, "--dry-run",
+                                        help="obsidian: list what would change, "
+                                             "write nothing")) -> None:
     """Dump the archive in a form that outlives this code. Deterministic:
-    consecutive exports of the same data diff cleanly."""
+    consecutive exports of the same data diff cleanly. obsidian is a
+    read-only mirror: it rewrites and prunes only the notes it generated."""
     from . import export as export_mod
+    if dry_run and format != "obsidian":
+        _fail("--dry-run applies to --format obsidian only")
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
-    out_dir = Path(out)
+    out_dir = Path(out).expanduser()
     try:
         if format == "jsonl":
             manifest = export_mod.export_jsonl(conn, out_dir)
@@ -650,8 +658,16 @@ def export(format: str = typer.Option(..., "--format", help="jsonl | markdown"),
             typer.echo(f"exported {result['files']} markdown files "
                        f"({result['days']} day(s), {result['entities']} entities) "
                        f"to {out_dir}")
+        elif format == "obsidian":
+            try:
+                result = export_mod.export_obsidian(
+                    conn, out_dir, tz_name=cfg.timezone, dry_run=dry_run)
+            except DomainError as e:
+                _fail(str(e))
+            for line in export_mod.vault_report_lines(result, out_dir):
+                typer.echo(line)
         else:
-            _fail("format must be jsonl or markdown")
+            _fail("format must be jsonl, markdown or obsidian")
     finally:
         conn.close()
 
