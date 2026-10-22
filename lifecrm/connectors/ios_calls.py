@@ -37,16 +37,21 @@ missing one reads as NULL. Group FaceTime participants are archived blobs
 (ZREMOTE_PARTICIPANT_HANDLES) and are not decoded: such a call carries the
 handle in ZADDRESS when there is one, and none otherwise.
 
-Deletion semantics — the archive mirrors the source (decision #2)
------------------------------------------------------------------
-Like texts: a call deleted from Recents is gone from the next read, and its
-observation is removed — scoped to rows first imported from the same
-account. The store does not name the phone's own number, so the account is
-the backup's 'Phone Number' (Info.plist) for a backup, and the store's own
-Core Data identity (Z_METADATA.Z_UUID) otherwise. That keeps a backup import
-and a Mac import from ever removing each other's calls: the same call held by
-both is one record (ZUNIQUE_ID travels with the sync), and each source can
-only remove what it brought in.
+Deletion semantics — calls are remembered
+------------------------------------------
+Unlike texts, calls are never removed by a later import. The call history is
+not the phone's whole record: iOS keeps only its newest calls and drops
+older ones by itself, a few at a time. Mirroring it would remove every call
+the phone aged out — never enough at once to trip the mass-removal guard —
+until the archive held no more than the phone does, which is what archiving
+calls is for. android_sms made the same decision for the Android call log.
+A call deleted from Recents therefore stays archived; `imports retract`
+undoes an import.
+
+The account is still recorded (the backup's 'Phone Number' in Info.plist,
+otherwise the store's own Core Data identity, Z_METADATA.Z_UUID): it says
+which device an import read, and the same call held by a backup and the Mac
+is one record because ZUNIQUE_ID travels with the sync.
 """
 
 from __future__ import annotations
@@ -331,8 +336,6 @@ def scan(target: Path, cfg: Config) -> base.Scan:
                            for raw, h in sorted(result["examples"].items())[:5]],
             "address_books": len(files["books"]), "address_books_read": books_read,
         },
-        present_ids=result["present"],
-        mirror_streams=list(streams),
         target_kind=files["kind"],
         records_seen=result["seen"],
         named_handles=sum(1 for h in handles if h["display_name"]),

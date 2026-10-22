@@ -72,24 +72,24 @@ Names: the Mac's Contacts stores (beside the call history, in
 same rule as texts — and the phone's `ZNAME` only where no card names the
 number. Nothing is linked to an entity automatically.
 
-## The archive mirrors the call history
+## Calls are remembered
 
-Decision #2 applies as for texts: a call deleted from Recents is gone from
-the next read, and its observation is removed — with the same guards (mass
-removal refused without `--allow-mass-removal`, a snapshot first, a call a
-confirmed entry cites hidden rather than deleted).
+Unlike texts, a call is never removed by a later import (decided
+2026-10-22, the same rule as Android's call log). The call history is not the
+phone's whole record: iOS keeps only its newest calls and drops older ones by
+itself, a few at a time. Mirroring it would remove every call the phone aged
+out — never enough at once to trip the mass-removal guard — until the archive
+held no more than the phone does. A call you delete from Recents therefore
+stays archived; `lifecrm imports retract <uuid>` undoes an import.
 
-Removal is scoped to the **account**. The store does not record the phone's
-own number, so the account is:
+Each import still records its **account** — which device it read:
 
 - for a backup: the `Phone Number` in its `Info.plist`;
 - otherwise: the store's own Core Data identity, `callhistory:<Z_METADATA.Z_UUID>`
   — stable for the life of that device's store, different on every device.
 
-So a backup import and a Mac import can never remove each other's calls. The
-same call held by both is one record (its unique id travels with the sync);
-each source removes only what it brought in. A store with no identity at all
-removes nothing, and the report says so.
+The same call held by both a backup and the Mac is one record (its unique id
+travels with the sync).
 
 ## Freshness
 

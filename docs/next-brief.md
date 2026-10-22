@@ -417,7 +417,7 @@ deterministic one before it is spoken. See docs/voice.md.*
    connectors: decide per connector when each lands. *Recorded 2026-10-22,
    per connector as each landed. These mirror when the source names an
    account: `mac_messages` (its own scope, so a phone backup and the Mac
-   never remove each other's history), `ios_calls`, `android_sms` texts
+   never remove each other's history), `android_sms` texts
    (only from a type="full" file whose count matches), `calendar` (a
    one-calendar export only when its name is an address or listed in
    `[connectors.calendar] mirror_calendars` — two calendars can share a
@@ -425,7 +425,8 @@ deterministic one before it is spoken. See docs/voice.md.*
    `notes` (Keep only with a known account) and a Mac Photos library. These
    remember: `whatsapp` (an export is one capped chat), `finance`
    (statements are windows), `android_sms` calls (Android's call log ages
-   old calls out, so a full backup is not the whole history), `location`,
+   old calls out, so a full backup is not the whole history), `ios_calls`
+   (the same reason: iOS keeps only its newest calls), `location`,
    `browser`, and photo folders and Takeouts.*
 3. Export destination for `lifecrm export` (in-repo ignored dir vs outside).
    *Still open. `/archive/`, `/archive-data/` and `/exports/` are gitignored

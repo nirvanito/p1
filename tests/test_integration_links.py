@@ -39,3 +39,23 @@ def test_mirroring_retracts_an_observation_a_relationship_cites(conn, cfg):
     row = conn.execute("SELECT status FROM observations WHERE external_id='a'").fetchone()
     assert row["status"] == "retracted"           # kept: a confirmed fact cites it
     assert run_checks(conn, cfg)["failures"] == 0
+
+
+def test_value_less_sleep_rows_are_not_a_second_recorder(conn, cfg):
+    """An iPhone writes in-bed-only nights with no asleep minutes beside the
+    Watch's night: nothing double-counts, so doctor must not say it does."""
+    from lifecrm.doctor import _health_multi_origin
+    now = "2026-10-01T00:00:00Z"
+    conn.execute("INSERT INTO days (journal_date, created_at, updated_at) "
+                 "VALUES ('2026-09-30', ?, ?)", (now, now))
+    for i, (origin, value) in enumerate((("Watch", 420.0), ("iPhone", None))):
+        conn.execute(
+            "INSERT INTO health_records (uuid, metric, journal_date, started_at, "
+            "ended_at, value, unit, value_json, origin_app, external_id, source_file, "
+            "status, created_at, updated_at) VALUES (?, 'sleep_session', '2026-09-30', "
+            "'2026-09-30T05:00:00Z', '2026-09-30T12:00:00Z', ?, 'min', ?, ?, ?, "
+            "'export.zip', 'active', ?, ?)",
+            (f"u{i}", value, '{"in_bed_min": 470}', origin, f"x{i}", now, now))
+    seen = []
+    _health_multi_origin(conn, lambda status, check, detail=None: seen.append(status))
+    assert seen == ["ok"]

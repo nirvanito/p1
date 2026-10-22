@@ -219,9 +219,9 @@ def test_a_call_with_no_number_is_kept_without_a_participant(cfg, tmp_path):
     assert rec["participants"] == [] and _detail(rec)["caller_unknown"] is True
 
 
-def test_a_call_with_no_time_is_skipped_but_still_present(cfg, tmp_path):
+def test_a_call_with_no_time_is_skipped_and_counted(cfg, tmp_path):
     scan = ic.scan(make_mac_home(tmp_path), cfg)
-    assert "C10" not in _by_id(scan) and "C10" in scan["present_ids"]
+    assert "C10" not in _by_id(scan)
     assert "1 × call with no usable timestamp" in scan["skipped"]
 
 
@@ -244,7 +244,7 @@ def test_a_record_without_a_unique_id_gets_a_stable_one(cfg, tmp_path):
     c.close()
     a, b = ic.scan(store, cfg), ic.scan(store, cfg)
     made = [i for i in _by_id(a) if i.startswith("call:")]
-    assert len(made) == 1 and made[0] in b["present_ids"]
+    assert len(made) == 1 and made[0] in _by_id(b)
 
 
 def test_not_a_call_history_database_says_what_it_saw(cfg, tmp_path):
@@ -360,14 +360,19 @@ def test_a_store_macos_will_not_open_says_grant_full_disk_access(cfg, tmp_path,
         ic.scan(store, cfg)
 
 
-# ---------------------------------------------------------------- mirroring
+# ---------------------------------------------------------------- remembering
 
-def test_a_call_deleted_from_recents_is_removed(cfg, conn, tmp_path):
+def test_a_call_gone_from_recents_stays_archived(cfg, conn, tmp_path):
+    """iOS drops old calls by itself; an archive that mirrored it would lose
+    them a few at a time (the decision android_sms made for its call log)."""
     _apply(conn, ic.scan(make_mac_home(tmp_path / "a"), cfg))
-    plan, result = _apply(conn, ic.scan(make_mac_home(tmp_path / "b", variant="deleted"),
-                                        cfg))
-    assert [r["external_id"] for r in plan["removed"]] == ["C1"]
-    assert result["removed"] == 1
+    scan = ic.scan(make_mac_home(tmp_path / "b", variant="deleted"), cfg)
+    assert "present_ids" not in scan
+    plan, result = _apply(conn, scan)
+    assert plan["removed"] == [] and not result.get("removed")
+    row = conn.execute("SELECT status FROM observations WHERE stream='ios_call' "
+                       "AND external_id='C1'").fetchone()
+    assert row["status"] == "active"
     assert run_checks(conn, cfg)["failures"] == 0
 
 
@@ -379,13 +384,11 @@ def test_the_backup_and_the_mac_never_remove_each_others_calls(cfg, conn, tmp_pa
     assert plan["identical"] == 2                 # the same calls: one record each
 
 
-def test_a_store_that_names_no_account_removes_nothing(cfg, conn, tmp_path):
+def test_a_store_that_names_no_account_still_imports(cfg, conn, tmp_path):
     scan = ic.scan(make_store(tmp_path / "CallHistory.storedata", store_uuid=None), cfg)
     assert scan["account"] is None
     plan = obs.build_plan(conn, scan)
-    assert "does not say which account" in plan["mirror_note"]
-    text = "\n".join(ic.report_lines(scan, plan))
-    assert "not mirroring deletions" in text
+    assert plan["new"] and plan["removed"] == []
 
 
 def test_reimport_is_a_no_op_and_the_confirmed_tier_is_untouched(cfg, conn, tmp_path):

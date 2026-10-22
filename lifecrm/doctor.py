@@ -107,16 +107,20 @@ def _health_multi_origin(conn: sqlite3.Connection, _add) -> None:
     """Two apps recording the same metric on the same day — Samsung Health and
     Google Fit both counting steps, a phone and a watch both logging sleep.
     Dashboards and `ask` SUM a day's records, so every such day reads double.
-    Not corruption, so a warning; it persists until one writer is gone."""
+    Not corruption, so a warning; it persists until one writer is gone.
+
+    Only rows with a value count: an iPhone writes in-bed-only nights with no
+    asleep minutes, which add nothing to a sum beside the Watch's night."""
     from .health_connect import AVERAGED_METRICS
     marks = ",".join("?" for _ in AVERAGED_METRICS)
     rows = conn.execute(
         f"SELECT metric, COUNT(*) days, "
         f"(SELECT group_concat(origin_app, ', ') FROM (SELECT DISTINCT origin_app "
         f" FROM health_records h2 WHERE h2.metric=d.metric AND h2.status='active' "
-        f" AND h2.origin_app IS NOT NULL ORDER BY origin_app)) apps "
+        f" AND h2.origin_app IS NOT NULL AND h2.value IS NOT NULL "
+        f" ORDER BY origin_app)) apps "
         f"FROM (SELECT metric, journal_date FROM health_records "
-        f"      WHERE status='active' AND origin_app IS NOT NULL "
+        f"      WHERE status='active' AND origin_app IS NOT NULL AND value IS NOT NULL "
         f"      AND metric NOT IN ({marks}) "
         f"      GROUP BY metric, journal_date "
         f"      HAVING COUNT(DISTINCT origin_app) > 1) d "

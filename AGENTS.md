@@ -145,7 +145,7 @@ asserted.
   - `mac_messages` — the Mac's `chat.db` via ios_messages' reader under its
     own mirroring scope (iMessage GUIDs dedupe with a backup). `docs/texts.md`.
   - `ios_calls` — CallHistory.storedata from a Mac or a backup; stream
-    `ios_call`; mirrors. `docs/calls.md`.
+    `ios_call`; remembers (iOS ages out old calls). `docs/calls.md`.
   - `android_sms` — SMS Backup & Restore XML; streams android_sms /
     android_mms / android_call; texts mirror only a type="full" file whose
     count matches, with a known account; calls are remembered (the phone's

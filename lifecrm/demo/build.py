@@ -150,6 +150,9 @@ def _config_text(root: Path, combo: str) -> str:
         f'me = "{me.name}"',
         "[connectors.calendar]",
         f'account = "{me.email}"',
+        # The iPhone sample is one calendar named "Home"; a name alone could be
+        # shared by two calendars, so mirroring it is the owner's say-so.
+        'mirror_calendars = ["Home"]',
         "[connectors.contacts]",
         f'account = "{me.email}"',
         "",
