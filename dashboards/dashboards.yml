@@ -1,21 +1,55 @@
 # Dashboards-as-code, served by `python -m lifecrm dashboard`
-# (Datasette + datasette-dashboards over a point-in-time snapshot — the live
+# (Datasette + datasette-dashboards over a point-in-time snapshot - the live
 # database is never held open by the server; rerun the command to refresh).
 #
-# Rules for editing:
+# Rules for editing (tests/test_dashboard.py and test_dashboards_served.py
+# enforce every one of them):
 # - db is always `lifecrm` (the snapshot file's stem).
 # - Charts use library `vega-lite` with an explicit mark + encoding in
-#   `display` (spread verbatim into the spec; data/width are injected).
-#   The shorthand libraries (bar/line/pie) documented in the plugin's master
-#   README do NOT exist in the pinned 0.8.x renderer — they fail silently.
-# - Every field referenced by an encoding or metric display must exactly
+#   `display` (spread verbatim into the spec; data/width are injected), or
+#   `metric`, `table`, `map`. The shorthand libraries (bar/line/pie)
+#   documented in the plugin's master README do NOT exist in the pinned 0.8.x
+#   renderer - they fail silently.
+# - Every field referenced by an encoding, metric or map display must exactly
 #   match a SELECT alias.
 # - Filters arrive via the [[ AND ... :param ]] optional blocks; a query must
-#   stay valid SQL when every block is stripped (anchor them after WHERE).
-# - tests/test_dashboard.py executes every query here against a seeded schema
-#   and checks encoding fields against the SELECT aliases on every test run —
-#   a schema change that breaks a chart fails CI, not the evening you open
-#   the dashboard.
+#   stay valid SQL when every block is stripped (anchor them after WHERE). The
+#   plugin matches a block on ONE line, so never put `--` comments or
+#   more-indented lines in a query: `>-` folds the query onto one line only
+#   when every line has the same indent.
+# - A metric or table must return a row even on an empty database: the
+#   renderer reads rows[0] and a card with no rows stays blank (or prints
+#   "null"). Metrics COALESCE a scalar subquery to 'no data'; tables select
+#   FROM (SELECT 1) AS one LEFT JOIN (<the real query>) x ON 1, which yields
+#   the real rows, or exactly one placeholder row when there are none.
+# - Time series ORDER BY newest first: Datasette returns at most 1000 rows,
+#   and truncation should drop the oldest data, not the newest. Vega-Lite
+#   sorts the x axis itself.
+# - Dates are 'YYYY-MM-DD' strings, which the browser parses as UTC midnight;
+#   shown in local time they read as the previous day west of Greenwich. Day
+#   and month axes therefore use a utc timeUnit, and weekly bars span
+#   week..week_end (Monday to the next Monday) on a utc scale.
+# - Observed-tier rows (observations) are imported, never reviewed: every
+#   query keeps status='active' (a retracted import must vanish from every
+#   card), and imports with status 'retracted' are not listed. "The other
+#   party" of a message or call is the recipient of what the owner sent, the
+#   sender of what the owner received, or a plain 'participant' (a call log
+#   names only the other number) - the owner's own handle is on every
+#   message, and is never a person here. Rows without a direction (a
+#   calendar event) count every attendee except the entity linked to a
+#   handle some import names as its own account.
+# - Datasette cancels a query after 1 s, and an all-time card over years of
+#   texts gets near that. Queries joining messages to their participants
+#   walk observation_participants first and CROSS JOIN observations (SQLite
+#   takes CROSS JOIN as a join-order hint): rows are then read in id order,
+#   not at random through the stream index, and are counted per handle (or
+#   per person and day) before names are joined on. On 100k messages that
+#   took the slowest cards from 1.0-1.4 s to 0.25-0.65 s; far larger
+#   histories still want the date filters.
+# - Table and map cells are inserted as HTML: imported free text is escaped
+#   with replace(x, '<', '&lt;') before it reaches one.
+# - This file stays plain ASCII: `datasette serve` reads it with the locale's
+#   encoding (cp1252 on Windows unless PYTHONUTF8=1).
 title: Life CRM
 
 plugins:
@@ -76,12 +110,12 @@ plugins:
             WHERE status='active'
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY day ORDER BY day
+            GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
             mark: { type: bar, tooltip: true }
             encoding:
-              x: { field: day, type: temporal }
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: entries, type: quantitative }
         entries-by-category:
           title: By category
@@ -110,29 +144,33 @@ plugins:
             WHERE status='active' AND metric IN ('mood','energy')
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY day, metric ORDER BY day
+            GROUP BY day, metric ORDER BY day DESC
           library: vega-lite
           display:
             mark: { type: line, tooltip: true }
             encoding:
-              x: { field: day, type: temporal }
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: value, type: quantitative, scale: { domain: [0, 10] } }
               color: { field: metric, type: nominal }
         open-loops:
           title: Open loops
           db: lifecrm
           query: >-
+            SELECT COALESCE(x.kind, '') AS kind,
+            COALESCE(x.title, 'No open loops') AS title,
+            COALESCE(x.since, '') AS since, COALESCE(x.due, '') AS due
+            FROM (SELECT 1) AS one LEFT JOIN (
             SELECT k.name AS kind, e.title, e.journal_date AS since,
-            COALESCE(e.due_at, '') AS due
+            e.due_at AS due
             FROM entries e JOIN entry_kinds k ON k.id = e.kind_id
             WHERE k.name IN ('task','plan') AND e.status='active'
-            AND e.closed_at IS NULL
-            ORDER BY (e.due_at IS NULL), e.due_at, e.journal_date
+            AND e.closed_at IS NULL) x ON 1
+            ORDER BY (x.due IS NULL), x.due, x.since
           library: table
 
     health:
       title: Health
-      description: Sleep, steps, weight, workouts, heart rate, food — imported from Health Connect
+      description: Sleep, steps, weight, workouts, heart rate, food - imported from Health Connect or Apple Health
       filters:
         date_start:
           name: From
@@ -150,25 +188,27 @@ plugins:
           title: Latest weight
           db: lifecrm
           query: >-
-            SELECT value AS kg FROM health_records
+            SELECT COALESCE((SELECT ROUND(value, 1) || ' kg'
+            FROM health_records
             WHERE metric='weight' AND status='active'
-            ORDER BY journal_date DESC, started_at DESC LIMIT 1
+            ORDER BY journal_date DESC, started_at DESC LIMIT 1),
+            'no data') AS kg
           library: metric
           display:
             field: kg
-            suffix: " kg"
         last-night-sleep:
           title: Last night
           db: lifecrm
           query: >-
-            SELECT ROUND(SUM(value) / 60.0, 1) AS hours FROM health_records
+            SELECT COALESCE((SELECT ROUND(SUM(value) / 60.0, 1) || ' h'
+            FROM health_records
             WHERE metric='sleep_session' AND status='active'
             AND journal_date = (SELECT MAX(journal_date) FROM health_records
-            WHERE metric='sleep_session' AND status='active')
+            WHERE metric='sleep_session' AND status='active')),
+            'no data') AS hours
           library: metric
           display:
             field: hours
-            suffix: " h"
         workouts-count:
           title: Workouts
           db: lifecrm
@@ -189,12 +229,12 @@ plugins:
             WHERE metric='sleep_session' AND status='active'
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY night ORDER BY night
+            GROUP BY night ORDER BY night DESC
           library: vega-lite
           display:
             mark: { type: bar, tooltip: true }
             encoding:
-              x: { field: night, type: temporal }
+              x: { field: night, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: hours, type: quantitative }
         weight-trend:
           title: Weight
@@ -205,12 +245,12 @@ plugins:
             WHERE metric='weight' AND status='active'
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY day ORDER BY day
+            GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
             mark: { type: line, tooltip: true }
             encoding:
-              x: { field: day, type: temporal }
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: kg, type: quantitative, scale: { zero: false } }
         steps-per-day:
           title: Steps per day
@@ -221,12 +261,12 @@ plugins:
             WHERE metric='steps' AND status='active'
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY day ORDER BY day
+            GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
             mark: { type: bar, tooltip: true }
             encoding:
-              x: { field: day, type: temporal }
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: steps, type: quantitative }
         heart-rate:
           title: Heart rate (daily avg bpm)
@@ -238,12 +278,12 @@ plugins:
             AND status='active'
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY day ORDER BY day
+            GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
             mark: { type: line, tooltip: true }
             encoding:
-              x: { field: day, type: temporal }
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: bpm, type: quantitative, scale: { zero: false } }
         kcal-per-day:
           title: Food energy per day
@@ -254,10 +294,565 @@ plugins:
             WHERE metric='nutrition' AND status='active'
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
-            GROUP BY day ORDER BY day
+            GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
             mark: { type: bar, tooltip: true }
             encoding:
-              x: { field: day, type: temporal }
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: kcal, type: quantitative }
+
+    observed:
+      title: Observed
+      description: >-
+        Texts, calls, AI chats, calendar, money, photos and notes as imported -
+        never reviewed. Open a chart for its SQL and the rows behind it.
+      filters:
+        date_start:
+          name: From
+          type: date
+        date_end:
+          name: To
+          type: date
+      layout:
+        - [observed-records, messages-count, unresolved-handles]
+        - [texts-per-day, texts-per-day, top-people]
+        - [calls-per-week, ai-chats-per-week, calendar-per-week]
+        - [spending-per-week, spending-per-week, notes-per-month]
+        - [photo-map, photo-map, photos-per-month]
+        - [latest-imports, latest-imports, latest-imports]
+      charts:
+        observed-records:
+          title: Observed records
+          db: lifecrm
+          query: >-
+            SELECT COUNT(*) AS records FROM observations
+            WHERE status='active'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: records
+        messages-count:
+          title: Messages
+          db: lifecrm
+          query: >-
+            SELECT COUNT(*) AS messages FROM observations
+            WHERE status='active' AND stream IN ('imessage','sms','rcs',
+            'android_sms','android_mms','whatsapp')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: messages
+        unresolved-handles:
+          title: Handles to link (lifecrm handles list)
+          db: lifecrm
+          query: >-
+            SELECT COUNT(*) AS handles FROM entity_handles
+            WHERE entity_id IS NULL AND ignored = 0 AND observation_count > 0
+          library: metric
+          display:
+            field: handles
+        texts-per-day:
+          title: Texts per day
+          db: lifecrm
+          query: >-
+            SELECT journal_date AS day, stream, COUNT(*) AS messages
+            FROM observations
+            WHERE status='active' AND stream IN ('imessage','sms','rcs',
+            'android_sms','android_mms','whatsapp')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day, stream ORDER BY day DESC, stream
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
+              y: { field: messages, type: quantitative }
+              color: { field: stream, type: nominal }
+        top-people:
+          title: Top people by messages
+          db: lifecrm
+          query: >-
+            SELECT COALESCE(e.name, h.display_name, h.kind || ':' || h.value)
+            AS person,
+            CASE WHEN e.id IS NULL THEN 'not linked yet' ELSE 'linked' END
+            AS handle,
+            SUM(t.n) AS messages
+            FROM (SELECT p.handle_kind AS kind, p.handle_value AS value,
+            COUNT(*) AS n
+            FROM observation_participants p
+            CROSS JOIN observations o ON o.id = p.observation_id
+            WHERE o.status='active' AND o.stream IN ('imessage','sms','rcs',
+            'android_sms','android_mms','whatsapp')
+            AND (p.role = 'participant'
+            OR (o.direction = 'out' AND p.role = 'recipient')
+            OR (COALESCE(o.direction, 'in') = 'in' AND p.role = 'sender'))
+            [[ AND o.journal_date >= :date_start ]]
+            [[ AND o.journal_date <= :date_end ]]
+            GROUP BY p.handle_kind, p.handle_value) t
+            JOIN entity_handles h ON h.kind = t.kind AND h.value = t.value
+            LEFT JOIN entities e ON e.id = h.entity_id AND e.status = 'active'
+            WHERE h.ignored = 0
+            AND h.value NOT IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted')
+            GROUP BY COALESCE('entity:' || e.id, h.kind || ':' || h.value)
+            ORDER BY messages DESC, person LIMIT 15
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              y:
+                field: person
+                type: nominal
+                title: null
+                sort: { op: sum, field: messages, order: descending }
+              x: { field: messages, type: quantitative }
+              color: { field: handle, type: nominal }
+        calls-per-week:
+          title: Calls per week
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            COUNT(*) AS calls,
+            ROUND(SUM(COALESCE(value, 0)) / 60.0, 1) AS minutes
+            FROM observations
+            WHERE status='active' AND stream IN ('ios_call','android_call')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week ORDER BY week DESC
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: calls, type: quantitative }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: calls, type: quantitative }
+                - { field: minutes, type: quantitative }
+        ai-chats-per-week:
+          title: AI chats per week
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            CASE stream WHEN 'claude_chat' THEN 'Claude'
+            WHEN 'chatgpt_chat' THEN 'ChatGPT' ELSE stream END AS vendor,
+            COUNT(DISTINCT COALESCE(json_extract(value_json, '$.conversation_id'),
+            title)) AS chats,
+            COUNT(*) AS messages
+            FROM observations
+            WHERE status='active' AND stream IN ('claude_chat','chatgpt_chat')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week, stream ORDER BY week DESC, vendor
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: chats, type: quantitative }
+              color: { field: vendor, type: nominal }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: vendor, type: nominal }
+                - { field: chats, type: quantitative }
+                - { field: messages, type: quantitative }
+        calendar-per-week:
+          title: Calendar events per week
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            COUNT(*) AS events
+            FROM observations
+            WHERE status='active' AND stream = 'calendar_event'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week ORDER BY week DESC
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: events, type: quantitative }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: events, type: quantitative }
+        spending-per-week:
+          title: Money out per week (every account, transfers included)
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            UPPER(COALESCE(unit, '?')) AS currency,
+            ROUND(SUM(-value), 2) AS spent, COUNT(*) AS transactions
+            FROM observations
+            WHERE status='active' AND stream = 'txn' AND value < 0
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week, currency ORDER BY week DESC, currency
+          library: vega-lite
+          display:
+            mark: { type: bar, opacity: 0.85 }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: spent, type: quantitative, stack: null }
+              color: { field: currency, type: nominal }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: currency, type: nominal }
+                - { field: spent, type: quantitative }
+                - { field: transactions, type: quantitative }
+        notes-per-month:
+          title: Notes per month
+          db: lifecrm
+          query: >-
+            SELECT substr(journal_date, 1, 7) || '-01' AS month,
+            COUNT(*) AS notes
+            FROM observations
+            WHERE status='active' AND stream = 'note'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY month ORDER BY month DESC
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: month, type: temporal, timeUnit: utcyearmonth }
+              y: { field: notes, type: quantitative }
+        photo-map:
+          title: Where the photos were taken
+          db: lifecrm
+          query: >-
+            SELECT ROUND(json_extract(value_json, '$.lat'), 3) AS latitude,
+            ROUND(json_extract(value_json, '$.lon'), 3) AS longitude,
+            COUNT(*) AS photos, MIN(journal_date) AS first_taken,
+            MAX(journal_date) AS last_taken
+            FROM observations
+            WHERE status='active' AND stream = 'photo'
+            AND json_extract(value_json, '$.lat') IS NOT NULL
+            AND json_extract(value_json, '$.lon') IS NOT NULL
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY latitude, longitude
+            ORDER BY photos DESC, last_taken DESC LIMIT 1000
+          library: map
+          display:
+            latitude_column: latitude
+            longitude_column: longitude
+            show_latlng_popup: false
+        photos-per-month:
+          title: Photos per month
+          db: lifecrm
+          query: >-
+            SELECT substr(journal_date, 1, 7) || '-01' AS month,
+            COUNT(*) AS photos
+            FROM observations
+            WHERE status='active' AND stream = 'photo'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY month ORDER BY month DESC
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: month, type: temporal, timeUnit: utcyearmonth }
+              y: { field: photos, type: quantitative }
+        latest-imports:
+          title: Latest imports (lifecrm imports list)
+          db: lifecrm
+          query: >-
+            SELECT COALESCE(x.connector, 'No imports yet') AS connector,
+            COALESCE(x.account, '') AS account,
+            COALESCE(x.finished, '') AS finished,
+            COALESCE(x.status, '') AS status,
+            COALESCE(x.counts, '') AS counts
+            FROM (SELECT 1) AS one LEFT JOIN (
+            SELECT i.connector, i.started_at,
+            replace(COALESCE(i.account, ''), '<', '&lt;') AS account,
+            replace(substr(i.finished_at, 1, 16), 'T', ' ') AS finished,
+            i.status,
+            printf('%d added, %d updated, %d identical',
+            json_extract(i.counts_json, '$.added'),
+            json_extract(i.counts_json, '$.updated'),
+            json_extract(i.counts_json, '$.identical'))
+            || CASE WHEN json_extract(i.counts_json, '$.removed') > 0
+            THEN printf(', %d removed', json_extract(i.counts_json, '$.removed'))
+            ELSE '' END
+            || CASE WHEN json_extract(i.counts_json, '$.conflicts') > 0
+            THEN printf(', %d conflicts', json_extract(i.counts_json, '$.conflicts'))
+            ELSE '' END AS counts
+            FROM imports i WHERE i.status <> 'retracted'
+            ORDER BY i.started_at DESC, i.id DESC LIMIT 12) x ON 1
+            ORDER BY x.started_at DESC
+          library: table
+
+    people:
+      title: People
+      description: >-
+        Who you were in touch with, across both tiers - journal mentions you
+        confirmed, plus texts, calls and calendar events whose handles you
+        linked (lifecrm handles link). Your own handles are left out.
+      filters:
+        date_start:
+          name: From
+          type: date
+        date_end:
+          name: To
+          type: date
+      layout:
+        - [people-in-touch, journal-mentions, observed-contacts]
+        - [contacts-per-week, contacts-per-week, contacts-by-tier]
+        - [last-contact, last-contact, last-contact]
+      # Every chart but the two simple counts shares one CTE: `me` (entities
+      # linked to the handle an import named as its own account), `contact`
+      # (one row per person, day and stream with n = distinct records - an
+      # observation or entry lies on one day, so summing n never counts one
+      # twice), `person` (contact without places, merged entities or me).
+      charts:
+        people-in-touch:
+          title: People in touch
+          db: lifecrm
+          query: >-
+            WITH me AS (SELECT entity_id FROM entity_handles
+            WHERE entity_id IS NOT NULL AND value IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted')),
+            contact AS (
+            SELECT h.entity_id, o.journal_date AS day, 'observed' AS tier,
+            o.stream AS via, COUNT(DISTINCT o.id) AS n
+            FROM observation_participants p
+            CROSS JOIN observations o ON o.id = p.observation_id
+            JOIN entity_handles h ON h.kind = p.handle_kind
+            AND h.value = p.handle_value
+            WHERE o.status='active' AND h.entity_id IS NOT NULL
+            AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
+            'whatsapp','ios_call','android_call','calendar_event')
+            AND (o.direction IS NULL OR p.role = 'participant'
+            OR (o.direction = 'out' AND p.role = 'recipient')
+            OR (o.direction = 'in' AND p.role = 'sender'))
+            [[ AND o.journal_date >= :date_start ]]
+            [[ AND o.journal_date <= :date_end ]]
+            GROUP BY h.entity_id, o.journal_date, o.stream
+            UNION ALL
+            SELECT m.entity_id, en.journal_date, 'journal', 'journal',
+            COUNT(DISTINCT en.id)
+            FROM mentions m JOIN entries en ON en.id = m.entry_id
+            WHERE en.status='active'
+            [[ AND en.journal_date >= :date_start ]]
+            [[ AND en.journal_date <= :date_end ]]
+            GROUP BY m.entity_id, en.journal_date),
+            person AS (SELECT c.*, e.name FROM contact c
+            JOIN entities e ON e.id = c.entity_id
+            WHERE e.type = 'person' AND e.status = 'active'
+            AND e.id NOT IN (SELECT entity_id FROM me))
+            SELECT COUNT(DISTINCT entity_id) AS people FROM person
+          library: metric
+          display:
+            field: people
+        journal-mentions:
+          title: Journal mentions of people
+          db: lifecrm
+          query: >-
+            WITH me AS (SELECT entity_id FROM entity_handles
+            WHERE entity_id IS NOT NULL AND value IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted'))
+            SELECT COUNT(DISTINCT en.id || '/' || e.id) AS mentions
+            FROM mentions m JOIN entries en ON en.id = m.entry_id
+            JOIN entities e ON e.id = m.entity_id
+            WHERE en.status='active' AND e.type = 'person' AND e.status = 'active'
+            AND e.id NOT IN (SELECT entity_id FROM me)
+            [[ AND en.journal_date >= :date_start ]]
+            [[ AND en.journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: mentions
+        observed-contacts:
+          title: Texts, calls & events with linked people
+          db: lifecrm
+          query: >-
+            WITH me AS (SELECT entity_id FROM entity_handles
+            WHERE entity_id IS NOT NULL AND value IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted'))
+            SELECT COUNT(DISTINCT o.id) AS contacts
+            FROM observation_participants p
+            CROSS JOIN observations o ON o.id = p.observation_id
+            JOIN entity_handles h ON h.kind = p.handle_kind
+            AND h.value = p.handle_value
+            JOIN entities e ON e.id = h.entity_id
+            WHERE o.status='active' AND e.type = 'person' AND e.status = 'active'
+            AND e.id NOT IN (SELECT entity_id FROM me)
+            AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
+            'whatsapp','ios_call','android_call','calendar_event')
+            AND (o.direction IS NULL OR p.role = 'participant'
+            OR (o.direction = 'out' AND p.role = 'recipient')
+            OR (o.direction = 'in' AND p.role = 'sender'))
+            [[ AND o.journal_date >= :date_start ]]
+            [[ AND o.journal_date <= :date_end ]]
+          library: metric
+          display:
+            field: contacts
+        contacts-per-week:
+          title: Contact per week (top 12 people)
+          db: lifecrm
+          query: >-
+            WITH me AS (SELECT entity_id FROM entity_handles
+            WHERE entity_id IS NOT NULL AND value IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted')),
+            contact AS (
+            SELECT h.entity_id, o.journal_date AS day, 'observed' AS tier,
+            o.stream AS via, COUNT(DISTINCT o.id) AS n
+            FROM observation_participants p
+            CROSS JOIN observations o ON o.id = p.observation_id
+            JOIN entity_handles h ON h.kind = p.handle_kind
+            AND h.value = p.handle_value
+            WHERE o.status='active' AND h.entity_id IS NOT NULL
+            AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
+            'whatsapp','ios_call','android_call','calendar_event')
+            AND (o.direction IS NULL OR p.role = 'participant'
+            OR (o.direction = 'out' AND p.role = 'recipient')
+            OR (o.direction = 'in' AND p.role = 'sender'))
+            [[ AND o.journal_date >= :date_start ]]
+            [[ AND o.journal_date <= :date_end ]]
+            GROUP BY h.entity_id, o.journal_date, o.stream
+            UNION ALL
+            SELECT m.entity_id, en.journal_date, 'journal', 'journal',
+            COUNT(DISTINCT en.id)
+            FROM mentions m JOIN entries en ON en.id = m.entry_id
+            WHERE en.status='active'
+            [[ AND en.journal_date >= :date_start ]]
+            [[ AND en.journal_date <= :date_end ]]
+            GROUP BY m.entity_id, en.journal_date),
+            person AS (SELECT c.*, e.name FROM contact c
+            JOIN entities e ON e.id = c.entity_id
+            WHERE e.type = 'person' AND e.status = 'active'
+            AND e.id NOT IN (SELECT entity_id FROM me)),
+            top AS (SELECT entity_id FROM person GROUP BY entity_id
+            ORDER BY SUM(n) DESC, MIN(name) LIMIT 12)
+            SELECT date(day, 'weekday 0', '-6 days') AS week,
+            date(day, 'weekday 0', '+1 days') AS week_end,
+            name AS person, SUM(n) AS contacts
+            FROM person WHERE entity_id IN (SELECT entity_id FROM top)
+            GROUP BY week, entity_id ORDER BY week DESC, person
+          library: vega-lite
+          display:
+            mark: { type: rect }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y:
+                field: person
+                type: nominal
+                title: null
+                sort: { op: sum, field: contacts, order: descending }
+              color: { field: contacts, type: quantitative }
+              tooltip:
+                - { field: person, type: nominal }
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: contacts, type: quantitative }
+        contacts-by-tier:
+          title: Journal vs observed (top 15)
+          db: lifecrm
+          query: >-
+            WITH me AS (SELECT entity_id FROM entity_handles
+            WHERE entity_id IS NOT NULL AND value IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted')),
+            contact AS (
+            SELECT h.entity_id, o.journal_date AS day, 'observed' AS tier,
+            o.stream AS via, COUNT(DISTINCT o.id) AS n
+            FROM observation_participants p
+            CROSS JOIN observations o ON o.id = p.observation_id
+            JOIN entity_handles h ON h.kind = p.handle_kind
+            AND h.value = p.handle_value
+            WHERE o.status='active' AND h.entity_id IS NOT NULL
+            AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
+            'whatsapp','ios_call','android_call','calendar_event')
+            AND (o.direction IS NULL OR p.role = 'participant'
+            OR (o.direction = 'out' AND p.role = 'recipient')
+            OR (o.direction = 'in' AND p.role = 'sender'))
+            [[ AND o.journal_date >= :date_start ]]
+            [[ AND o.journal_date <= :date_end ]]
+            GROUP BY h.entity_id, o.journal_date, o.stream
+            UNION ALL
+            SELECT m.entity_id, en.journal_date, 'journal', 'journal',
+            COUNT(DISTINCT en.id)
+            FROM mentions m JOIN entries en ON en.id = m.entry_id
+            WHERE en.status='active'
+            [[ AND en.journal_date >= :date_start ]]
+            [[ AND en.journal_date <= :date_end ]]
+            GROUP BY m.entity_id, en.journal_date),
+            person AS (SELECT c.*, e.name FROM contact c
+            JOIN entities e ON e.id = c.entity_id
+            WHERE e.type = 'person' AND e.status = 'active'
+            AND e.id NOT IN (SELECT entity_id FROM me)),
+            top AS (SELECT entity_id FROM person GROUP BY entity_id
+            ORDER BY SUM(n) DESC, MIN(name) LIMIT 15)
+            SELECT name AS person, tier, SUM(n) AS contacts
+            FROM person WHERE entity_id IN (SELECT entity_id FROM top)
+            GROUP BY entity_id, tier ORDER BY contacts DESC, person, tier
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              y:
+                field: person
+                type: nominal
+                title: null
+                sort: { op: sum, field: contacts, order: descending }
+              x: { field: contacts, type: quantitative }
+              color: { field: tier, type: nominal }
+        last-contact:
+          title: Last contact
+          db: lifecrm
+          query: >-
+            WITH me AS (SELECT entity_id FROM entity_handles
+            WHERE entity_id IS NOT NULL AND value IN (SELECT account FROM imports
+            WHERE account IS NOT NULL AND status <> 'retracted')),
+            contact AS (
+            SELECT h.entity_id, o.journal_date AS day, 'observed' AS tier,
+            o.stream AS via, COUNT(DISTINCT o.id) AS n
+            FROM observation_participants p
+            CROSS JOIN observations o ON o.id = p.observation_id
+            JOIN entity_handles h ON h.kind = p.handle_kind
+            AND h.value = p.handle_value
+            WHERE o.status='active' AND h.entity_id IS NOT NULL
+            AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
+            'whatsapp','ios_call','android_call','calendar_event')
+            AND (o.direction IS NULL OR p.role = 'participant'
+            OR (o.direction = 'out' AND p.role = 'recipient')
+            OR (o.direction = 'in' AND p.role = 'sender'))
+            [[ AND o.journal_date >= :date_start ]]
+            [[ AND o.journal_date <= :date_end ]]
+            GROUP BY h.entity_id, o.journal_date, o.stream
+            UNION ALL
+            SELECT m.entity_id, en.journal_date, 'journal', 'journal',
+            COUNT(DISTINCT en.id)
+            FROM mentions m JOIN entries en ON en.id = m.entry_id
+            WHERE en.status='active'
+            [[ AND en.journal_date >= :date_start ]]
+            [[ AND en.journal_date <= :date_end ]]
+            GROUP BY m.entity_id, en.journal_date),
+            person AS (SELECT c.*, e.name FROM contact c
+            JOIN entities e ON e.id = c.entity_id
+            WHERE e.type = 'person' AND e.status = 'active'
+            AND e.id NOT IN (SELECT entity_id FROM me))
+            SELECT COALESCE(x.person, 'No contacts yet') AS person,
+            COALESCE(x.last_contact, '') AS last_contact,
+            COALESCE(x.via, '') AS via,
+            COALESCE(x.journal, '') AS journal,
+            COALESCE(x.observed, '') AS observed
+            FROM (SELECT 1) AS one LEFT JOIN (
+            SELECT name AS person, MAX(day) AS last_contact, via,
+            SUM(CASE WHEN tier = 'journal' THEN n ELSE 0 END) AS journal,
+            SUM(CASE WHEN tier = 'observed' THEN n ELSE 0 END) AS observed
+            FROM person GROUP BY entity_id) x ON 1
+            ORDER BY x.last_contact DESC, x.person LIMIT 50
+          library: table
