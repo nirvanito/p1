@@ -84,7 +84,6 @@ def _config_text(root: Path, combo: str) -> str:
         f"inbox_text_dir = '{sync / 'inbox-text'}'",
         f"archive_dir = '{sync / 'archive'}'",
         f"cloud_backups_dir = '{sync / 'backups'}'",
-        f"onedrive_backups_dir = '{sync / 'backups'}'",
         "",
         "[time]",
         f'timezone = "{persona.TIMEZONE}"',
@@ -256,7 +255,11 @@ class DemoBuilder:
             dest = out_dir / name
             dest.mkdir(parents=True, exist_ok=True)
             try:
-                made[name] = mod.write_sample(dest, self.anchor, self.combo)
+                # A generator for a source with several exports (Claude AND
+                # ChatGPT) offers write_samples(); each one is imported.
+                many = getattr(mod, "write_samples", None)
+                made[name] = (list(many(dest, self.anchor, self.combo)) if many
+                              else mod.write_sample(dest, self.anchor, self.combo))
             except ValueError as e:
                 self.skipped.append(f"{name}: not on this combo ({e})")
                 shutil.rmtree(dest, ignore_errors=True)
@@ -267,14 +270,17 @@ class DemoBuilder:
         from ..connectors import base as conn_base
         connectors = set(conn_base.registry())
         done = {}
-        for name, path in made.items():
+        for name, made_paths in made.items():
+            paths = made_paths if isinstance(made_paths, list) else [made_paths]
             if name in HEALTH_SOURCES:
-                self._run("health", "import", str(path))
-                self._run("health", "import", str(path), "--apply")
+                for path in paths:
+                    self._run("health", "import", str(path))
+                    self._run("health", "import", str(path), "--apply")
                 done[name] = "health"
             elif name in connectors:
-                self._run("observe", name, str(path))
-                self._run("observe", name, str(path), "--apply")
+                for path in paths:
+                    self._run("observe", name, str(path))
+                    self._run("observe", name, str(path), "--apply")
                 done[name] = "observed"
             else:
                 self.skipped.append(f"{name}: sample written but no connector named "
@@ -296,6 +302,12 @@ class DemoBuilder:
         for pl in persona.PLACES:
             for n in (pl.name, *pl.aliases):
                 names.setdefault(n.lower(), pl.key)
+        # Place ids the location sample uses (Google-shaped, one per place).
+        try:
+            from .sources.location import PLACE_IDS
+            by_place_id = {v: k for k, v in PLACE_IDS.items()}
+        except ImportError:
+            by_place_id = {}
         me = persona.OWNER
         owner_id = None
         linked = unresolved = 0
@@ -305,7 +317,11 @@ class DemoBuilder:
             kind, value = r["kind"], r["value"]
             display = (r.get("display_name") or "").strip()
             target_key = None
-            if kind == "phone":
+            if kind == "card":
+                target_key = "me"                     # the owner's own card
+            elif kind == "place_id" and value in by_place_id:
+                target_key = by_place_id[value]
+            elif kind == "phone":
                 if value == me.phone:
                     target_key = "me"
                 else:
@@ -317,10 +333,13 @@ class DemoBuilder:
                     target_key = by_email.get(value.lower())
             if target_key is None and display:
                 low = display.lower()
-                if low in (me.name.lower(), me.first.lower()) or low.startswith("you"):
+                if low in (me.name.lower(), me.first.lower()) or low.startswith("you") \
+                        or low.endswith(" account"):     # 'Claude account': the owner's
                     target_key = "me"
                 else:
-                    target_key = names.get(low)
+                    # A calendar location reads "Uchi, 801 S Lamar Blvd, ...":
+                    # the place is the part before the address.
+                    target_key = names.get(low) or names.get(low.split(",")[0].strip())
             if target_key is None:
                 unresolved += 1
                 continue
@@ -360,6 +379,8 @@ class DemoBuilder:
             self._run("intake")
 
     def finish(self) -> dict:
+        # A read-only Obsidian vault of the same data, to open in Obsidian.
+        self._run("export", "--format", "obsidian", "--out", str(self.root / "vault"))
         self._run("backup")
         doctor = self._run("doctor", "--json", want_json=True, check=False)
         status = self._run("status", "--json", want_json=True)

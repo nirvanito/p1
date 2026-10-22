@@ -73,16 +73,21 @@ def _uuid_hex(v) -> str | None:
     return str(v)
 
 
-def _journal_date(ms: int, offset_sec, cfg: Config) -> str:
+def _journal_date(ms: int, offset_sec, cfg: Config, rollover: bool = True) -> str:
     """Journal date honoring the record's own zone offset when it has one —
     the same per-source-timezone principle sources follow — with the
-    configured rollover (a 00:30 record belongs to 'yesterday')."""
+    configured rollover (a 00:30 record belongs to 'yesterday').
+
+    `rollover=False` is the wake-day rule for sleep, the one Apple Health and
+    the phone's own app use: a night belongs to the morning it ended. With the
+    rollover, a 04:30 wake-up was filed on the previous day beside that day's
+    own night, and the day summed two nights."""
+    hour = cfg.day_rollover_hour if rollover else 0
     if offset_sec is None:
         return days.journal_date_for(
-            datetime.fromtimestamp(ms / 1000, tz=timezone.utc),
-            cfg.timezone, cfg.day_rollover_hour)
+            datetime.fromtimestamp(ms / 1000, tz=timezone.utc), cfg.timezone, hour)
     local = datetime.fromtimestamp(ms / 1000 + offset_sec, tz=timezone.utc)
-    if local.hour < cfg.day_rollover_hour:
+    if local.hour < hour:
         local -= timedelta(days=1)
     return local.strftime("%Y-%m-%d")
 
@@ -337,7 +342,8 @@ def _read(conn: sqlite3.Connection, cfg: Config, source_file: str,
             value, unit, detail = built
             records.append({
                 "metric": m.metric,
-                "journal_date": _journal_date(anchor_ms, offset, cfg),
+                "journal_date": _journal_date(anchor_ms, offset, cfg,
+                                              rollover=m.metric != "sleep_session"),
                 "started_at": _iso(start_ms),
                 "ended_at": _iso(end_ms),
                 "utc_offset_sec": offset,

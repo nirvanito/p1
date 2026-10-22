@@ -212,10 +212,6 @@ def test_the_sample_applies_reimports_identical_and_ask_answers_from_it(
         conn.close()
 
 
-@pytest.mark.xfail(reason="health_connect.py still dates a sleep session by its end "
-                          "WITH the 05:00 rollover, so a 04:30 wake-up lands on the "
-                          "previous day next to that day's own night; Apple Health "
-                          "uses the wake day (see cross-task notes)")
 def test_both_phones_date_an_early_wake_up_to_the_morning_it_happened(samples, anchor):
     days = _series(anchor)
     for combo in ("iphone", "android"):

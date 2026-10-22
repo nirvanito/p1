@@ -118,6 +118,7 @@ PLACES: tuple[Place, ...] = (
           "Bled, Slovenia"),
     Place("ljubljana", "Ljubljana", "city", 46.0569, 14.5058,
           "Ljubljana, Slovenia"),
+    Place("el_paso", "El Paso", "city", 31.7619, -106.4850, "El Paso, TX"),
 )
 
 
@@ -186,6 +187,8 @@ def bled_trip_days(anchor: date) -> list[date]:
 #   key:           a name later entries can refer to
 #   closes:        key of an earlier task this sentence closes (entry_update)
 #   links:         [(type, key)]  this entry -> an earlier keyed entry
+#   relations:     [(from ref, relationship type, to ref)] stated by this
+#                  sentence ("Jake grew up in El Paso" -> jake from el_paso)
 #   due_offset:    for tasks/plans, a due date as an anchor offset
 #   occurred:      'HH:MM' local time of the event, when known
 
@@ -236,7 +239,7 @@ JOURNAL: tuple[JournalDay, ...] = (
     ])], "Strong start: early lift with Sam, and Priya handed me the Q4 board deck.",
         mood=7, energy=6, sleep_hours=7.2),
 
-    JournalDay(-37, [
+    JournalDay(-38, [
         Note("12:41:08", "quick", [
             ("Idea: a tiny app that texts me the weather and my calendar every morning at seven.",
              _e(kind="idea", primary="idea", title="Morning text with weather + calendar")),
@@ -249,7 +252,8 @@ JOURNAL: tuple[JournalDay, ...] = (
                 occurred="19:30")),
             ("Jake mentioned he's flying home to El Paso next month for his dad's birthday, he grew up there.",
              _e(kind="fact", primary="social", title="Jake grew up in El Paso",
-                entities=[("jake", "subject")])),
+                entities=[("jake", "subject"), ("el_paso", "subject")],
+                relations=[("jake", "from", "el_paso")])),
             ("We reminisced about Lake Bled and the rowboat we took out to the island.",
              _e(kind="reflection", primary="travel", secondary=["social"],
                 title="Reminiscing about Lake Bled with Jake",

@@ -114,6 +114,7 @@ def build_draft(jday: persona.JournalDay, anchor: date, source_ids: list[int],
     keys: list[str | None] = []
     pending_links: list[tuple[int, str, str]] = []      # (from_index, type, key)
     updates: list[dict] = []
+    relationships: list[dict] = []
 
     for note, source_id in zip(jday.notes, source_ids):
         pos = 0
@@ -157,6 +158,16 @@ def build_draft(jday: persona.JournalDay, anchor: date, source_ids: list[int],
             keys.append(spec.get("key"))
             for link_type, target in spec.get("links", []):
                 pending_links.append((idx, link_type, target))
+            for src, rel_type, dst in spec.get("relations", []):
+                ends = []
+                for ref in (src, dst):
+                    if ref in known:
+                        ends.append({"ref": "existing", "id": known[ref]})
+                    else:
+                        s = entity_spec(ref)
+                        ends.append({"ref": "new", "type": s["type"], "name": s["name"]})
+                relationships.append({"from": ends[0], "to": ends[1], "type": rel_type,
+                                      "entry_index": idx, "provenance": provenance})
             if spec.get("closes"):
                 target_uuid = keyed.get(spec["closes"])
                 if target_uuid:
@@ -201,4 +212,6 @@ def build_draft(jday: persona.JournalDay, anchor: date, source_ids: list[int],
         draft["entry_updates"] = updates
     if links:
         draft["links"] = links
+    if relationships:
+        draft["entity_links"] = relationships
     return draft, keys

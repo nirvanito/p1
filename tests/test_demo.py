@@ -33,15 +33,15 @@ def _in_process(monkeypatch):
 # ---------------------------------------------------------------- file names
 
 def test_iphone_notes_carry_the_journal_date_and_offset():
-    jd = next(j for j in persona.JOURNAL if j.offset == -37)
-    name = journal.note_filename(ANCHOR, -37, jd.notes[0], "iphone")
-    assert name == "2026-09-14 12.41.08 -0500.txt"
+    jd = next(j for j in persona.JOURNAL if j.offset == -38)
+    name = journal.note_filename(ANCHOR, -38, jd.notes[0], "iphone")
+    assert name == "2026-09-13 12.41.08 -0500.txt"
 
 
 def test_android_notes_carry_the_calendar_date_and_no_offset():
-    jd = next(j for j in persona.JOURNAL if j.offset == -37)
-    assert journal.note_filename(ANCHOR, -37, jd.notes[1], "android") == \
-        "2026-09-14 22.05.51.txt"
+    jd = next(j for j in persona.JOURNAL if j.offset == -38)
+    assert journal.note_filename(ANCHOR, -38, jd.notes[1], "android") == \
+        "2026-09-13 22.05.51.txt"
 
 
 def test_pending_notes_are_only_todays():

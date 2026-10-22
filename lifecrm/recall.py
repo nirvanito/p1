@@ -930,6 +930,32 @@ def _entity_entries(conn: sqlite3.Connection, entity_id: int, window: dict,
     return _entry_items(conn, rows, "entity")
 
 
+def _relationships(conn: sqlite3.Connection, entity_id: int) -> list[dict]:
+    """Confirmed relationships touching the entity ("Jake Morales from El
+    Paso"), each with the entry that established it, so the sentence can be
+    cited like any other confirmed fact. A relationship added by hand with no
+    source entry has nothing to cite and is left out of the answer (it is
+    still on `entities show`). Pre-v5 databases have no relationships."""
+    from .domain import entity_links
+    try:
+        links = entity_links.for_entity(conn, entity_id)
+    except sqlite3.OperationalError:
+        return []
+    out = []
+    for link in links:
+        entry_uuid = link["provenance"].get("entry_uuid")
+        if not entry_uuid:
+            continue
+        rows = conn.execute(
+            f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+            f"WHERE e.uuid = ? AND e.status = 'active'", (entry_uuid,)).fetchall()
+        items = _entry_items(conn, rows, "relationship")
+        if items:
+            out.append({"text": link["text"], "type": link["type"],
+                        "other": link["other"]["name"], "entry": items[0]})
+    return out
+
+
 def _last_mention(conn: sqlite3.Connection, entity_id: int, window: dict,
                   today: date, participant_only: bool) -> list[dict]:
     """The newest entry naming the entity — for a person, only one they took
@@ -1620,6 +1646,9 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         ent["entries"] = [{"uuid": e["uuid"], "date": e["date"], "title": e["title"],
                            "kind": e["kind"]} for e in ent_entries]
         ent["facts"] = [E.add(e) for e in ent_entries]
+        ent["relationships"] = [{"text": r["text"], "type": r["type"],
+                                 "other": r["other"], "id": E.add(r["entry"])}
+                                for r in _relationships(conn, ent["id"])]
         ent["handles_linked"], ent["cards"], ent["hits"] = 0, [], []
         contact = [E.add(e) for e in _last_mention(
             conn, ent["id"], window, today, participant_only=ent["type"] == "person")]
@@ -2041,10 +2070,22 @@ def deterministic_answer(bundle: dict) -> str:
             elif want_contact:
                 sentences.append(f"Nothing recorded shows contact with {name}.")
         if want_profile or fallback:
+            # A stated relationship answers "where is X from / where does X
+            # live" directly, so it leads there; otherwise it follows the card.
+            rels = ent.get("relationships", [])
+            asks_origin = re.search(r"\b(from|grew up|live[sd]?|hometown|works?)\b",
+                                    bundle.get("question") or "", re.I)
+            rel_line = ("Relationships: " + "; ".join(
+                f"{r['text']} [{r['id']}]" for r in rels) + ".") if rels else None
+            used.update(r["id"] for r in rels)
+            if rel_line and asks_origin:
+                sentences.append(rel_line)
             for c in ent.get("cards", []):
                 used.add(c)
                 sentences.append(f"{name}'s contact card: "
                                  f'"{_plain(items[c]["snippet"], 300)}" [{c}].')
+            if rel_line and not asks_origin:
+                sentences.append(rel_line)
             facts = [i for i in ent.get("facts", []) if i not in used][:4]
             if facts:
                 used.update(facts)
