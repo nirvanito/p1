@@ -1252,8 +1252,29 @@ def handles_list(
 
     --suggest matches each unresolved handle's display name (what the source
     called it — a contact card's name, for texts) against your entities and
-    aliases. Suggestions only: nothing is linked until you run `handles link`.
+    aliases. A joined name ('Dad / Mom', one number on two cards) is matched
+    name by name; an owner placeholder ('you (this phone)', 'Claude account')
+    is not matched at all; and the name on every imported contact card that
+    holds the handle is matched too, so a handle a text import left unnamed
+    is still suggested once the address book is in. Suggestions only:
+    nothing is linked until you run `handles link`.
     """
+    import re
+
+    # Display names that stand for the owner, not for a person to look up.
+    placeholder = re.compile(r"^(?:you|me)(?:\s*\(.*\))?$|^\(?unknown\)?$|^\w+ account$",
+                             re.IGNORECASE)
+
+    def candidate_names(row, cards: dict) -> list[str]:
+        names = [n.strip() for n in (row["display_name"] or "").split(" / ")]
+        names += cards.get((row["kind"], row["value"].lower()), [])
+        seen, out = set(), []
+        for n in names:
+            if n and not placeholder.match(n) and n.casefold() not in seen:
+                seen.add(n.casefold())
+                out.append(n)
+        return out
+
     cfg = _cfg()
     conn = _conn(cfg, readonly=True)
     suggestions: dict[tuple[str, str], list[dict]] = {}
@@ -1271,11 +1292,25 @@ def handles_list(
                 "ORDER BY h.observation_count DESC, h.kind, h.value LIMIT ?",
                 (limit,)).fetchall()
         if suggest:
+            cards: dict[tuple[str, str], list[str]] = {}
+            for c in conn.execute(
+                    "SELECT DISTINCT p.handle_kind, p.handle_value, o.title "
+                    "FROM observation_participants p "
+                    "JOIN observations o ON o.id = p.observation_id "
+                    "WHERE o.stream = 'contact_card' AND o.status = 'active' "
+                    "AND o.title IS NOT NULL ORDER BY o.title"):
+                cards.setdefault((c[0], c[1].lower()), []).append(c[2])
             for r in rows:
-                if r["entity_id"] is None and r["display_name"]:
-                    found = entities_mod.match(conn, r["display_name"])["matches"][:3]
-                    if found:
-                        suggestions[(r["kind"], r["value"])] = found
+                if r["entity_id"] is not None:
+                    continue
+                best: dict[int, dict] = {}
+                for n in candidate_names(r, cards):
+                    for m in entities_mod.match(conn, n)["matches"]:
+                        if m["id"] not in best or m["score"] > best[m["id"]]["score"]:
+                            best[m["id"]] = m
+                found = sorted(best.values(), key=lambda m: -m["score"])[:3]
+                if found:
+                    suggestions[(r["kind"], r["value"])] = found
     finally:
         conn.close()
     if as_json:
