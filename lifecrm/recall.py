@@ -174,6 +174,17 @@ def ask_setting(cfg: Config, key: str, default: int) -> int:
     return n if n >= 1 else default
 
 
+def _calendar_horizon(cfg: Config) -> int:
+    """How far ahead a forward-looking calendar question reaches: as far as
+    the calendar import expands repeating events ([connectors.calendar]
+    horizon_days, 90 by default)."""
+    try:
+        n = int(cfg.connector_settings("calendar").get("horizon_days", 90))
+    except (TypeError, ValueError, AttributeError):
+        return 90
+    return n if 1 <= n <= MAX_SPAN_DAYS else 90
+
+
 def local_today(cfg: Config) -> date:
     """Today in the configured timezone, honoring the rollover hour — before
     05:00 local, 'today' is still yesterday's journal date."""
@@ -196,6 +207,23 @@ def _number(text: str) -> int:
     return int(text) if text.isdigit() else WORD_NUMBERS[text]
 
 
+def _months_back(today: date, n: int) -> date:
+    """The day n calendar months before today, clamped to that month's end
+    (March 31 less one month is February 28)."""
+    y, m = divmod(today.year * 12 + today.month - 1 - n, 12)
+    return date(y, m + 1, min(today.day, _month_span(y, m + 1)[1].day))
+
+
+def _rolling_start(n: int, unit: str, today: date) -> date:
+    """The first day of a rolling span of n units ending today. Months and
+    years count calendar months — 'past 12 months' is 'past year', both
+    starting the day after this date a year ago — and days and weeks count
+    days."""
+    if unit in ("month", "year"):
+        return _months_back(today, n * (12 if unit == "year" else 1)) + timedelta(days=1)
+    return today - timedelta(days=n * UNIT_DAYS[unit] - 1)
+
+
 def _period(which: str, unit: str, today: date) -> tuple[date, date, str] | None:
     """this/last/next week|month|year. 'last week' is the 7 days before
     today (rolling); months and years are calendar ones. 'past week|month|
@@ -203,7 +231,7 @@ def _period(which: str, unit: str, today: date) -> tuple[date, date, str] | None
     did I spend over the past year' means the last twelve months, never
     only the previous calendar year."""
     if which == "past":
-        return today - timedelta(days=UNIT_DAYS[unit] - 1), today, f"past {unit}"
+        return _rolling_start(1, unit, today), today, f"past {unit}"
     which = "last" if which == "previous" else which
     if unit == "week":
         monday = today - timedelta(days=today.weekday())
@@ -234,6 +262,113 @@ def _period_end(unit: str, today: date) -> date:
     if unit == "month":
         return _month_span(today.year, today.month)[1]
     return date(today.year, 12, 31)
+
+
+# A numeric date is US order, month first: 10/20 is October 20, 10/20/2025
+# and 10/20/25 carry their year. Without a year it is the most recent one,
+# like 'October 20' — and it needs a word that makes it a time ('on 10/20',
+# 'since 9/1'), because '1/2 cup' is not January 2.
+_NUM_DATE = re.compile(
+    r"(?<![\w/.:-])(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?(?![\w/])"
+    r"(?!\s*(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|oz|ounces?|lbs?|pounds?|g|kg|"
+    r"grams?|miles?|mi|km|hours?|hrs?|h|mins?|minutes?|liters?|litres?|l|ml|servings?|"
+    r"portions?|slices?|pieces?|of)\b)")
+_NUM_DATE_LEAD = frozenset({"on", "since", "from", "until", "till", "before", "after",
+                            "through", "thru", "by", "between", "to", "and", "the", "for",
+                            "of", "was", "is", "about", "around"})
+_ORDINAL = r"(\d{1,2})(?:st|nd|rd|th)"
+# 'the 20th' is a day of the month — not 'the 20th century' or 'the 3rd floor'.
+_NOT_A_DAY = (r"\s+(?:centur(?:y|ies)|floor|time|times|place|anniversary|birthday|"
+              r"grade|row|street|avenue|percentile|day\s+of|week|month|year|lap|rep|set)\b")
+
+
+def _num_date(m: re.Match, today: date, ignored: list[str]) -> date | None:
+    mo, d, y = int(m.group(1)), int(m.group(2)), m.group(3)
+    year = (2000 + int(y) if len(y) == 2 else int(y)) if y else None
+    try:
+        out = date(year or today.year, mo, d)
+        if year is None and out > today:
+            out = date(today.year - 1, mo, d)
+    except ValueError:
+        ignored.append(f"{m.group(0)} is not a real date")
+        return None
+    return out
+
+
+def _day_of_month(n: int, today: date) -> date | None:
+    """'the 20th': the most recent day numbered n, this month or before
+    (the 31st in October 2026 is August 31 when asked on the 22nd)."""
+    if not 1 <= n <= 31:
+        return None
+    y, mo = today.year, today.month
+    for _ in range(13):
+        if n <= _month_span(y, mo)[1].day:
+            d = date(y, mo, n)
+            if d <= today:
+                return d
+        y, mo = (y - 1, 12) if mo == 1 else (y, mo - 1)
+    return None
+
+
+def _upcoming_weekend(today: date) -> tuple[date, date]:
+    """This week's Saturday and Sunday — still this weekend on the Saturday
+    and Sunday themselves."""
+    saturday = today - timedelta(days=today.weekday()) + timedelta(days=5)
+    return saturday, saturday + timedelta(days=1)
+
+
+# Which weekend a bare 'the weekend' is: a journal is asked about the past
+# ('what did I do over the weekend'), a calendar about what is coming.
+_PAST_TENSE = re.compile(r"\b(?:did|was|were|had|went|happened|spent|got|saw|met|ate|"
+                         r"ran|been|wrote|logged)\b")
+_FUTURE_TENSE = re.compile(r"\b(?:will|going to|gonna|am i|are we|planned|planning|plans?|"
+                           r"upcoming|coming|scheduled|schedule|calendar|agenda|need to)\b"
+                           r"|\bwhat(?:'s| is) on\b")
+
+# 'the first week of September', 'the end of last month': part of a month.
+_PART_WEEKS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3,
+               "fourth": 4, "4th": 4, "last": 0, "final": 0}
+_PART_THIRDS = {"start": (1, 10), "beginning": (1, 10), "middle": (11, 20), "end": (21, 31)}
+
+
+def _month_part(m: re.Match, q: str, today: date, year_hint: int | None,
+                names: frozenset[str]) -> tuple[date, date, str, int] | None:
+    """A _PART_RE match as (start, end, label, end of span)."""
+    week, third = m.group("week"), m.group("third")
+    which, token = m.group("which") or "this", m.group("month")
+    used = m.end()
+    if token:
+        if token in names:
+            return None
+        month = MONTHS.get(token) or MONTH_ABBR[token]
+        ym = re.match(r"\.?,?\s+(\d{4})\b", q[m.end():])
+        year = int(ym.group(1)) if ym else year_hint
+        if year is None:
+            year = today.year if month <= today.month else today.year - 1
+        used += ym.end() if ym else 0
+    else:
+        anchor = today if which == "this" else (
+            today.replace(day=1) - timedelta(days=1) if which in ("last", "previous")
+            else _month_span(today.year, today.month)[1] + timedelta(days=1))
+        year, month = anchor.year, anchor.month
+    first, last = _month_span(year, month)
+    if week:
+        n = _PART_WEEKS[week]
+        start = last - timedelta(days=6) if n == 0 else first + timedelta(days=7 * (n - 1))
+        end = last if n == 0 else start + timedelta(days=6)
+        part = f"{'last' if n == 0 else week} week"
+    else:
+        lo, hi = _PART_THIRDS[third]
+        start, end = first.replace(day=lo), first.replace(day=min(hi, last.day))
+        part = third
+    return start, end, f"{part} of {MONTH_NAMES[month]} {year}", used
+
+
+_PART_RE = re.compile(
+    r"\b(?:the\s+)?(?:(?P<week>" + "|".join(_PART_WEEKS) + r")\s+week|"
+    r"(?P<third>start|beginning|middle|end))\s+of\s+(?:the\s+)?"
+    r"(?:(?:(?P<which>this|last|next|previous)\s+)?month|(?P<month>"
+    + "|".join(_MONTH_WORDS) + r"))\b")
 
 
 def _month_point(token: str, after: str, today: date,
@@ -280,9 +415,13 @@ def _point(text: str, today: date) -> tuple[date, date, str, int] | None:
         except ValueError:
             return None
         return d, d, d.isoformat(), skip + m.end()
-    m = re.match(r"(today|yesterday|tomorrow)\b", t)
+    m = _NUM_DATE.match(t)
     if m:
-        d = today + timedelta(days={"today": 0, "yesterday": -1,
+        d = _num_date(m, today, [])
+        return (d, d, d.isoformat(), skip + m.end()) if d else None
+    m = re.match(r"(today|yesterday|tomorrow|now)\b", t)
+    if m:
+        d = today + timedelta(days={"today": 0, "yesterday": -1, "now": 0,
                                     "tomorrow": 1}[m.group(1)])
         return d, d, m.group(1), skip + m.end()
     m = re.match(r"(last|this|next|past|previous)\s+(week|month|year)\b", t)
@@ -306,9 +445,16 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
 
     Rolling definitions, stated plainly because the answer always shows the
     resolved window: 'last week' is the 7 days before today, 'this week'
-    starts Monday, 'last year' is the previous calendar year. `explicit` is
-    False when nothing in the question named a time — callers widen text
-    search in that case rather than silently hiding older matches.
+    starts Monday, 'last year' is the previous calendar year, 'past N
+    months' counts calendar months (so 'past 12 months' is 'past year'). A
+    numeric date is month first, US order: '10/20' is October 20. 'The
+    20th' is the most recent 20th; a bare 'the weekend' is the one you are
+    in, else the last one — or the coming one when the question looks
+    forward ('what's on my calendar for the weekend'). 'September and
+    October' is one window across both, and 'the rest of the week' runs
+    from today to Sunday. `explicit` is False when nothing in the question
+    named a time — callers widen text search in that case rather than
+    silently hiding older matches.
 
     `names` are words the question uses as names (resolved entities): a
     person called June is never read as the month. Something that looks like
@@ -350,6 +496,13 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
                                int(m.group(3))), m.span()))
         except ValueError:
             ignored.append(f"{m.group(0)} is not a real date")
+    for m in _NUM_DATE.finditer(q):
+        before = q[:m.start()].split()
+        if m.group(3) or (before and before[-1] in _NUM_DATE_LEAD):
+            d = _num_date(m, today, ignored)
+            if d:
+                dates.append((d, m.span()))
+    dates.sort(key=lambda x: x[1])
     if len(dates) >= 2:
         lo, hi = sorted(d for d, _ in dates[:2])
         return win(lo, hi, f"{lo} to {hi}", *(s for _, s in dates[:2]))
@@ -379,6 +532,32 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
             return win(min(a[0], b[0]), max(a[1], b[1]), f"{a[2]} to {b[2]}",
                        (m.start(), m.start(1) + a[3]),
                        (m.end(1), m.start(2) + b[3]))
+    # 'September and October', 'from September to October', 'Oct 1 - 15':
+    # one window across both, never the first month plus a word to find.
+    for pos in sorted({m.start() for m in _MONTH_RE.finditer(q) if m.group(1) not in names}):
+        a = _point(q[pos:], today)
+        if not a:
+            continue
+        rest = q[pos + a[3]:]
+        joint = re.match(r"\s*[-–—]\s*|\s+(?:and|to|through|thru|until|till)\s+(?:the\s+)?",
+                         rest)
+        if not joint:
+            continue
+        tail = rest[joint.end():]
+        b = _point(tail, today)
+        day = re.match(r"(\d{1,2})(?:st|nd|rd|th)?\b(?![/:])", tail)
+        if not b and day and a[0] == a[1]:
+            try:
+                d = a[0].replace(day=int(day.group(1)))
+            except ValueError:
+                d = None
+            if d:
+                b = (d, d, d.isoformat(), day.end())
+        if not b:
+            continue
+        lead = re.search(r"\b(?:from|between)\s+$", q[:pos])
+        return win(min(a[0], b[0]), max(a[1], b[1]), f"{a[2]} to {b[2]}",
+                   (lead.start() if lead else pos, pos + a[3] + joint.end() + b[3]))
     for m in re.finditer(r"\b(?:since|after|from)\s+(.+)$", q):
         p = _point(m.group(1), today)
         if p:
@@ -386,6 +565,18 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
                        (m.start(), m.start(1) + p[3]))
 
     # ---- days
+    m = re.search(r"\b(?:the\s+)?day\s+(before\s+yesterday|after\s+tomorrow)\b", q)
+    if m:
+        d = today + timedelta(days=-2 if m.group(1).startswith("before") else 2)
+        return win(d, d, f"the day {' '.join(m.group(1).split())} ({d})", m.span())
+    # 'the rest of the week': today to the period's end.
+    m = re.search(r"\b(?:the\s+)?rest\s+of\s+(?:the\s+|this\s+)?(day|today|week|month|year)\b",
+                  q)
+    if m:
+        unit = m.group(1)
+        if unit in ("day", "today"):
+            return win(today, today, "today", m.span())
+        return win(today, _period_end(unit, today), f"rest of this {unit}", m.span())
     m = re.search(r"\b(?:today|tonight|this (?:morning|afternoon|evening))\b", q)
     if m:
         return win(today, today, "today", m.span())
@@ -432,19 +623,40 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
         if n < 1:
             ignored.append(f"'{m.group(0)}' is an empty span")
         else:
-            span = n * UNIT_DAYS[unit]
             label = f"last {n} {unit}{'s' if n != 1 else ''}"
-            if span > MAX_SPAN_DAYS:
+            if n * UNIT_DAYS[unit] > MAX_SPAN_DAYS:
                 ignored.append(f"'{m.group(0)}' capped at {MAX_SPAN_DAYS} days")
-                span = MAX_SPAN_DAYS
-            return win(today - timedelta(days=span - 1), today, label, m.span())
+                return win(today - timedelta(days=MAX_SPAN_DAYS - 1), today, label,
+                           m.span())
+            # Months and years by the calendar: 'past 12 months' is 'past year'.
+            return win(_rolling_start(n, unit, today), today, label, m.span())
+    m = re.search(r"\b(?:last|past|previous)\s+fortnight\b", q)
+    if m:
+        return win(today - timedelta(days=13), today, "past fortnight", m.span())
+    m = re.search(r"\b(?:a|one)\s+fortnight\s+ago\b", q)
+    if m:
+        d = today - timedelta(days=14)
+        monday = d - timedelta(days=d.weekday())
+        return win(monday, monday + timedelta(days=6), "a fortnight ago", m.span())
+
+    # ---- part of a month: 'the first week of October', 'the end of September'
+    year_hint = (today.year - 1 if re.search(r"\b(?:last|previous) year\b", q)
+                 else today.year if re.search(r"\bthis year\b", q) else None)
+    for m in _PART_RE.finditer(q):
+        p = _month_part(m, q, today, year_hint, names)
+        if p:
+            return win(*p[:3], (m.start(), p[3]))
 
     # ---- weekends and weeks
     monday = today - timedelta(days=today.weekday())
-    m = re.search(r"\blast weekend\b", q)
+    last_weekend = (monday - timedelta(days=2), monday - timedelta(days=1), "last weekend")
+    m = re.search(r"\b(?:the\s+)?weekend\s+before\s+last\b", q)
     if m:
-        return win(monday - timedelta(days=2), monday - timedelta(days=1),
-                   "last weekend", m.span())
+        return win(monday - timedelta(days=9), monday - timedelta(days=8),
+                   "the weekend before last", m.span())
+    m = re.search(r"\b(?:last|(?:this\s+)?past|previous)\s+weekend\b", q)
+    if m:
+        return win(*last_weekend, m.span())
     m = re.search(r"\bthis weekend\b", q)
     if m:
         return win(monday + timedelta(days=5), monday + timedelta(days=6),
@@ -453,26 +665,53 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
     if m:
         return win(monday + timedelta(days=12), monday + timedelta(days=13),
                    "next weekend", m.span())
+    m = re.search(r"\b(?:this\s+|the\s+)?coming\s+weekend\b", q)
+    if m:
+        sat = _upcoming_weekend(today)[0] + timedelta(days=7 if today.weekday() == 6 else 0)
+        return win(sat, sat + timedelta(days=1), "the coming weekend", m.span())
+    m = re.search(r"\b(?:this\s+|the\s+)?coming\s+week\b", q)
+    if m:
+        return win(today, today + timedelta(days=6), "the coming week", m.span())
+    # A bare 'the weekend': the one you are in, else the one a past-tense
+    # question looks back on ('what did I do over the weekend') or a
+    # calendar question looks forward to.
+    m = re.search(r"\b(?:(?:over|on|at|during|for)\s+)?(?:the\s+)?weekend\b(?!s)", q)
+    if m:
+        if today.weekday() >= 5:
+            return win(*_upcoming_weekend(today), "this weekend", m.span())
+        if _FUTURE_TENSE.search(q) and not _PAST_TENSE.search(q):
+            return win(*_upcoming_weekend(today), "this weekend", m.span())
+        return win(*last_weekend, m.span())
     m = re.search(r"\b(this|last|past|previous|next) week\b", q)
     if m:
         return win(*_period(m.group(1), "week", today), m.span(),
                    through=_period_end("week", today) if m.group(1) == "this" else None)
 
     # ---- month names (before 'last year', so 'July last year' is July)
-    year_hint = (today.year - 1 if re.search(r"\b(?:last|previous) year\b", q)
-                 else today.year if re.search(r"\bthis year\b", q) else None)
     for m in _MONTH_RE.finditer(q):
         token = m.group(1)
         if token in names:
             continue
         after = q[m.end():]
-        if token in _AMBIGUOUS_MONTHS:
+        # 'the 20th of October', '20 October': the day comes first.
+        day_first = None
+        if not re.match(r"\.?\s+\d{1,2}(?:st|nd|rd|th)?\b", after):
+            day_first = re.search(r"\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?$",
+                                  q[:m.start()])
+        if token in _AMBIGUOUS_MONTHS and not day_first:
             before = q[:m.start()].split()
             lead = before[-1] if before else ""
             if not (lead in _TIME_LEAD
                     or re.match(r"\.?,?\s+\d{1,4}\b", after)
                     or re.match(r"\s+(?:last|this|next) year\b", after)):
                 continue
+        if day_first:
+            ym = re.match(r"\.?,?\s+(\d{4})\b", after)
+            p = _month_point(token, f" {day_first.group(1)}"
+                             + (f" {ym.group(1)}" if ym else ""), today, year_hint, ignored)
+            if p:
+                return win(*p[:3], (day_first.start(), m.end() + (ym.end() if ym else 0)))
+            continue
         p = _month_point(token, after, today, year_hint, ignored)
         if p:
             return win(*p[:3], (m.start(), m.end() + p[3]))
@@ -491,7 +730,15 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
         return win(date(y, 1, 1), min(date(y, 12, 31), max(today, date(y, 1, 1))),
                    str(y), m.span())
 
-    m = _WEEKDAY_RE.search(q)
+    m = re.search(rf"\bthe\s+{_ORDINAL}\b(?!{_NOT_A_DAY})", q)
+    if m:
+        d = _day_of_month(int(m.group(1)), today)
+        if d:
+            return win(d, d, f"the {m.group(0).split()[-1]} ({d})", m.span())
+        ignored.append(f"'{m.group(0)}' is not a day of the month")
+
+    # A place called Sunday Market is a name, not a day.
+    m = next((m for m in _WEEKDAY_RE.finditer(q) if m.group(2) not in names), None)
     if m:
         which, wd = m.group(1), WEEKDAYS[m.group(2)]
         if which == "next":
@@ -578,10 +825,30 @@ INTENT_WORDS = frozenset({
     "remember", "discuss", "discussed", "email", "emailed", "e-mail", "e-mailed",
 })
 
+# Words that say WHEN, never WHAT: left over from a time phrase the window
+# did not read ('the weekend', 'next on my calendar', 'yesterday morning',
+# the second month of 'September and October'), they were required search
+# terms and a question whose window was right still found nothing. 'May'
+# and 'March' are verbs as often as months: they go only when the window
+# read them. A word a resolved entity is named by stays (`parse_intent`).
+TIME_WORDS = (frozenset(MONTHS) - {"may", "march"}) | frozenset(WEEKDAYS) \
+    | frozenset(d + "s" for d in WEEKDAYS) | frozenset({
+        "weekend", "weekends", "fortnight", "fortnights", "next", "upcoming", "coming",
+        "earlier", "later", "lately", "morning", "mornings", "afternoon", "afternoons",
+        "evening", "evenings", "night", "nights", "tonight", "tomorrow", "rest",
+        "start", "end", "beginning", "middle", "ago", "previous", "ahead", "soon"})
+# Words that only mean 'what my journal holds': 'what did I log yesterday'
+# is a recap of yesterday, not a search for the word "log".
+RECAP_WORDS = frozenset({"log", "logs", "logged", "logging", "journal", "journals",
+                         "journaled", "journalled", "journaling", "journalling",
+                         "entry", "entries", "record", "records", "recorded",
+                         "diary", "wrote", "write", "written"})
+
 # A hyphenated word is one word: 'H-E-B' split into h, e and b left nothing
 # long enough to search for. Quoted, FTS5 reads "h-e-b" as the phrase h e b,
-# which is exactly how it indexed "H-E-B #742 AUSTIN TX".
-_WORD_RE = re.compile(r"\w+(?:['’-]\w+)*")
+# which is exactly how it indexed "H-E-B #742 AUSTIN TX". An ampersand joins
+# too: 'AT&T' is the phrase "at t", never the stopword 'at' and a letter.
+_WORD_RE = re.compile(r"\w+(?:['’&-]\w+)*")
 _HONORIFICS = frozenset({"dr", "mr", "mrs", "ms", "mx", "prof", "sir"})
 
 
@@ -625,7 +892,7 @@ def _terms(words: list[dict], drop: frozenset[str] = frozenset(),
         short = len(t) <= 2 and not (keep_short and len(t) == 2 and t.isalpha()
                                      and t not in _SHORT_NOISE)
         if (short or t in STOPWORDS or t.replace("-", "").isdigit() or t in drop
-                or w["key"] in drop):
+                or w["key"] in drop or re.fullmatch(r"\d+(?:st|nd|rd|th)", t)):
             continue
         if t not in seen:
             seen.add(t)
@@ -636,11 +903,12 @@ def _terms(words: list[dict], drop: frozenset[str] = frozenset(),
 def _fts_expr(terms: list[str], op: str = " OR ", prefix: bool = False) -> str | None:
     """Every term re-quoted as a phrase: FTS5 operators, quotes and
     punctuation in a question can never reach the parser as syntax. A
-    hyphenated term is a phrase and is matched whole ('h-e-b' never as a
-    prefix of 'h e bakery')."""
+    hyphenated or ampersanded term is a phrase and is matched whole ('h-e-b'
+    never as a prefix of 'h e bakery', 'at&t' never of 'at tiffany's')."""
     if not terms:
         return None
-    return op.join(f'"{t}"' + ("*" if prefix and len(t) >= 4 and "-" not in t else "")
+    return op.join(f'"{t}"' + ("*" if prefix and len(t) >= 4 and "-" not in t
+                               and "&" not in t else "")
                    for t in terms)
 
 
@@ -922,8 +1190,8 @@ def search_passages(conn: sqlite3.Connection, match: str, window: dict,
 
 
 def open_loops(conn: sqlite3.Connection, window: dict, *,
-               entity_ids: list[int] | None = None, limit: int = 10
-               ) -> tuple[list[dict], int, int]:
+               entity_ids: list[int] | None = None, limit: int = 10,
+               due_only: bool = False) -> tuple[list[dict], int, int]:
     """Open tasks and plans — closed_at NULL — soonest due first, then the
     most recently recorded. Returns (items, how many match, how many are
     open in all).
@@ -932,9 +1200,12 @@ def open_loops(conn: sqlite3.Connection, window: dict, *,
     then: a loop due by the window's end (overdue ones included), or one
     with no due date that already existed. Filtering on the day a task was
     noted made 'what do I need to do this week' forget every task from last
-    week, and a future 'this weekend' empty by construction."""
+    week, and a future 'this weekend' empty by construction. `due_only`
+    ('what's due this week') keeps only loops that have a due date."""
     base = ["e.status='active'", "e.closed_at IS NULL", "k.name IN ('task', 'plan')"]
     where, args = list(base), []
+    if due_only:
+        where.append("e.due_at IS NOT NULL")
     if window["explicit"]:
         where.append("(CASE WHEN e.due_at IS NOT NULL THEN substr(e.due_at, 1, 10) <= ? "
                      "ELSE e.journal_date <= ? END)")
@@ -1159,7 +1430,7 @@ _RECAP_STREAMS = ("calendar_event", "place_visit", "photo", "txn") + CALL_STREAM
 # side of 'when did I last CALL Mom'.
 _CHANNEL_WORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (CALL_STREAMS, ("call", "called", "calls", "calling", "phone", "phoned",
-                    "rang", "facetime", "facetimed")),
+                    "ring", "rang", "facetime", "facetimed")),
     (TEXT_STREAMS, ("text", "texted", "texts", "texting", "message", "messaged",
                     "messages", "whatsapp", "imessage", "sms", "dm", "dms")),
 )
@@ -1176,10 +1447,16 @@ STREAM_WORDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
                 "messaged", "imessage", "imessages", "sms", "rcs", "dm", "dms"}),
      TEXT_STREAMS),
     (frozenset({"whatsapp"}), ("whatsapp",)),
-    (frozenset({"call", "calls", "called", "calling", "phoned", "rang"}),
-     CALL_STREAMS),
+    # 'phone' and 'ring' are calls only as verbs ('phone me', not 'phone
+    # number'; 'Jake rang', not 'the ring'): parse_intent decides.
+    (frozenset({"call", "calls", "called", "calling", "phoned", "phoning", "rang",
+                "facetime", "facetimed", "facetiming"}), CALL_STREAMS),
+    # What is on the calendar, and what is coming: 'what's on my schedule',
+    # 'what do I have scheduled', 'any events this week', 'what's upcoming'.
     (frozenset({"calendar", "meeting", "meetings", "appointment",
-                "appointments", "invite", "invites"}), ("calendar_event",)),
+                "appointments", "invite", "invites", "schedule", "schedules",
+                "scheduled", "event", "events", "agenda", "upcoming"}),
+     ("calendar_event",)),
     (frozenset({"note", "notes"}), ("note",)),
     (frozenset({"photo", "photos", "picture", "pictures", "pic", "pics",
                 "selfie", "selfies"}), ("photo",)),
@@ -1191,7 +1468,19 @@ STREAM_WORDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
 
 _OUT_VERBS = frozenset({"ask", "asked", "tell", "told", "say", "said", "text",
                         "texted", "send", "sent", "message", "messaged",
-                        "write", "wrote", "call", "called", "email", "emailed"})
+                        "write", "wrote", "call", "called", "email", "emailed",
+                        "phoned", "rang", "facetime", "facetimed"})
+# Calls only when used as a verb (`_CALL_VERB_RE`); otherwise a phone is a
+# number on a card and a ring is jewellery.
+_CALL_NOUNISH = frozenset({"phone", "phones", "ring", "rings"})
+_CALL_VERB_RE = re.compile(
+    r"\b(?:phone|ring)s?\s+(?:me|you|him|her|them|us)\b|\bon the phone\b"
+    r"|\b(?:i|we|you|he|she|they)\s+(?:(?:last|ever|just|recently|first)\s+)?(?:phone|ring)\b")
+# A question that asks WHEN or WHETHER ('did Jake call me this week', 'when
+# did Jake call'), not what was said: the contact is the answer.
+_ASKS_WHEN = re.compile(r"^\W*(?:(?:hey|so|ok|okay|and|but|um)\W+)*"
+                        r"(?:when\b|did\b|has\b|have\b|had\b|how long\b|how recently\b"
+                        r"|is there\b|was there\b|were there\b|any\b)")
 _IN_VERBS = _OUT_VERBS | {"says", "tells", "texts", "suggest", "suggested",
                           "recommend", "recommended", "reply", "replied",
                           "answer", "answered"}
@@ -1203,11 +1492,15 @@ _CONTACT_VERBS = frozenset({"talk", "talked", "spoke", "speak", "spoken",
                             "called", "see", "saw", "seen", "hear", "heard",
                             "meet", "met", "chat", "chatted", "email",
                             "emailed", "visit", "visited", "go", "went", "been",
-                            "contact", "contacted"})
+                            "contact", "contacted", "phoned", "rang",
+                            "facetime", "facetimed"})
 _RECENT_RE = re.compile(r"\b(?:last|latest|most recent(?:ly)?|recently)\b")
+# A phone is profile only as a thing someone has ('phone number', "Maya's
+# phone"); 'when did Jake last phone me' is a call.
 _PROFILE_RE = re.compile(
-    r"\b(?:favou?rites?|birthday|born|hometown|phone|number|email|e-mail|address|"
-    r"lives?|living|grew|grow|raised|from)\b|\bwho(?:'s| is)\b|\btell me about\b")
+    r"\b(?:favou?rites?|birthday|born|hometown|number|email|e-mail|address|"
+    r"lives?|living|grew|grow|raised|from)\b|\bphone\s*(?:#|no\b)|'s\s+(?:phone|cell|mobile)\b"
+    r"|\bwho(?:'s| is)\b|\btell me about\b")
 # A question after someone's numbers: their card's phones and emails lead.
 _NUMBERS_RE = re.compile(r"\b(?:phone|number|numbers|cell|mobile|e-?mail|emails|"
                          r"contact (?:info|details))\b", re.IGNORECASE)
@@ -1215,10 +1508,20 @@ _LOOPS_RE = re.compile(
     r"\bopen (?:tasks?|loops?|items?|plans?|to-?dos?)\b|\bto-?dos?\b"
     r"|\bon my (?:list|plate)\b|\b(?:need|have) to do\b|\bunfinished\b"
     r"|\boutstanding (?:tasks?|items?)\b|\bpending (?:tasks?|items?)\b"
-    r"|\bmy (?:tasks|plans)\b")
+    r"|\bmy (?:tasks|plans)\b"
+    # 'what tasks are open', 'any tasks this week', 'show me my tasks'
+    r"|\b(?:what|which|any|list|show(?:\s+me)?|all)\s+(?:(?:the|my|open|pending|"
+    r"outstanding|remaining|overdue)\s+)*(?:tasks?|loops?)\b"
+    # 'what tasks are due this week', "what's due", 'anything overdue'
+    r"|\b(?:tasks?|to-?dos?|plans?|items?)\b(?:\s+[\w']+){0,4}?\s+(?:over)?due\b"
+    r"|\b(?:what(?:'s|\s+is|\s+are)?|anything|is\s+(?:there\s+)?anything)\s+"
+    r"(?:[\w']+\s+){0,3}?(?:over)?due\b|\boverdue\b")
+# 'due' asks for what has a due date by then, not every open loop.
+_DUE_RE = re.compile(r"\b(?:over)?due\b")
 LOOP_WORDS = frozenset({"open", "task", "tasks", "todo", "todos", "to-do",
                         "to-dos", "list", "plate", "loop", "loops", "outstanding",
-                        "unfinished", "pending", "plans", "items", "need"})
+                        "unfinished", "pending", "plans", "items", "need", "due",
+                        "overdue", "remaining"})
 
 
 def has_observed_tier(conn: sqlite3.Connection) -> bool:
@@ -1259,22 +1562,44 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
                 stream_keys.add(k)
                 streams += [s for s in group if s not in streams]
 
-    def followed_by(pos: int, verbs: frozenset[str]) -> bool:
+    def verb_after(pos: int, verbs: frozenset[str]) -> int | None:
         # 'Maya texted me', and with an adverb between: 'when did Maya last
         # text me', 'did I ever tell Jake'.
         nxt = pos + 1
         while nxt < len(keys) and nxt - pos <= 2 and keys[nxt] in _VERB_ADVERBS:
             nxt += 1
-        return nxt < len(keys) and keys[nxt] in verbs
+        return nxt if nxt < len(keys) and keys[nxt] in verbs else None
 
-    out = any(k == "i" and followed_by(i, _OUT_VERBS) for i, k in enumerate(keys))
+    def followed_by(pos: int, verbs: frozenset[str]) -> bool:
+        return verb_after(pos, verbs) is not None
+
+    def possessive(pos: int) -> bool:
+        return bool(re.search(r"'s$", words[pos]["raw"], re.IGNORECASE))
+
+    # 'phone me', 'did I ring Jake', 'when did Jake last phone': a call. 'Jake's
+    # phone number' and 'the ring' are not.
+    call_verb = bool(_CALL_VERB_RE.search(q))
+    for e in persons:
+        for p in e["positions"]:
+            j = verb_after(p, _CALL_NOUNISH)
+            if j is not None and not possessive(p) and not (
+                    j + 1 < len(keys) and keys[j + 1] in ("number", "numbers", "no")):
+                call_verb = True
+    if call_verb:
+        stream_keys |= set(keys) & _CALL_NOUNISH
+        streams += [s for s in CALL_STREAMS if s not in streams]
+    if re.search(r"\bcoming up\b", q):
+        streams += [s for s in ("calendar_event",) if s not in streams]
+    out_verbs = _OUT_VERBS | (_CALL_NOUNISH if call_verb else frozenset())
+    in_verbs = _IN_VERBS | out_verbs
+
+    out = any(k == "i" and followed_by(i, out_verbs) for i, k in enumerate(keys))
     # "Jake's email" is a thing Jake has, not something Jake sent.
     senders = [e["id"] for e in persons
-               if any(followed_by(p, _IN_VERBS)
-                      and not re.search(r"'s$", words[p]["raw"], re.IGNORECASE)
+               if any(followed_by(p, in_verbs) and not possessive(p)
                       for p in e["positions"])]
     ai_in = any(k in ("claude", "chatgpt", "gpt") and i not in person_pos
-                and followed_by(i, _IN_VERBS) for i, k in enumerate(keys))
+                and followed_by(i, in_verbs) for i, k in enumerate(keys))
     direction = None
     if out and not (senders or ai_in):
         direction = "out"
@@ -1285,23 +1610,47 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
     money = "money" in journal or "txn" in streams
     drop = set(INTENT_WORDS) | stream_keys
     drop |= {t for e in persons for t in e["tokens"]}
+    # Time words are never the topic — unless a place or a thing is called
+    # that ('Sunday Market'), when they are its name.
+    drop |= TIME_WORDS - {t for e in entities for t in e["tokens"]}
     if loops:
         drop |= LOOP_WORDS
     if money:
         drop |= set(MONEY_WORDS)
+    else:
+        drop |= RECAP_WORDS
     topic_words = words if topic_words is None else topic_words
     topic = _terms(topic_words, frozenset(drop), keep_short=money)
     display = {w["term"].strip("'"): w["raw"] for w in topic_words}
+    merchant = None
+    if money:
+        slot = _merchant_slot(topic_words, {t for e in persons for t in e["tokens"]})
+        if slot:
+            merchant = " ".join(w["raw"] for w in slot)
+            topic = list(dict.fromkeys([w["term"].strip("'") for w in slot] + topic))[:12]
+    channel = set(streams) & set(TEXT_STREAMS + CALL_STREAMS)
     return {
         "streams": streams,
         "direction": direction,
         "senders": senders if direction == "in" else [],
-        "recency": bool(_RECENT_RE.search(q) and set(keys) & _CONTACT_VERBS)
+        "recency": bool(_RECENT_RE.search(q) and (set(keys) & _CONTACT_VERBS or call_verb))
         or "last time" in q
         or bool(re.search(r"\b(?:was|were) (?:i|we) (?:last|most recently)\b", q)),
+        # 'Did Jake call me this week', 'when did Jake call': a channel named
+        # for a person and nothing to find in what was said — the contact
+        # (or that there was none) is the answer, not their card.
+        "contact": bool(channel and persons and not topic and _ASKS_WHEN.search(q)),
         "profile": bool(_PROFILE_RE.search(q)),
         "loops": loops,
+        # 'what's due this week': open loops with a due date by then.
+        "due": loops and bool(_DUE_RE.search(q)),
+        # 'what's coming up', 'what's next on my calendar': from today on.
+        "forward": bool(re.search(r"\b(?:upcoming|coming|ahead|scheduled|planned|next|soon|"
+                                  r"later)\b|\brest of\b", q)),
         "money": money,
+        # The merchant a money question named ('spend at AT&T'), kept even
+        # when it is short, a number or a stopword ('76', 'H&M').
+        "merchant": merchant,
         "topic_terms": topic,
         "topic_display": " ".join(display.get(t, t) for t in topic),
         # A pure metric question ('how did I sleep') is answered by the
@@ -1309,6 +1658,46 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
         "metric_only": bool(health or journal) and not money and not streams
         and not entities and not loops,
     }
+
+
+# The merchant slot of a money question: the words after 'at' or 'from'
+# ('how much did I spend at AT&T', 'what did I buy from H&M'), up to a word
+# that ends it ('at Uchi in October' -> Uchi).
+_SLOT_LEAD = frozenset({"at", "from"})
+_SLOT_TRIGGER = frozenset(MONEY_WORDS) | {"transaction", "transactions", "charge",
+                                          "charges", "charged"}
+_SLOT_STOP = TIME_WORDS | frozenset({
+    "in", "on", "during", "over", "for", "since", "between", "before", "after", "until",
+    "till", "by", "last", "this", "next", "past", "and", "or", "with", "when", "while",
+    "so", "than", "vs", "versus", "compared", "today", "yesterday", "around", "about",
+    "per", "each", "every", "total", "altogether", "overall"})
+_SLOT_FILLER = frozenset({"the", "a", "an", "my", "our"})
+# 'spend at all', 'at least', 'at night', 'at once': no merchant.
+_NOT_MERCHANT = frozenset({"all", "least", "most", "once", "first", "it", "that", "this",
+                           "them", "there", "times", "any", "some"})
+
+
+def _merchant_slot(words: list[dict], person_keys: set[str]) -> list[dict]:
+    """The words of a money question's merchant slot, or [] when it names
+    none."""
+    money_at = next((i for i, w in enumerate(words) if w["term"] in _SLOT_TRIGGER), None)
+    if money_at is None:
+        return []
+    lead = next((i for i in range(money_at + 1, len(words))
+                 if words[i]["term"] in _SLOT_LEAD), None)
+    if lead is None:
+        return []
+    slot: list[dict] = []
+    for w in words[lead + 1:]:
+        t = w["term"].strip("'")
+        if t in _SLOT_STOP:
+            break
+        if (not slot and t in _SLOT_FILLER) or w["key"] in person_keys:
+            continue
+        slot.append(w)
+    if slot and slot[0]["term"].strip("'") in _NOT_MERCHANT:
+        return []
+    return slot
 
 
 _OBS_COLS = ("o.id, o.uuid, o.stream, o.journal_date, o.started_at, o.ended_at, "
@@ -1444,36 +1833,25 @@ def _who(o: dict) -> str | None:
 _owner_cache: list = [None, None, None]        # [conn, version, identity]
 
 
-def _owner_identity(conn: sqlite3.Connection) -> tuple[set[str], set[tuple[str, str]],
-                                                         set[int]]:
+def _owner_identity(conn: sqlite3.Connection, cfg: Config
+                    ) -> tuple[frozenset[str], frozenset[tuple[str, str]], frozenset[int]]:
     """Who 'you' are across every import: (accounts, handles, entity ids).
 
     An import's own account is not enough. The iPhone calendar export's
     account is 'calendar:Home', so the owner's address on its events read as
-    a third party ('with Alex Rivera, Dr. Rebecca Ellis'). Any import's
-    account, any handle that sent an outgoing record, and every confirmed
-    handle of the entity those belong to are the owner — the rule
-    review.py's people list uses. Cached per connection until the data
-    changes, because every evidence list asks."""
-    version = (conn.total_changes, conn.execute("PRAGMA data_version").fetchone()[0])
+    a third party ('with Alex Rivera, Dr. Rebecca Ellis'). The rule is
+    lifecrm/owner.py's, shared with the web UI and the review pack: the
+    [owner] handles in config.toml, any import's account, any handle that
+    sent an outgoing record, and the entities linked to them. Cached per
+    connection until the data or the configured handles change, because
+    every evidence list asks."""
+    from . import owner as owner_mod
+    version = (conn.total_changes, conn.execute("PRAGMA data_version").fetchone()[0],
+               owner_mod.configured(cfg))
     if _owner_cache[0] is conn and _owner_cache[1] == version:
         return _owner_cache[2]
-    accounts = {r[0].lower() for r in conn.execute(
-        "SELECT DISTINCT account FROM imports WHERE account IS NOT NULL AND account != ''")}
-    handles = {(r[0], r[1].lower()) for r in conn.execute(
-        "SELECT DISTINCT p.handle_kind, p.handle_value FROM observation_participants p "
-        "JOIN observations o ON o.id = p.observation_id "
-        "WHERE o.direction = 'out' AND p.role = 'sender'")}
-    live = _LiveNames(conn)
-    owners: set[int] = set()
-    for r in conn.execute(
-            "SELECT kind, value, entity_id FROM entity_handles WHERE entity_id IS NOT NULL "
-            "AND confirmed_at IS NOT NULL AND ignored = 0"):
-        if (r["kind"], r["value"].lower()) in handles or r["value"].lower() in accounts:
-            ent = live.get(r["entity_id"])
-            if ent:
-                owners.add(ent[0])
-    identity = (accounts, handles, owners)
+    ident = owner_mod.identity(conn, cfg)
+    identity = (ident.accounts, ident.handles, ident.entities)
     _owner_cache[:] = [conn, version, identity]
     return identity
 
@@ -1516,7 +1894,7 @@ def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
     owner shown as 'you', provenance down to the import and file."""
     if not rows:
         return []
-    owner_accounts, owner_handles, owner_entities = _owner_identity(conn)
+    owner_accounts, owner_handles, owner_entities = _owner_identity(conn, cfg)
     marks = ",".join("?" for _ in rows)
     parts: dict[int, list] = {}
     for p in conn.execute(
@@ -1908,6 +2286,16 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     if window.get("through") and ("calendar_event" in intent["streams"]
                                   or intent["loops"]):
         window = {**window, "end": window["through"]}
+    # 'What's upcoming', 'what's next on my calendar', 'when is my next
+    # appointment': from today as far ahead as the calendar import expands
+    # repeating events, soonest first — never the last 30 days.
+    if not window["explicit"] and intent["forward"] \
+            and "calendar_event" in intent["streams"]:
+        ahead = _calendar_horizon(cfg)
+        window = {"start": today.isoformat(),
+                  "end": (today + timedelta(days=ahead - 1)).isoformat(),
+                  "label": f"the next {ahead} days", "explicit": True,
+                  **({"ignored": window["ignored"]} if window.get("ignored") else {})}
 
     E, O = _Ids("E"), _Ids("O")
     metrics: list[dict] = []
@@ -1927,15 +2315,20 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     groups = [sorted({_phrase(label) for label in _labels(conn, e)} - {""})
               for e in merchants]
     money_terms = [t for t in terms if _key(t) not in merchant_keys]
-    money_display = intent["topic_display"] or ", ".join(e["matched"] for e in merchants)
-    named_merchant = bool(money_terms or any(groups))
+    money_display = (intent["topic_display"] or intent.get("merchant")
+                     or ", ".join(e["matched"] for e in merchants))
+    # A question that named a merchant is never answered with everyone's
+    # total: when nothing of the name is left to search for, it is no data.
+    searchable = bool(money_terms or any(groups))
+    named_merchant = searchable or bool(intent.get("merchant"))
 
     # ---- money: transactions first, then what the journal says was spent
     if intent["money"]:
         if observed:
-            found, txns = spending(conn, cfg, terms=money_terms, groups=groups,
-                                   display=money_display, window=window,
-                                   limit=ask_setting(cfg, "max_transactions", 10))
+            found, txns = (spending(conn, cfg, terms=money_terms, groups=groups,
+                                    display=money_display, window=window,
+                                    limit=ask_setting(cfg, "max_transactions", 10))
+                           if searchable or not named_merchant else ([], []))
             ids = [O.add(t) for t in txns]
             for m in found:
                 m["transactions"] = [i for i, t in zip(ids, txns)
@@ -1962,8 +2355,9 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             if not window["explicit"]:
                 span = {"start": "0001-01-01", "end": "9999-12-31",
                         "label": ALL_RECORDS}
-        found = _metric_series(conn, table="measurements", metric=name,
-                               spec=spec, window=window, entry_match=match, span=span)
+        found = (_metric_series(conn, table="measurements", metric=name, spec=spec,
+                                window=window, entry_match=match, span=span)
+                 if match or not (name == "money" and named_merchant) else None)
         answered_by = {m["metric"] for m in metrics if m["table"] != "measurements"}
         if found:
             metrics.append(found)
@@ -1982,7 +2376,7 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         named = [e["id"] for e in entities]
         rows, loops_total, loops_open = open_loops(
             conn, window, entity_ids=named or None,
-            limit=ask_setting(cfg, "max_loops", 10))
+            limit=ask_setting(cfg, "max_loops", 10), due_only=intent["due"])
         loops = [E.add(r) for r in rows]
 
     # ---- the people and places it names
@@ -2044,7 +2438,8 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
 
     # ---- full-text: entries, transcripts, and the observed tier
     entry_drop = set(INTENT_WORDS) | (LOOP_WORDS if intent["loops"] else set()) \
-        | (set(MONEY_WORDS) if intent["money"] else set())
+        | (set(MONEY_WORDS) if intent["money"] else RECAP_WORDS) \
+        | (TIME_WORDS - {t for e in entities for t in e["tokens"]})
     match = fts_query(topic_question, drop=entry_drop)
     entry_hits = ([E.add(e) for e in search_entries(conn, match, window, max_entries)]
                   if match else [])
@@ -2066,7 +2461,8 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             conn, cfg, terms=terms, window=window,
             streams=intent["streams"] or None, direction=intent["direction"],
             limit=max_obs, recency=intent["recency"], around=around)]
-    elif observed and intent["loops"] and window["explicit"] and not terms:
+    elif observed and intent["loops"] and window["explicit"] and not terms \
+            and not intent["due"]:
         # 'What are my plans this weekend': what the calendar holds then is
         # part of the answer, next to the open tasks.
         obs_hits = [O.add(o) for o in search_observations(
@@ -2411,6 +2807,18 @@ def _entry_phrase(e: dict) -> str:
     return f'journal entry "{e["title"]}"'
 
 
+def _contact_kind(intent: dict) -> str:
+    """What 'nothing recorded shows ...' was looking for: a call, a text,
+    or any contact."""
+    streams = set(intent.get("streams") or ())
+    calls, texts = streams & set(CALL_STREAMS), streams & set(TEXT_STREAMS)
+    if calls and not texts:
+        return "a call with"
+    if texts and not calls:
+        return "a text with"
+    return "contact with"
+
+
 def deterministic_answer(bundle: dict) -> str:
     """A useful answer with no model involved: the statistics and records,
     stated plainly, each pointing at its evidence id. Everything numeric in
@@ -2464,16 +2872,22 @@ def deterministic_answer(bundle: dict) -> str:
     if intent.get("loops"):
         listed = [i for i in bundle.get("loops", [])]
         open_all = bundle.get("loops_open", bundle.get("loops_total", 0))
+        due = intent.get("due")
         if listed:
             used.update(listed)
-            out.append("Open tasks and plans: " + "; ".join(
+            head = (f"Open tasks and plans due by {w['end']}: " if due and w.get("explicit")
+                    else "Open tasks and plans with a due date: " if due
+                    else "Open tasks and plans: ")
+            out.append(head + "; ".join(
                 f"{items[i]['date']} {items[i]['title']} ({items[i]['kind']}"
                 + (f", due {str(items[i]['due_at'])[:10]}" if items[i].get("due_at") else "")
                 + f") [{i}]" for i in listed) + ".")
         elif open_all:
             # Something is open; the filter is what left nothing — say which.
             named = [e["name"] for e in bundle["entities"]]
-            why = (f" mention {' or '.join(named)}" if named else "") \
+            reason = " and ".join(([f"mention {' or '.join(named)}"] if named else [])
+                                  + (["are due"] if due else []))
+            why = (f" {reason}" if reason else "") \
                 + (f" for {w['label']}" if w.get("explicit") else "")
             out.append(f"No open tasks or plans{why} ({open_all} open in total).")
         else:
@@ -2496,7 +2910,14 @@ def deterministic_answer(bundle: dict) -> str:
                         f"{items[i]['date']} {phrase(i)} [{i}]" for i in before) + ".")
             continue
         no_hits = not ent.get("hits")
-        want_contact = intent.get("recency")
+        # 'When did Jake call', 'did Jake call me this week', and 'what did
+        # Jake text me over the weekend' when he texted nothing then: the
+        # contact leads, or that there was none — never their card.
+        channel_asked = bool(set(intent.get("streams") or ())
+                             & set(TEXT_STREAMS + CALL_STREAMS))
+        want_history = intent.get("recency") or intent.get("contact")
+        want_contact = want_history \
+            or (channel_asked and no_hits and not intent.get("profile"))
         want_profile = intent.get("profile")
         fallback = no_hits and not want_contact and not want_profile
         sentences = []
@@ -2505,11 +2926,13 @@ def deterministic_answer(bundle: dict) -> str:
                 sentences.append(f"Last contact with {name}: {lc['date']}, "
                                  f"{phrase(lc['latest'])} [{lc['latest']}].")
                 before = [i for i in lc["items"] if i != lc["latest"]]
-                if before and want_contact:
+                if before and want_history:
                     sentences.append("Before that: " + "; ".join(
                         f"{items[i]['date']} {phrase(i)} [{i}]" for i in before) + ".")
             elif want_contact:
-                sentences.append(f"Nothing recorded shows contact with {name}.")
+                sentences.append(f"Nothing recorded shows {_contact_kind(intent)} {name}"
+                                 + (f" for {w['label']}" if w.get("explicit") else "")
+                                 + ".")
         if want_profile or fallback:
             # A stated relationship answers "where is X from / where does X
             # live" directly, so it leads there; otherwise it follows the card.
@@ -2649,7 +3072,8 @@ def _facts(text: str, *, evidence: bool = False) -> dict:
     and plain numbers (dates and times are taken out first, so a day-of-month
     never passes for a quantity)."""
     dates, md, times, nums = set(), set(), set(), []
-    t = text
+    # A search snippet's highlight ('«March» 14') is no part of the date.
+    t = text.replace("«", "").replace("»", "")
     for m in _F_ISO.finditer(t):
         y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
         dates.add((y, mo, d))
@@ -2722,14 +3146,23 @@ def _supported(f: dict, pool: dict) -> bool:
 
 # A period after these ends a word, not a sentence: 'you saw Dr. Ellis on
 # 2026-10-10' split at 'Dr.' left the date in a fragment with no citation.
-# Not 'etc', which usually does end one.
+# Not 'etc', which usually does end one. Nor does an initial ('Laura J.
+# Kim', 'Dr. R. Ellis') or a dotted abbreviation ('D.D.S.', 'Ph.D.',
+# 'U.S.'): names reach answers verbatim from contact cards and `handles link
+# --new`, and the answer about Laura J. Kim failed its own check.
 _ABBREVIATIONS = _HONORIFICS | {"st", "jr", "sr", "vs", "e.g", "i.e", "a.m", "p.m"}
-_ABBREV_BEFORE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
+_ABBREV_BEFORE = re.compile(r"(?<![A-Za-z])([A-Za-z][A-Za-z.]*)$")
+_DOTTED = re.compile(r"(?:[A-Za-z]{1,3}\.)+[A-Za-z]{1,3}")
 
 
 def _abbreviation_before(text: str, i: int) -> bool:
     m = _ABBREV_BEFORE.search(text[:i])
-    return bool(m) and m.group(1).lower().rstrip(".") in _ABBREVIATIONS
+    if not m:
+        return False
+    token = m.group(1)
+    return (token.lower().rstrip(".") in _ABBREVIATIONS
+            or (len(token) == 1 and token.isupper())
+            or bool(_DOTTED.fullmatch(token)))
 
 
 def _sentences(answer: str) -> list[str]:

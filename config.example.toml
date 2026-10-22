@@ -61,6 +61,18 @@ max_observations = 6               # imported records (texts, calls, events, ...
 max_transactions = 10              # transactions listed under a spend answer
 max_loops = 10                     # open tasks/plans listed
 
+# ---------------------------------------------------------------- you
+# Optional. Your own phone numbers and addresses, as kind:value handles (kind
+# is phone, email, calendar, app_account, card or place_id). Records with one
+# of them are yours: `ask` says "you" instead of your name, and the web UI's
+# People page and the review pack never list you as one of your contacts.
+# Texts you sent and an import's own account already say who you are; set
+# this when nothing else does — an iPhone Home calendar alone, say.
+# (docs/ask.md, "Who you are")
+# [owner]
+# name = "Your Name"                # optional; who you are is decided by handles only
+# handles = ["email:you@example.com", "phone:+15125550100"]
+
 # ---------------------------------------------------------------- connectors
 # Optional per-connector settings for `lifecrm observe <name>`. Every key is
 # optional; uncomment a table to use it. Each connector's doc lists the rest.

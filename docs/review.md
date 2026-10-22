@@ -93,12 +93,15 @@ footer read it. Sections, by name:
 A contact is counted from the other side's role: an incoming message counts
 its sender (a group message from Jake is contact with Jake, not with
 everyone else in the thread), an outgoing one its recipients, a meeting
-everyone but the location. You are recognized the way connectors mark the
-owner — the sender of outgoing records, and the account an import names —
-and never appear as your own contact. A handle linked to an entity
-(`handles link`) counts for that person, following entity merges. An
-unresolved handle is shown under the name its source gave it, marked
-unresolved — never guessed onto an entity.
+everyone but the location. You are recognized by the rule `ask` and the web
+UI's People page use (`lifecrm/owner.py`, docs/ask.md "Who you are"): the
+handles `config.toml` lists under `[owner]`, the sender of outgoing records,
+the account an import names, and the entity any of them is linked to — and
+you never appear as your own contact. When nothing you imported says who you
+are (an iPhone Home calendar alone), `[owner] handles` does. A handle
+linked to an entity (`handles link`) counts for that person, following
+entity merges. An unresolved handle is shown under the name its source gave
+it, marked unresolved — never guessed onto an entity.
 
 ## Lenses
 

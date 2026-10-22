@@ -277,23 +277,14 @@ def _load_people(ctx: _Ctx) -> None:
             ctx.merged_into[r["id"]] = r["merged_into"]
     if not ctx.observed:
         return
-    # The owner: whoever sends the outgoing records, and any handle an
-    # import names as its account. Their linked entity is "you", not a
-    # contact.
-    for r in ctx.conn.execute(
-            "SELECT DISTINCT p.handle_kind, p.handle_value FROM "
-            "observation_participants p JOIN observations o "
-            "ON o.id = p.observation_id WHERE o.direction = 'out' "
-            "AND p.role = 'sender'"):
-        ctx.owner_handles.add((r["handle_kind"], r["handle_value"].lower()))
-    accounts = {r["account"].lower() for r in ctx.conn.execute(
-        "SELECT DISTINCT account FROM imports WHERE account IS NOT NULL")}
-    for r in ctx.conn.execute("SELECT kind, value, entity_id FROM entity_handles"):
-        key = (r["kind"], r["value"].lower())
-        if r["value"].lower() in accounts:
-            ctx.owner_handles.add(key)
-        if key in ctx.owner_handles and r["entity_id"] is not None:
-            ctx.owner_entities.add(_final_entity(ctx, r["entity_id"]))
+    # The owner, by lifecrm/owner.py's rule (the one `ask` and the web UI
+    # use): the [owner] handles in config.toml, whoever sends the outgoing
+    # records, and any handle an import names as its account. Their linked
+    # entity is "you", not a contact.
+    from . import owner as owner_mod
+    ident = owner_mod.identity(ctx.conn, ctx.cfg)
+    ctx.owner_handles |= set(ident.handles)
+    ctx.owner_entities |= {_final_entity(ctx, e) for e in ident.entities}
 
 
 def _final_entity(ctx: _Ctx, entity_id: int) -> int:

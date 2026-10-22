@@ -532,30 +532,19 @@ def _merged_into_map(conn: sqlite3.Connection) -> dict[int, int]:
     return out
 
 
-def _owner_entities(conn: sqlite3.Connection, roots: dict[int, int]) -> set[int]:
-    """The entities that are the owner: linked to a handle that sends the
-    outgoing records, that a live import names as its own account, or that
-    the source itself labels as the owner ('you (this phone)'). The owner
-    takes part in every text, call and meeting, so listed as a person they
-    would head People as the most recently contacted — review._load_people
-    and the dashboards' `me` leave them out the same way."""
+def _owner_entities(conn: sqlite3.Connection, cfg: Config,
+                    roots: dict[int, int]) -> set[int]:
+    """The entities that are the owner, by lifecrm/owner.py's rule — the one
+    `ask` and review._load_people use: linked to a handle config.toml lists
+    under [owner], to one that sends the outgoing records or that an import
+    names as its own account, or to one the source itself labels as the
+    owner ('you (this phone)'). The owner takes part in every text, call and
+    meeting, so listed as a person they would head People as the most
+    recently contacted — the dashboards' `me` leaves them out the same way."""
     if not _observed(conn):
         return set()
-    senders = {(r["handle_kind"], r["handle_value"].lower()) for r in conn.execute(
-        "SELECT DISTINCT p.handle_kind, p.handle_value FROM observation_participants p "
-        "JOIN observations o ON o.id=p.observation_id "
-        "WHERE o.direction='out' AND p.role='sender'")}
-    accounts = {r["account"].lower() for r in conn.execute(
-        "SELECT DISTINCT account FROM imports WHERE account IS NOT NULL "
-        "AND status <> 'retracted'")}
-    owners = set()
-    for r in conn.execute("SELECT kind, value, display_name, entity_id FROM "
-                          "entity_handles WHERE entity_id IS NOT NULL"):
-        value = r["value"].lower()
-        if ((r["kind"], value) in senders or value in accounts
-                or (r["display_name"] or "").lower().startswith("you (")):
-            owners.add(roots.get(r["entity_id"], r["entity_id"]))
-    return owners
+    from .. import owner as owner_mod
+    return {roots.get(e, e) for e in owner_mod.identity(conn, cfg).entities}
 
 
 def _contact_clause(today_iso: str, they_sent: str,
@@ -586,7 +575,7 @@ def people(conn: sqlite3.Connection, cfg: Config) -> dict:
     connected call or past calendar event naming one of their handles. The
     owner is not a contact and is left out."""
     roots = _merged_into_map(conn)
-    owners = _owner_entities(conn, roots)
+    owners = _owner_entities(conn, cfg, roots)
     now = today(cfg)
     persons = [p for p in conn.execute(
         "SELECT id, uuid, name, notes FROM entities WHERE type='person' "
@@ -660,7 +649,7 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
     # survivor's view includes everything merged into it.
     ids = [entity_id] + [e for e, root in roots.items() if root == entity_id]
     now = today(cfg)
-    is_owner = roots.get(entity_id, entity_id) in _owner_entities(conn, roots)
+    is_owner = roots.get(entity_id, entity_id) in _owner_entities(conn, cfg, roots)
     out = {"id": row["id"], "uuid": row["uuid"], "name": row["name"],
            "type": row["type"], "notes": row["notes"], "status": row["status"],
            "merged_into": roots.get(entity_id), "today": now, "is_owner": is_owner}

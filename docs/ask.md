@@ -125,6 +125,15 @@ ambiguous and never used to narrow the search: retrieval does not guess.
   counts for everyone in the group). A group message Jake sent, which Maya
   merely received, is not contact with Maya. "When did Maya last text me"
   and "when was the last time Maya texted me" keep only what Maya sent.
+
+  A question about a call or a text that asks *when* or *whether* is
+  answered the same way, with or without "last": **"When did Jake call?"**
+  leads with the call, and **"Did Jake call me this week?"** says "Nothing
+  recorded shows a call with Jake Morales for this week." when there was
+  none, never with his contact card. So does "what did Jake text me over the
+  weekend" when he texted nothing then. "Ring", "rang", "FaceTime" and
+  "phone" used as a verb ("phone me", "did I phone Jake", "on the phone")
+  are calls. "Phone number" and "Jake's phone" are still about his card.
 - **"Where is Jake from?", "What's Jake's favorite restaurant?"** Their
   contact card (matched by a linked handle or by their exact name) comes
   first. Then the entries that mention them, with facts before everything
@@ -137,11 +146,42 @@ ambiguous and never used to narrow the search: retrieval does not guess.
   took part in. "Jake texted" means messages Jake *sent*; "what did I text
   Jake" means yours.
 
-You are recognised on a record by any import's account, by any handle that
-sent an outgoing record, and by every confirmed handle of the entity those
-are linked to. An iPhone calendar export's account is `calendar:Home`, not
-your address, so your own address on its events would otherwise read as a
-third party ("with Alex Rivera, Dr. Rebecca Ellis").
+### Who you are
+
+You take part in every text, call and meeting, so a record has to know which
+participant is you. You are recognised by:
+
+- the handles listed under `[owner]` in `config.toml`;
+- any handle that sent an outgoing record (a text you sent);
+- any import's own account (the number an SMS backup belongs to, the
+  address an AI-chat export was made under);
+- and every confirmed handle of the entity any of those is linked to, or of
+  one whose handle the source itself labels "you (this phone)".
+
+The rule lives in one place, `lifecrm/owner.py`, and `ask`, the web UI's
+People page and the weekly review pack all read it. Your handles show as
+"you", and you are never listed as one of your own contacts.
+
+Texts and AI-chat exports usually say who you are on their own. Some imports
+never do: an iPhone calendar export's account is `calendar:Home`, not your
+address, and its events carry no direction, so with only that calendar your
+own address read as a third party ("with Alex Rivera, Dr. Rebecca Ellis"),
+even after you linked it to yourself. Say it once in `config.toml`:
+
+```toml
+[owner]
+name = "Alex Rivera"           # optional; who you are is decided by handles only
+handles = ["email:alex.rivera@example.com", "phone:+15125550100"]
+```
+
+Each handle is `kind:value`, with the kinds `handles list` shows (`phone`,
+`email`, `calendar`, `app_account`, `card`, `place_id`). Emails are matched
+without case and phone numbers are normalised the way the importers store
+them, so `phone:(512) 555-0100` is `+15125550100`. A listed handle counts
+even before you link it to an entity. A table in the wrong shape (a handle
+without a kind, an unknown kind, a key other than `handles` and `name`) is a
+one-line error naming the fix, never a setting silently ignored. Leaving the
+table out is fine.
 
 ## Questions about places
 
@@ -186,19 +226,23 @@ own count ("and received $8,400.00 in 2 transaction(s)").
 
 A place or organisation you know is the merchant when you name it, under any
 of its names: "at HEB" and "at H-E-B" both find "H-E-B #742 AUSTIN TX",
-because H-E-B Mueller has both as aliases. A hyphenated word stays one word,
-so "H-E-B" is searched as the phrase h e b, the way the bank's text was
-indexed. In a money question a two-letter word stays a search term ("at
-BP"). A question that names a merchant is never answered with everything you
-spent: when nothing matches, the answer says there is no data for that
-merchant.
+because H-E-B Mueller has both as aliases. A hyphenated or ampersanded word
+stays one word, so "H-E-B" is searched as the phrase h e b and "AT&T" as the
+phrase at t, the way the bank's text was indexed. In a money question a
+two-letter word stays a search term ("at BP"), and so do the words after
+"at" or "from" ("spend at 76", "what did I buy from H&M", "at Best Buy"),
+up to a word that ends the name ("at Uchi in October"), even when they are
+a number or a stopword. A question that names a merchant is never answered
+with everything you spent: when nothing matches, the answer says there is
+no data for that merchant.
 
 ## Open loops
 
-**"What are my open tasks?", "What's on my list?", "What do I have to do?"**
-list every task and plan that is not closed yet (`closed_at` is empty). The
-soonest due come first. Each one is cited as an entry. Name a person ("open
-tasks with Mom") to list only the ones that mention them.
+**"What are my open tasks?", "What's on my list?", "What do I have to do?",
+"What tasks are open?", "Any tasks this week?"** list every task and plan
+that is not closed yet (`closed_at` is empty). The soonest due come first.
+Each one is cited as an entry. Name a person ("open tasks with Mom") to list
+only the ones that mention them.
 
 Name a time ("what do I need to do this week", "my plans this weekend") and
 you get what is still open then: a loop due by the end of that time (overdue
@@ -207,9 +251,17 @@ written down before the window began still counts. "This week" and "this
 month" run to the end of the week or month here, and what the calendar holds
 in that time is listed too.
 
+**"What tasks are due this week?", "What's due this week?", "Anything
+overdue?"** ask for due dates: only open loops that have one, by the end of
+that time (overdue ones included), soonest first — "Open tasks and plans due
+by 2026-10-25: ...". A loop with no due date is left out, and "due" is never
+a word to search for. With no time named ("what tasks are due") every open
+loop with a due date is listed.
+
 When the person or the time leaves nothing, the answer says so and gives the
 real total: "No open tasks or plans mention Priya Natarajan (4 open in
-total)." It says "You have no open tasks or plans" only when nothing is open.
+total)", "No open tasks or plans are due for this week (4 open in total)."
+It says "You have no open tasks or plans" only when nothing is open.
 
 ## A day, a weekend, a week
 
@@ -219,6 +271,24 @@ of record, task or money. The answer lists that time's journal entries, with
 up to `max_observations` of its calendar events, place visits, photos, calls
 and transactions, all cited.
 
+Words that only mean "what my journal holds" are not a topic: "what did I
+*log* yesterday", "what's in my *journal* for yesterday", "my *entries* for
+Monday", "what did I *record* / *write*", "my *diary*" are the same recap.
+So is any way of naming the day: "the day before yesterday", "on 10/20",
+"the 20th", "20 October", "over the weekend", "yesterday morning".
+
+## The calendar, looking ahead
+
+"Calendar", "meeting(s)", "appointment(s)", "invite(s)", "schedule(d)",
+"event(s)", "agenda", "upcoming" and "coming up" ask for calendar events.
+With "this week", "this month" or "this year" the window then runs to the
+period's end, so **"what's on my schedule this week"** and **"what's coming
+up this week"** include Friday's and Saturday's events, soonest first. **"What's on my calendar for the rest of the week"** is today through
+Sunday. **"What's upcoming?", "What's next on my calendar?", "When is my
+next appointment?"** name no time but look forward: from today as far ahead
+as the calendar import expands repeating events (`[connectors.calendar]
+horizon_days`, 90 days by default), soonest first.
+
 ## Time windows
 
 The window is printed with every answer. Rolling definitions:
@@ -226,19 +296,31 @@ The window is printed with every answer. Rolling definitions:
 | you say | window |
 |---|---|
 | today / this morning / tonight / yesterday | that journal date (05:00 rollover applies) |
+| the day before yesterday / the day after tomorrow | that day |
 | last night | today — sleep is filed under the day you woke up |
 | this week | Monday through today; through Sunday for the calendar and open loops |
+| the rest of the week / month / year | today through the period's last day |
 | last week | the 7 days before today |
-| past week / past month / past year | the 7 / 30 / 365 days up to and including today |
-| this weekend / last weekend | that Saturday and Sunday |
-| last 10 days / past three months | rolling back from today |
-| three days ago / a week ago | that day / that Monday-to-Sunday week |
+| the coming week | today and the 6 days after it |
+| past week / past fortnight | the 7 / 14 days up to and including today |
+| past month / past year / past 12 months / last 3 months | rolling back by calendar months from today: "past 12 months" is "past year", both starting the day after today's date a year ago |
+| last 10 days / past six weeks | rolling back from today |
+| this weekend / last weekend / this past weekend | that Saturday and Sunday |
+| the weekend / over the weekend | the one you are in on a Saturday or Sunday; otherwise the last one, or the coming one when the question looks forward ("what's on my calendar for the weekend", "what are my plans") |
+| the coming weekend / the weekend before last | that Saturday and Sunday |
+| three days ago / a week ago / a fortnight ago | that day / that Monday-to-Sunday week |
 | this month / last month / previous month | calendar months (this month runs to its end for the calendar and open loops) |
 | this year / last year / in 2025 | calendar years |
 | in July / June 2025 / July last year | that calendar month (a bare month means the most recent one) |
-| March 3 / 2026-07-04 / last Monday | that day |
+| the first / second / third / fourth / last week of September | days 1-7, 8-14, 15-21, 22-28, or the month's last 7 days |
+| the start / middle / end of October (or of last month) | days 1-10, 11-20, or 21 to the month's end |
+| March 3 / 20 October / the 20th of October / 2026-07-04 / last Monday | that day |
+| 10/20 / 10/20/2026 / 10/20/26 | that day — numeric dates are **month first** (US order). Without a year it is the most recent one, and it needs a word that makes it a time ("on 10/20", "since 9/1"): "1/2 cup" is not January 2 |
+| the 20th | the most recent 20th of a month, up to today |
 | between 2026-07-01 and 2026-07-10 / between June and August | that range |
+| September and October / from September to October / Oct 1 - 15 | one range across both |
 | since 2026-07-01 / since July | from then through today |
+| what's upcoming / what's next on my calendar | from today through the calendar's horizon (90 days by default) |
 | *(nothing)* | last 30 days, and text search is **not** limited to it |
 
 That last row matters: "when did I last see Jake" searches all of history,
@@ -252,6 +334,15 @@ for ones whose text says "September". The same goes for "weekend", "next",
 "during" or "early" in front of them. Only the words the window used are
 taken out, so "may" that is not the month, or a person called June, is
 still searched for.
+
+Time vocabulary is never a search term even when no window was read from it:
+month and weekday names, "weekend", "fortnight", "next", "upcoming",
+"coming", "earlier", "later", "morning", "afternoon", "evening", "night",
+"rest", "start", "end", "beginning". "What did I do yesterday morning" is
+yesterday, not entries that say "morning". The exception is a name: a
+place you know as "Sunday Market" is still Sunday Market, and its "Sunday"
+is not read as a day. ("May" and "March" stay words unless the window read
+them, for the reason above.)
 
 A window that reaches past today ("next week", or the rest of this week for a
 calendar question) lists what is coming first, soonest first, then what has
@@ -309,8 +400,13 @@ The deterministic answer must pass them too, and the tests hold it to that.
    line such as "last contact O3 (2026-10-12)" counts only for a sentence
    that cites O3. A sentence that fails is listed under `unsupported`.
    Sentences end at `.`, `!` or `?` outside quotes, but not at the period of
-   an abbreviation ("Dr.", "Mr.", "Mrs.", "Jr.", "St.", "e.g.", "p.m.").
-   "On 2026-10-10 you saw Dr. Ellis [O3]." is one sentence citing O3.
+   an abbreviation ("Dr.", "Mr.", "Mrs.", "Jr.", "St.", "e.g.", "p.m."), of
+   an initial ("Laura J. Kim", "Dr. R. Ellis") or of a dotted abbreviation
+   ("D.D.S.", "Ph.D.", "U.S."). "On 2026-10-10 you saw Dr. Ellis [O3]." and
+   "On 2026-10-09 Laura J. Kim texted you [O1]." are each one sentence
+   citing their record. Names reach answers verbatim from contact cards and
+   `handles link --new`, so a period inside one never cuts a date off from
+   its citation.
 3. **An answer that cites nothing** is flagged `uncited`.
 
 When a model's answer breaks rule 1 or 2, it is set aside. You get the
@@ -428,9 +524,12 @@ It returns:
     `phones` and `emails`.
   - `entities`: each with `last_contact`, `cards` and `facts` (all as ids),
     and for a place, `visits`. Then `ambiguous`, `no_data`, `loops` and the
-    parsed `intent`. `loops_total` counts the open loops that match the
-    question and `loops_open` every open one. `recap` is true when the
-    question named only a time.
+    parsed `intent` (among its fields: `contact` for a when-or-whether call
+    or text question, `due` for a due-date question, `forward` for one that
+    looks ahead, and `merchant`, the name a money question's "at" or "from"
+    named). `loops_total` counts the open loops that match the question and
+    `loops_open` every open one. `recap` is true when the question named
+    only a time.
   - `window`: its `start`, `end` and `label`. An explicit window also has
     `spans`, the parts of the question it was read from, and a "this week /
     month / year" window has `through`, the period's last day.
