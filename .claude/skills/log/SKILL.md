@@ -81,6 +81,18 @@ later `continues` earlier; new event `resolves` old task; child `part_of`
 parent; cause `caused` effect; newer `contradicts` older. Don't force links
 — a plain day has none.
 
+**Relationships — only when the note states one.** "Jake grew up in El
+Paso" -> an `entity_links` item: Jake `from` El Paso. Direction reads as a
+sentence, FROM type TO (Jake `works_at` Acme, Priya `manages` Alex, Linda
+`parent_of` Alex); types: `python -m lifecrm entities link types`. Each end
+is `{"ref": "existing", "id": N}` or a `new` ref that also appears in an
+entry's `entities` in this draft; `provenance` is the stating sentence's
+char span; `entry_index` the entry it came with. Never inferred: sharing a
+dinner is not `friend_of`, naming a company is not `works_at`. A
+relationship to the user ("my partner Maya") needs the user's own person
+entity — resolve it like any name; if there is none, ask before creating it.
+Already-known relationships come back `unchanged` in the diff.
+
 ## Step 4 — review (mandatory — never apply without it)
 
 Write the draft to `data\staging\draft-<date>.json` and run:
@@ -95,6 +107,8 @@ the diff compactly:
   came from (source), confidence.
 - New entities: `NEW place "Movement Gym" (alias: the gym)`; matches:
   `"Jake" -> existing Jake Reilly (id 12)`.
+- Relationships (`entity_link` items, their `text`): `NEW Jake Morales from
+  El Paso`; `unchanged` ones in one line.
 - **Every item with `"accepted": null` is a question for the user**: updates
   to confirmed entries, possible duplicates, retract proposals, and every
   cross-day closure (`entry_update` items are always requires-decision).
@@ -118,8 +132,10 @@ Ask for a single confirmation (y / corrections).
 
 ## Step 6 — report
 
-Report: records saved, loops closed, links created, entities created,
-current streak, and any open loops now overdue (`status`). If the last
-backup is old (doctor warns), suggest `python -m lifecrm backup`.
+Report: records saved, loops closed, links created, relationships created,
+entities created, current streak, and any open loops now overdue
+(`status`). If the last backup is old (doctor warns), suggest
+`python -m lifecrm backup`.
 Post-apply fixes go through `entry edit/retract/restore/merge/close/reopen`,
-`link add/rm`, `entities merge` — never re-ingest to fix a typo.
+`link add/rm`, `entities merge`, `entities link add/rm` — never re-ingest to
+fix a typo.

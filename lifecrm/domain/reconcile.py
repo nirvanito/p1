@@ -11,6 +11,9 @@ Guarantees:
   provenance names WHICH source supports it. Cross-day closures arrive as
   `entry_update` items that ALWAYS require a decision. Links ride the diff
   and are resolved (draft index -> uuid) at apply time.
+- Relationships (`entity_link` items, schema v5) ride the diff the same way:
+  an add unless the same fact is already active, resolved at apply after
+  the entries — so a `new` end is the entity an entry just created.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import sqlite3
 from difflib import SequenceMatcher
 
 from . import audit, corrections, days, entities as entities_mod, entries as entries_mod
+from . import entity_links as entity_links_mod
 from . import links as links_mod
 from . import measurements as measurements_mod
 from .util import DomainError, new_uuid, now_utc
@@ -473,6 +477,8 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
             "note": link.get("note"),
         })
 
+    items.extend(_entity_link_items(conn, draft))
+
     # Day summary + day-owned measurements.
     day_diff: dict = {"summary": {"action": "none"}, "measurements": []}
     draft_day = draft.get("day") or {}
@@ -511,6 +517,10 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
         "retract_proposals": sum(1 for i in items if i["action"] == "retract"),
         "entry_updates": sum(1 for i in items if i["action"] == "entry_update"),
         "links": sum(1 for i in items if i["action"] == "link"),
+        "entity_links": sum(1 for i in items if i["action"] == "entity_link"
+                            and i["state"] == "add"),
+        "entity_links_unchanged": sum(1 for i in items if i["action"] == "entity_link"
+                                      and i["state"] == "unchanged"),
         "unchanged": sum(1 for i in items if i["action"] == "unchanged"),
         "unchanged_confirmed": sum(1 for i in items if i["action"] == "unchanged_confirmed"),
         "requires_decision": sum(1 for i in items
@@ -580,7 +590,8 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
     summary = {"added": 0, "updated": 0, "retracted": 0, "closed": 0,
                "links_created": 0, "skipped_duplicates": 0,
                "skipped_decisions": 0, "unchanged": 0, "entities_created": 0,
-               "day_measurements": 0}
+               "day_measurements": 0,
+               "entity_links_created": 0, "entity_links_unchanged": 0}
 
     def _resolve_entity(ref: dict) -> int:
         if ref["ref"] == "existing":
@@ -650,6 +661,7 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
         return created["uuid"]
 
     link_items: list[dict] = []
+    entity_link_items: list[dict] = []
     for item in diff.get("items", []):
         action = item["action"]
         if action == "add":
@@ -707,6 +719,8 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
             summary["closed"] += 1
         elif action == "link":
             link_items.append(item)   # resolved after every index is mapped
+        elif action == "entity_link":
+            entity_link_items.append(item)   # after entries: new ends exist then
         elif action in ("unchanged", "unchanged_confirmed"):
             if "index" in item:
                 index_to_uuid[item["index"]] = item["entry_uuid"]
@@ -730,6 +744,10 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
         if links_mod.add(conn, from_uuid, to_uuid, item["type"],
                          note=item.get("note"), actor="extraction"):
             summary["links_created"] += 1
+
+    for item in entity_link_items:
+        _apply_entity_link(conn, item, _resolve_entity, _prov_source,
+                           index_to_uuid, run["id"], summary)
 
     day_diff = diff.get("day") or {}
     sm = day_diff.get("summary", {})
@@ -759,3 +777,68 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
     audit.log(conn, "user", "apply_diff", "extraction_runs", run["uuid"],
               {"journal_date": journal_date, **summary})
     return summary
+
+
+# ---------------------------------------------------------------- entity links
+
+def _link_end(conn: sqlite3.Connection, ref: dict) -> dict:
+    """A draft's relationship end, named for the reviewer. An existing end is
+    followed through merges so the diff shows who it will really attach to."""
+    if ref["ref"] == "existing":
+        eid = entities_mod.resolve_merged(conn, ref["id"])
+        row = entities_mod.get(conn, eid)
+        return {"ref": "existing", "id": eid, "name": row["name"], "type": row["type"]}
+    return {"ref": "new", "type": ref["type"], "name": ref["name"].strip()}
+
+
+def _entity_link_items(conn: sqlite3.Connection, draft: dict) -> list[dict]:
+    """Relationship proposals, judged against what is already known.
+
+    Both ends existing and the fact already active — in either reading of a
+    symmetric type, or from the other end of an inverse pair — is
+    'unchanged', naming the link that says it. Anything else is an add: an
+    entity this draft creates cannot have relationships yet. Adds are not
+    decisions; like links, the reviewed apply creates them."""
+    items = []
+    for link in draft.get("entity_links", []) or []:
+        ends = {side: _link_end(conn, link[side]) for side in ("from", "to")}
+        item = {"action": "entity_link", "state": "add",
+                "from": ends["from"], "to": ends["to"], "type": link["type"],
+                "text": f"{ends['from']['name']} {link['type']} {ends['to']['name']}",
+                "note": link.get("note"), "provenance": link.get("provenance")}
+        for key in ("valid_from", "valid_to", "entry_index"):
+            if link.get(key) is not None:
+                item[key] = link[key]
+        if ends["from"]["ref"] == ends["to"]["ref"] == "existing":
+            row = entity_links_mod.find_active(conn, ends["from"]["id"],
+                                               ends["to"]["id"], link["type"])
+            if row is not None:
+                item["state"] = "unchanged"
+                item["existing_link_uuid"] = row["uuid"]
+        items.append(item)
+    return items
+
+
+def _apply_entity_link(conn: sqlite3.Connection, item: dict, resolve_entity,
+                       prov_source, index_to_uuid: dict[int, str], run_id: int,
+                       summary: dict) -> None:
+    """Create one reviewed relationship, citing the passage that states it,
+    the entry it came with (when the draft named one) and the run."""
+    if item.get("state") == "unchanged":
+        summary["entity_links_unchanged"] += 1
+        return
+    from_id = resolve_entity(item["from"])
+    to_id = resolve_entity(item["to"])
+    if from_id == to_id:
+        return   # both ends merged into one entity since the review
+    prov = item.get("provenance") or {}
+    entry_index = item.get("entry_index")
+    result = entity_links_mod.add(
+        conn, from_id, to_id, item["type"], note=item.get("note"),
+        valid_from=item.get("valid_from"), valid_to=item.get("valid_to"),
+        source_id=prov_source(prov), char_start=prov.get("char_start"),
+        char_end=prov.get("char_end"),
+        entry_uuid=index_to_uuid.get(entry_index) if entry_index is not None else None,
+        extraction_run_id=run_id, actor="extraction")
+    summary["entity_links_created" if result["created"]
+            else "entity_links_unchanged"] += 1

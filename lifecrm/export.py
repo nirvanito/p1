@@ -165,6 +165,7 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
         {"from_uuid": r["from_uuid"], "to_uuid": r["to_uuid"], "type": r["type"],
          "note": r["note"], "actor": r["actor"], "created_at": r["created_at"]}
         for r in q("SELECT * FROM entry_links ORDER BY from_uuid, to_uuid, type")]
+    tables.update(_entity_link_tables(q, entity_uuid, source_uuid, run_uuid))
     tables["audit_log"] = [
         {"seq": r["id"], "ts": r["ts"], "actor": r["actor"], "action": r["action"],
          "table_name": r["table_name"], "row_uuid": r["row_uuid"],
@@ -245,6 +246,36 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8", newline="\n")
     return manifest
+
+
+def _entity_link_tables(q, entity_uuid: dict, source_uuid: dict,
+                        run_uuid: dict) -> dict[str, list[dict]]:
+    """Relationships (v5), every status: a retracted link is history too.
+    Ends export as entity uuids, the cited passage as its source uuid."""
+    types = [
+        {"name": r["name"], "symmetric": bool(r["symmetric"]),
+         "inverse": r["inverse"], "description": r["description"],
+         "created_at": r["created_at"]}
+        for r in q("SELECT * FROM entity_link_types ORDER BY name")]
+    links = [
+        {"uuid": r["uuid"],
+         "from_entity_uuid": entity_uuid[r["from_entity_id"]],
+         "to_entity_uuid": entity_uuid[r["to_entity_id"]],
+         "type": r["type"], "note": r["note"],
+         "valid_from": r["valid_from"], "valid_to": r["valid_to"],
+         "status": r["status"], "actor": r["actor"],
+         "source_uuid": source_uuid.get(r["source_id"]),
+         "char_start": r["char_start"], "char_end": r["char_end"],
+         "entry_uuid": r["entry_uuid"],
+         "extraction_run_uuid": run_uuid.get(r["extraction_run_id"]),
+         "observation_uuid": r["observation_uuid"],
+         "confirmed_at": r["confirmed_at"], "created_at": r["created_at"],
+         "updated_at": r["updated_at"]}
+        for r in q("SELECT l.* FROM entity_links l "
+                   "JOIN entities f ON f.id=l.from_entity_id "
+                   "JOIN entities t ON t.id=l.to_entity_id "
+                   "ORDER BY f.uuid, t.uuid, l.type, l.uuid")]
+    return {"entity_link_types": types, "entity_links": links}
 
 
 # ---------------------------------------------------------------- markdown
@@ -341,6 +372,7 @@ def export_markdown(conn: sqlite3.Connection, out_dir: Path) -> dict:
                                            encoding="utf-8", newline="\n")
         files += 1
 
+    _add_related_entities(q, entity_days)
     ent_dir = out_dir / "_entities"
     if entity_days:
         ent_dir.mkdir(parents=True, exist_ok=True)
@@ -355,9 +387,51 @@ def export_markdown(conn: sqlite3.Connection, out_dir: Path) -> dict:
         lines.append("")
         for jd, title in sorted(set(info["appearances"])):
             lines.append(f"- {jd} — {title}")
+        relationships = _relationship_lines(q, info["slug"])
+        if relationships:
+            if lines[-1]:
+                lines.append("")
+            lines += relationships
         (ent_dir / f"{info['slug']}.md").write_text(
             "\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         files += 1
 
     return {"format": "markdown", "files": files, "days": len(days),
             "entities": len(entity_days)}
+
+
+def _add_related_entities(q, entity_days: dict) -> None:
+    """An entity known only through a relationship — Jake's hometown, never
+    itself the subject of an entry — still gets a page, so the [[link]] on
+    the other entity's page leads somewhere."""
+    for r in q("SELECT DISTINCT e.id, e.name, e.slug, e.type FROM entity_links l "
+               "JOIN entities e ON e.id IN (l.from_entity_id, l.to_entity_id) "
+               "WHERE l.status='active' AND e.status='active'"):
+        entity_days.setdefault(r["id"], {"name": r["name"], "slug": r["slug"],
+                                         "type": r["type"], "appearances": []})
+
+
+def _relationship_lines(q, slug: str) -> list[str]:
+    """Every active relationship touching the entity, written the same way on
+    both ends' pages — the stored direction, as a sentence."""
+    rows = q("SELECT l.type, l.note, l.valid_from, l.valid_to, "
+             "f.name AS from_name, t.name AS to_name FROM entity_links l "
+             "JOIN entities f ON f.id=l.from_entity_id "
+             "JOIN entities t ON t.id=l.to_entity_id "
+             "JOIN entities me ON me.slug=? "
+             "WHERE l.status='active' AND me.id IN (l.from_entity_id, l.to_entity_id) "
+             "ORDER BY l.type, f.name, t.name, l.uuid", (slug,)).fetchall()
+    if not rows:
+        return []
+    lines = ["## relationships", ""]
+    for r in rows:
+        when = ""
+        if r["valid_from"] and r["valid_to"]:
+            when = f" ({r['valid_from']} – {r['valid_to']})"
+        elif r["valid_from"]:
+            when = f" (since {r['valid_from']})"
+        elif r["valid_to"]:
+            when = f" (until {r['valid_to']})"
+        lines.append(f"- {_wiki(r['from_name'])} {r['type']} {_wiki(r['to_name'])}"
+                     + when + (f" — {r['note']}" if r["note"] else ""))
+    return lines

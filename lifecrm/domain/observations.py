@@ -414,16 +414,23 @@ def mass_removal(plan: dict) -> str | None:
 def _remove(conn: sqlite3.Connection, rows: list, actor: str) -> tuple[int, int]:
     """Mirror deletions at the source: (deleted, retracted).
 
-    A row a confirmed entry cites as its provenance is retracted — hidden
-    everywhere — rather than deleted: the confirmed tier's provenance is never
-    destroyed (the lesson of entry merge, 1.1). Everything else is deleted;
-    participants and the search index follow by cascade and trigger.
+    A row a confirmed record cites as its provenance — an entry, or an entity
+    relationship ("Jake works_at Acme", cited from his contact card) — is
+    retracted, hidden everywhere, rather than deleted: the confirmed tier's
+    provenance is never destroyed (the lesson of entry merge, 1.1). Everything
+    else is deleted; participants and the search index follow by cascade and
+    trigger.
     """
     deleted = retracted = 0
     now = now_utc()
+    has_links = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                             "AND name='entity_links'").fetchone() is not None
     for row in rows:
         cited = conn.execute("SELECT 1 FROM entry_observations WHERE "
                              "observation_id=? LIMIT 1", (row["id"],)).fetchone()
+        if not cited and has_links:
+            cited = conn.execute("SELECT 1 FROM entity_links WHERE "
+                                 "observation_uuid=? LIMIT 1", (row["uuid"],)).fetchone()
         if cited:
             conn.execute("UPDATE observations SET status='retracted', updated_at=? "
                          "WHERE id=?", (now, row["id"]))

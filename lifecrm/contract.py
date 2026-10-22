@@ -13,6 +13,9 @@ v2 (ships with schema v2):
 - `entry_updates` — close a task/plan recorded on a DIFFERENT day ("finished
   the thing I mentioned Tuesday"). Deliberately narrow: closure fields only.
 - `links` — thread structure between entries (continues/resolves/...).
+- `entity_links` (optional, added with schema v5; contract_version stays 2
+  because a draft without it is unchanged) — relationships between entities
+  ("Jake from El Paso"), each citing the passage that states it.
 """
 
 from __future__ import annotations
@@ -32,7 +35,10 @@ ENTRY_KEYS = {
     "provenance", "uuid",
 }
 TOP_KEYS = {"contract_version", "journal_date", "sources", "day", "entries",
-            "entry_updates", "links", "ambiguities", "extraction"}
+            "entry_updates", "links", "ambiguities", "extraction",
+            "entity_links"}
+ENTITY_LINK_KEYS = {"from", "to", "type", "note", "valid_from", "valid_to",
+                    "entry_index", "provenance"}
 CLOSURES = ("done", "dropped", "obsolete")
 INTERFACES = ("claude_skill", "manual")
 
@@ -174,6 +180,11 @@ def validate_draft(conn: sqlite3.Connection, draft: dict,
         else:
             for i, link in enumerate(links):
                 errors.extend(_validate_link(conn, link, i, len(entries_list)))
+
+    # --- entity_links (relationships between entities; schema v5) ---
+    errors.extend(_validate_entity_links(conn, draft.get("entity_links"),
+                                         entries_list, declared_ids,
+                                         multi_source, prov_len))
 
     # --- ambiguities ---
     amb = draft.get("ambiguities")
@@ -503,3 +514,137 @@ def _validate_link(conn: sqlite3.Connection, link, i: int,
     if len(ends) == 2 and ends["from"] == ends["to"]:
         errs.append(f"{p}: a link cannot connect an entry to itself")
     return errs
+
+
+# ---------------------------------------------------------------- entity_links
+
+def _validate_entity_links(conn: sqlite3.Connection, links, entries_list: list,
+                           declared_ids: list[int], multi_source: bool,
+                           prov_len) -> list[str]:
+    """Relationships between entities ("Jake from El Paso").
+
+    Each end is an existing entity or one this draft creates — a `new` ref
+    that must match a `new` ref in some entry's entities[], so a relationship
+    never conjures an entity no entry mentions. Provenance is required and is
+    a character span: the relationship must trace to the sentence that states
+    it, never to an inference across the day."""
+    if links is None:
+        return []
+    if not isinstance(links, list):
+        return ["entity_links: must be an array"]
+    known = {r["name"]: bool(r["symmetric"]) for r in conn.execute(
+        "SELECT name, symmetric FROM entity_link_types")}
+    new_refs: set[tuple] = set()
+    for entry in entries_list:
+        ents = entry.get("entities") if isinstance(entry, dict) else None
+        for ref in ents if isinstance(ents, list) else []:
+            if isinstance(ref, dict) and ref.get("ref") == "new" \
+                    and isinstance(ref.get("name"), str):
+                new_refs.add((ref.get("type"), ref["name"].strip().lower()))
+
+    errs: list[str] = []
+    seen: dict[tuple, int] = {}
+    for i, link in enumerate(links):
+        p = f"entity_links[{i}]"
+        if not isinstance(link, dict):
+            errs.append(f"{p}: must be an object")
+            continue
+        for key in sorted(set(link) - ENTITY_LINK_KEYS):
+            errs.append(f"{p}.{key}: unknown key")
+        ltype = link.get("type")
+        if ltype not in known:
+            errs.append(f"{p}.type: '{ltype}' is not a relationship type "
+                        f"({', '.join(sorted(known))})")
+
+        ends = {}
+        for side in ("from", "to"):
+            key, side_errs = _validate_link_end(conn, link.get(side),
+                                                f"{p}.{side}", new_refs)
+            errs.extend(side_errs)
+            if key is not None:
+                ends[side] = key
+        if len(ends) == 2:
+            if ends["from"] == ends["to"]:
+                errs.append(f"{p}: a relationship cannot connect an entity to itself")
+            elif ltype in known:
+                pair = (ends["from"], ends["to"])
+                if known[ltype]:
+                    pair = tuple(sorted(pair))
+                if (pair, ltype) in seen:
+                    errs.append(f"{p}: same relationship as "
+                                f"entity_links[{seen[(pair, ltype)]}]")
+                else:
+                    seen[(pair, ltype)] = i
+
+        if link.get("note") is not None and not isinstance(link["note"], str):
+            errs.append(f"{p}.note: must be a string or null")
+        dates_ok = True
+        for f in ("valid_from", "valid_to"):
+            v = link.get(f)
+            if v is not None and not (is_iso_date(v) or is_iso_datetime(v)):
+                errs.append(f"{p}.{f}: '{v}' is not an ISO date or datetime")
+                dates_ok = False
+        vf, vt = link.get("valid_from"), link.get("valid_to")
+        if dates_ok and vf is not None and vt is not None and vf > vt:
+            errs.append(f"{p}: valid_from {vf} is after valid_to {vt}")
+        if "entry_index" in link:
+            idx = link["entry_index"]
+            if not isinstance(idx, int) or not (0 <= idx < len(entries_list)):
+                errs.append(f"{p}.entry_index: {idx!r} is not a valid index into "
+                            f"entries (0..{len(entries_list) - 1})")
+
+        prov = link.get("provenance")
+        if prov is None:
+            errs.append(f"{p}.provenance: required — a relationship must trace "
+                        f"to the sentence that states it")
+        elif isinstance(prov, dict) and "segments" in prov:
+            errs.append(f"{p}.provenance: cite the sentence by char_start/char_end "
+                        f"— segments are not accepted for relationships")
+        else:
+            errs.extend(_validate_provenance(prov, f"{p}.provenance", declared_ids,
+                                             multi_source, prov_len))
+    return errs
+
+
+def _validate_link_end(conn: sqlite3.Connection, ref, path: str,
+                       new_refs: set[tuple]) -> tuple[tuple | None, list[str]]:
+    """(identity key, errors) for one end of an entity link; the key is None
+    when the end is invalid."""
+    if not isinstance(ref, dict):
+        return None, [f"{path}: required object — {{\"ref\": \"existing\", "
+                      f"\"id\": N}} or {{\"ref\": \"new\", \"type\": T, \"name\": \"...\"}}"]
+    errs: list[str] = []
+    kind = ref.get("ref")
+    if kind == "existing":
+        for key in sorted(set(ref) - {"ref", "id", "type"}):
+            errs.append(f"{path}.{key}: unknown key")
+        eid = ref.get("id")
+        if not isinstance(eid, int):
+            return None, errs + [f"{path}.id: existing ref requires an integer id"]
+        row = conn.execute("SELECT name, type, status, merged_into FROM entities "
+                           "WHERE id=?", (eid,)).fetchone()
+        if row is None:
+            errs.append(f"{path}.id: entity id={eid} does not exist")
+        elif row["status"] == "merged":
+            errs.append(f"{path}.id: entity id={eid} '{row['name']}' was merged into "
+                        f"id={row['merged_into']} — use that id")
+        elif "type" in ref and ref["type"] != row["type"]:
+            errs.append(f"{path}.type: entity id={eid} is a {row['type']}, "
+                        f"not {ref['type']}")
+        return (None if errs else ("existing", eid)), errs
+    if kind == "new":
+        for key in sorted(set(ref) - {"ref", "type", "name"}):
+            errs.append(f"{path}.{key}: unknown key")
+        etype, name = ref.get("type"), ref.get("name")
+        if etype not in ENTITY_TYPES:
+            errs.append(f"{path}.type: '{etype}' must be one of {', '.join(ENTITY_TYPES)}")
+        if not isinstance(name, str) or not name.strip():
+            errs.append(f"{path}.name: new entity requires a non-empty name")
+        elif etype in ENTITY_TYPES and (etype, name.strip().lower()) not in new_refs:
+            errs.append(f"{path}: new {etype} '{name}' is not a new entity in this "
+                        f"draft's entries — add it to the entities of the entry "
+                        f"that states the relationship, or use ref:existing")
+        if errs:
+            return None, errs
+        return ("new", etype, name.strip().lower()), errs
+    return None, [f"{path}.ref: must be 'existing' or 'new'"]

@@ -223,8 +223,9 @@ def rename(conn: sqlite3.Connection, entity_id: int, new_name: str,
 
 def merge(conn: sqlite3.Connection, src_id: int, dst_id: int,
           actor: str = "user") -> dict:
-    """Merge src into dst: mentions reassigned, aliases moved, src name becomes
-    an alias of dst, src row kept with status='merged' (UUIDs stay stable)."""
+    """Merge src into dst: mentions reassigned, aliases moved, relationships
+    repointed, src name becomes an alias of dst, src row kept with
+    status='merged' (UUIDs stay stable)."""
     if src_id == dst_id:
         raise DomainError("cannot merge an entity into itself")
     src = get_active(conn, src_id)
@@ -244,11 +245,15 @@ def merge(conn: sqlite3.Connection, src_id: int, dst_id: int,
     conn.execute(
         "INSERT OR IGNORE INTO entity_aliases (alias, entity_id, created_at) VALUES (?, ?, ?)",
         (src["name"], dst_id, now))
+    from . import entity_links   # imported here: entity_links builds on this module
+    links = entity_links.repoint(conn, src_id, dst_id, actor=actor)
     conn.execute(
         "UPDATE entities SET status='merged', merged_into=?, updated_at=? WHERE id=?",
         (dst_id, now, src_id))
     conn.execute("UPDATE entities SET updated_at=? WHERE id=?", (now, dst_id))
     audit.log(conn, actor, "merge", "entities", src["uuid"],
               {"into_id": dst_id, "into_uuid": dst["uuid"],
-               "src_name": src["name"], "dst_name": dst["name"], "mentions_moved": moved})
-    return {"src": src["name"], "dst": dst["name"], "mentions_moved": moved}
+               "src_name": src["name"], "dst_name": dst["name"], "mentions_moved": moved,
+               "links_moved": links["moved"], "links_retracted": links["retracted"]})
+    return {"src": src["name"], "dst": dst["name"], "mentions_moved": moved,
+            "links_moved": links["moved"], "links_retracted": links["retracted"]}

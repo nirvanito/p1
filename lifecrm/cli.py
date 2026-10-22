@@ -401,7 +401,9 @@ def ingest(
                f"{c['possible_duplicate']} possible duplicate(s), "
                f"{c['retract_proposals']} retract proposal(s), "
                f"{c['entry_updates']} cross-day update(s), {c['links']} link(s), "
-               f"{c['unchanged_confirmed']} unchanged confirmed, "
+               + (f"{c['entity_links']} relationship(s), "
+                  if c.get("entity_links") else "")
+               + f"{c['unchanged_confirmed']} unchanged confirmed, "
                f"{c['requires_decision']} requiring a decision")
     typer.echo(f"review, adjust accepted flags if needed, then apply:")
     typer.echo(f"  python -m lifecrm apply \"{diff_path}\"")
@@ -452,7 +454,9 @@ def apply(diff_file: str = typer.Argument(..., help="Diff JSON from ingest"),
                    f"{summary['retracted']} retracted, "
                    f"{summary['closed']} loop(s) closed, "
                    f"{summary['links_created']} link(s), "
-                   f"{summary['entities_created']} new entities, "
+                   + (f"{summary['entity_links_created']} relationship(s), "
+                      if summary.get("entity_links_created") else "")
+                   + f"{summary['entities_created']} new entities, "
                    f"{summary['day_measurements']} day measurements"
                    + (f", {summary['skipped_decisions']} skipped (needs decision)"
                       if summary['skipped_decisions'] else "")
@@ -1513,9 +1517,12 @@ def entities_show(entity_id: int, as_json: bool = typer.Option(False, "--json"))
             "SELECT en.journal_date, en.title, en.uuid, m.role FROM mentions m "
             "JOIN entries en ON en.id=m.entry_id WHERE m.entity_id=? AND en.status='active' "
             "ORDER BY en.journal_date DESC LIMIT 50", (entity_id,))]
+        from .domain import entity_links as entity_links_mod
+        relationships = entity_links_mod.for_entity(conn, entity_id)
     finally:
         conn.close()
-    out = dict(e) | {"aliases": aliases, "recent_mentions": mentions}
+    out = dict(e) | {"aliases": aliases, "relationships": relationships,
+                     "recent_mentions": mentions}
     if as_json:
         _echo_json(out)
         return
@@ -1524,6 +1531,10 @@ def entities_show(entity_id: int, as_json: bool = typer.Option(False, "--json"))
         typer.echo(f"aliases: {', '.join(aliases)}")
     if e["notes"]:
         typer.echo(f"notes: {e['notes']}")
+    if relationships:
+        typer.echo("relationships:")
+        for r in relationships:
+            typer.echo(f"  - {r['text']}" + (f"  ({r['note']})" if r["note"] else ""))
     for m in mentions:
         typer.echo(f"  {m['journal_date']}  {m['title']}  ({m['role']})")
 

@@ -398,7 +398,64 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     except sqlite3.OperationalError:
         pass   # pre-v4 schema; pending_migrations already failed above
 
+    try:
+        _relationship_checks(conn, _add, _rows)
+    except sqlite3.OperationalError:
+        pass   # pre-v5 schema; pending_migrations already failed above
+
     failures = sum(1 for c in checks if c["status"] == "fail")
     warnings = sum(1 for c in checks if c["status"] == "warn")
     return {"checks": checks, "failures": failures, "warnings": warnings,
             "healthy": failures == 0}
+
+
+def _relationship_checks(conn: sqlite3.Connection, _add, _rows) -> None:
+    """Entity links (v5). The schema carries the self-link CHECK and active
+    uniqueness; what it cannot carry — live ends, provenance on what an
+    extractor proposed, canonical order for symmetric types, one row per
+    inverse fact — the domain layer enforces and this verifies."""
+    _rows("entity_links_resolve",
+          "SELECT l.uuid FROM entity_links l WHERE l.status='active' AND ("
+          "NOT EXISTS (SELECT 1 FROM entities e WHERE e.id=l.from_entity_id "
+          "AND e.status='active') OR "
+          "NOT EXISTS (SELECT 1 FROM entities e WHERE e.id=l.to_entity_id "
+          "AND e.status='active'))",
+          "active relationship(s) pointing at a missing or merged entity")
+    _rows("entity_links_no_self",
+          "SELECT uuid FROM entity_links WHERE from_entity_id = to_entity_id",
+          "relationship(s) connecting an entity to itself")
+    _rows("entity_links_provenance",
+          "SELECT uuid FROM entity_links WHERE actor='extraction' "
+          "AND char_start IS NULL AND entry_uuid IS NULL "
+          "AND observation_uuid IS NULL",
+          "extracted relationship(s) citing no passage, entry or observation")
+    _rows("entity_links_canonical",
+          "SELECT l.uuid FROM entity_links l "
+          "JOIN entity_link_types t ON t.name=l.type "
+          "WHERE t.symmetric=1 AND l.from_entity_id > l.to_entity_id",
+          "symmetric relationship(s) stored out of canonical order — a "
+          "duplicate could slip past the uniqueness index")
+    _rows("entity_links_inverse_once",
+          "SELECT a.uuid, b.uuid FROM entity_links a "
+          "JOIN entity_link_types t ON t.name=a.type "
+          "JOIN entity_links b ON b.type=t.inverse "
+          "AND b.from_entity_id=a.to_entity_id AND b.to_entity_id=a.from_entity_id "
+          "WHERE a.status='active' AND b.status='active' AND a.type < b.type",
+          "fact(s) stored as both halves of an inverse pair")
+    _rows("entity_link_types_inverse",
+          "SELECT a.name FROM entity_link_types a "
+          "JOIN entity_link_types b ON b.name=a.inverse "
+          "WHERE b.inverse IS NOT a.name OR a.symmetric=1 OR b.symmetric=1",
+          "relationship type(s) whose inverse does not point back")
+
+    # A retracted entry ("this record was wrong") may have carried a wrong
+    # relationship with it. Retracting the link too is the owner's call.
+    n = conn.execute(
+        "SELECT COUNT(*) c FROM entity_links l JOIN entries e ON e.uuid=l.entry_uuid "
+        "WHERE l.status='active' AND e.status='retracted'").fetchone()["c"]
+    if n:
+        _add("warn", "entity_links_cite_retracted",
+             f"{n} active relationship(s) came with an entry since retracted — "
+             f"check them: python -m lifecrm entities link list")
+    else:
+        _add("ok", "entity_links_cite_retracted")

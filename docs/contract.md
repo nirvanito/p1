@@ -140,6 +140,53 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
 - **ambiguities** — free-form audit trail of what was uncertain and how it
   was resolved; stored with the draft, not in the entries.
 
+## Relationships — `entity_links` (optional, schema v5)
+
+Relationships between entities, when the note **states** one: *"Jake grew
+up in El Paso"* -> Jake `from` El Paso. Never inferred — two people at one
+dinner are not `friend_of`, and a name in the same sentence as a company is
+not `works_at`.
+
+```json
+"entity_links": [
+  {"from": {"ref": "existing", "id": 12},
+   "to": {"ref": "new", "type": "place", "name": "El Paso"},
+   "type": "from",
+   "note": "grew up there",
+   "entry_index": 1,
+   "provenance": {"source_id": 5, "char_start": 66, "char_end": 90}}
+]
+```
+
+- **from / to** — `{"ref": "existing", "id": N}` (optional `"type"` is
+  checked), or `{"ref": "new", "type": T, "name": "..."}`, which must match a
+  `new` entity ref (same type and name) in some entry's `entities` of this
+  draft — a relationship never creates an entity no entry mentions. Merged ids
+  are refused with the survivor's id; an entity cannot relate to itself.
+- **type** — a row of `entity_link_types` (`lifecrm entities link types`;
+  extensible with `entities link type-add`). Direction reads as a sentence,
+  FROM type TO: `Jake works_at Acme`, `Jake from El Paso`, `Jake lives_in
+  Austin`, `Priya manages Alex`, `Linda parent_of Alex`, `Sam member_of
+  Movement`, `Acme located_in Austin`, `Bled Castle part_of Lake Bled`.
+  Symmetric types (`knows`, `friend_of`, `partner_of`, `family_of`,
+  `sibling_of`, `colleague_of`, `relates`) read either way and are stored
+  once, lower entity id first; `parent_of`/`child_of` are one fact read from
+  either end, also stored once.
+- **provenance** — **required**, `{"source_id", "char_start", "char_end"}`
+  (the sentence that states it; `source_id` may be omitted only in
+  single-source drafts; segments are not accepted).
+- **entry_index** — optional: the entry in this draft that states it; the
+  relationship then cites that entry too (the survivor, if the entry is a
+  skipped duplicate).
+- **note**, **valid_from**, **valid_to** — optional; dates are ISO dates or
+  datetimes (*"used to work at"* sets `valid_to`).
+- In the diff each becomes an `entity_link` item with `state`: `add`, or
+  `unchanged` (with `existing_link_uuid`) when both ends exist and the same
+  fact is already active in either reading. Adds are not decisions — like
+  `links`, the reviewed apply creates them, after the entries, so a `new`
+  end is the entity an entry just created. Retract a wrong one afterwards
+  with `lifecrm entities link rm <uuid>` (non-destructive).
+
 ## Lifecycle
 
 1. `lifecrm ingest draft.json` — validate, create the extraction run (linked
@@ -183,6 +230,10 @@ possible-duplicates, which stay skipped. Applied diffs are renamed
 
 ## Version history
 
+- v2 addition (2026-10, schema v5): optional top-level `entity_links` —
+  relationships between entities, each citing the sentence that states it.
+  A draft without the key validates and reconciles exactly as before, so
+  `contract_version` stays 2.
 - v2 (2026-07, schema v2): `sources` array replaces singular `source`;
   per-entry provenance names its source; `entry_updates` (closure-only,
   requires-decision, cross-day); `links`; closable loops (`closed_at`,
