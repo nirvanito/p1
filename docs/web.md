@@ -28,10 +28,19 @@ gate is never bypassed from a phone.
 | page | what it shows |
 |---|---|
 | **Ask** | A question box. The answer is exactly `lifecrm ask --json`'s (`recall.answer()`): every claim carries a citation chip — `M1` a metric series, `E2` a journal entry, `P3` a transcript passage, `O4` an observed record. Tap a chip to expand the evidence: the series as a small chart with mean/min/max, the entry with the transcript passage it came from, the observed row with its stream, time, who, text and the import that brought it in. Under each answer: the time window it used, and *answered deterministically* or the local model that phrased it (its citations are checked). Example questions come from the demo persona on the demo database, generic ones otherwise. |
-| **Today** | Pick a day (date picker, prev/next, or tap a square on the five-week heat map). The day's summary, mood / energy / slept, health numbers from sensor imports, journal entries grouped by category with kind badges, and observed records (texts, calls, chats, ...) grouped by stream — styled as *observed*, each citing its import. |
-| **People** | Everyone of type person, most recent contact first — across both tiers (the latest journal mention vs. the latest text/call/chat naming one of their handles). A person page adds aliases, linked handles, journal mentions, recent observed records, contact-card fields, and *you → them* / *them → you*. |
+| **Today** | Pick a day (date picker, prev/next, or tap a square on the five-week heat map). The day's summary, mood / energy / slept, health numbers from sensor imports (the same per-day numbers `ask` and the Health page give — see below), journal entries grouped by category with kind badges, and observed records (texts, calls, chats, ...) grouped by stream — styled as *observed*, each citing its import. |
+| **People** | Everyone of type person, most recent contact first — across both tiers (the latest journal mention vs. the latest text, connected call or calendar event naming one of their handles: the rule `ask` uses for "when did I last talk to X", so a missed call, a tapback, a contact card or next week's meeting is never "last contact"). You are not on the list: the person linked to your own number or account (a handle that sends your outgoing texts, that an import names as its account, or that the source calls "you (this phone)") opens as *you*, with no last contact. A person page adds aliases, linked handles, journal mentions, recent observed records, upcoming calendar events apart from them, contact-card fields, and *you → them* / *them → you* — a message or call they sent you (a group text someone else sent does not count) and one you sent them. |
 | **Loops** | Open tasks and plans, overdue first, then by due date; the last few closed. Closing one is `lifecrm entry close <uuid>` — or say it in tonight's note. |
-| **Health** | The key sensor metrics (sleep, steps, heart rate, weight, workouts, ...) and the journal's mood / energy / sleep over the last 14 or 30 days. The series are the same ones `ask` cites. When `lifecrm dashboard` is running, a link opens the full Datasette dashboards. |
+| **Health** | The key sensor metrics (sleep, steps, heart rate, weight, workouts, ...) and the journal's mood / energy / sleep over the last 14 or 30 days. The series are the same ones `ask` cites. When `lifecrm dashboard` is running and answers at the address the page was opened on, a link opens the full Datasette dashboards; on a phone, with the dashboards started the default way (this computer only), the page says so instead — start them with `lifecrm dashboard --host 0.0.0.0` to open them from the phone (no key, so trusted networks only). |
+
+**Two apps, one walk.** Samsung Health and Google Fit can both write the same
+walk into Health Connect, and an iPhone and a Watch both count the same
+steps. For a summed metric (sleep, steps, workouts, distance, energy) each
+day therefore takes the one app with the larger total, never both added up —
+in the day view, the Health page and `ask` alike (and in the Obsidian
+export and the Health dashboards). A day tile names that app (`origin_app`)
+when more than one recorded the day. Averages (weight, heart rate) pool every
+app.
 | **Sources** | Import runs with counts, the unresolved-handle queue, each connector's newest record and whether it has gone stale, health export files, and the journal's own sources. |
 
 Confirmed rows (entries, measurements, mentions) and observed rows
@@ -112,8 +121,11 @@ stable.
 - `--host 0.0.0.0`: anyone on the same network can open it. There is no login
   and no https; use it on networks you trust, and prefer `--token`.
 - `--token random` (or `--token <yours>`, or `[web] token`) makes every
-  request carry the key; without it the answer is 401. The manifest and icons
-  stay public (they hold nothing private) so "Add to Home Screen" works.
+  request carry the key; without it the answer is 401. A key of your own may
+  hold any characters: the printed links, the home-screen address and the
+  cookie carry it percent-encoded (`a+b` prints as `?k=a%2Bb`). The manifest
+  and icons stay public (they hold nothing private) so "Add to Home Screen"
+  works.
 - Requests from another website (`Sec-Fetch-Site: cross-site`) are refused for
   the API, and so are requests naming a Host that is not this machine (DNS
   rebinding). Reaching it through another name? Add it to `[web]
@@ -147,16 +159,16 @@ Everything the page shows is plain JSON, for scripts or another front end. Error
 | endpoint | returns |
 |---|---|
 | `GET /api/ask?q=...[&days=N][&llm=0]` | `lifecrm ask --json`'s shape, plus `index` (id → one-line description), `speech` (the answer without citations), `logged`, `warnings` |
-| `GET /api/day?date=YYYY-MM-DD` | summary, mood/energy/sleep, `by_category` entries, `health`, `observed` by stream, `prev`/`next` days with data, `sources` |
+| `GET /api/day?date=YYYY-MM-DD` | summary, mood/energy/sleep, `by_category` entries, `health` (per metric; `origin_app` when two apps recorded the day), `observed` by stream, `prev`/`next` days with data, `sources` |
 | `GET /api/days?start=&end=` | per-day counts (entries, observations, health metrics, mood) for a heat map; at most 400 days |
-| `GET /api/people` | persons with aliases, mention and observation counts, `last_contact` across tiers |
-| `GET /api/person/<id>` | one person: aliases, handles, mentions, observations, streams, contact cards, last in/out |
+| `GET /api/people` | persons (not you) with aliases, mention and observation counts, `last_contact` across tiers |
+| `GET /api/person/<id>` | one person: aliases, handles, mentions, observations (up to today), `upcoming` (dated after today), streams, contact cards, `last_contact`, `last_in`/`last_out`, `is_owner` |
 | `GET /api/entry/<uuid>` | the entry with provenance (transcript passage), revisions, links, cited observations |
 | `GET /api/observation/<uuid>` | one observed row in full, its import, and the rows around it in the same thread |
 | `GET /api/loops` | open tasks/plans (overdue first) and the recently closed |
 | `GET /api/imports` | import runs, unresolved handles, connector freshness, health files, journal sources |
 | `GET /api/health?days=14[&end=YYYY-MM-DD]` | daily series per metric (the ones `ask` cites) and the journal's own |
-| `GET /api/status` | today, counts, demo or not, example questions, snapshot time, model and voice state |
+| `GET /api/status` | today, counts, demo or not, example questions, snapshot time, model and voice state, `dashboards` (`running` at this page's host name, `local_only` when only this computer can open them) |
 | `POST /api/transcribe` | body = recorded audio → `{"text", "language", "duration_sec", "model"}` |
 
 ## Troubleshooting

@@ -77,7 +77,11 @@ day's categories) — then:
 
 - the day summary and the day's journal measurements;
 - a **Health** line from the sensor tier: sleep hours, steps, workouts and
-  weight, marked *observed* and naming the export file it came from;
+  weight, marked *observed* and naming the export file it came from. When two
+  apps recorded the day (Samsung Health and Google Fit writing the same walk,
+  an iPhone and a Watch counting the same steps) sleep, steps and workouts
+  are the app with the larger total, never both added up — the numbers
+  `lifecrm ask` and the web UI give;
 - the entries, grouped by category, each with its kind, time of day, due
   date, closure, measurements and links to other entries; the people, places
   and things it mentions as `[[wikilinks]]`; and the transcript passage it
@@ -95,6 +99,30 @@ contact across both tiers (the newest journal entry and the newest imported
 message or event, each cited), the handles linked to it (phone numbers,
 email addresses), every journal day it appears in, and every day it appears
 in imported data.
+
+*Seen* (first and last seen, the latest contact, the Index's "last seen")
+counts the journal days and the imported records that were an encounter:
+for a person a text, a call that connected or a calendar event — what
+`lifecrm ask` counts as contact — and for a place or anything else any
+imported record. Never a contact card (it is dated the day the contacts were
+exported), a tapback, a missed call, or a record dated after the newest
+import: a calendar export reaches months ahead, and next week's
+meeting has not been seen yet. The newest import's time stands in for
+"now", so the same database still renders the same vault on any day; those
+records are still listed among the days the entity appears in imported
+data.
+
+**Imported text is made inert.** A text, a calendar invite's title, a note,
+an AI chat's name or what a source calls a handle was written by someone
+else — a stranger's invite reaches the day note with no linked handle at
+all. So before it goes into a note, every character that could start
+Markdown, Obsidian or HTML syntax gets a backslash, which Obsidian renders as
+the character itself: `![](https://...)` cannot make Obsidian fetch an image
+(and tell the sender the note was opened), `<img>` is not HTML, and
+`[[links]]`, `#tags`, `%%comments%%`, `==highlights==` and `$math$` add
+nothing to the vault or its graph. The words read the same. Handles are code
+spans a backtick cannot close. Journal text you reviewed is written as it
+is.
 
 **Loops** lists open tasks and plans with their due dates and the day each
 was logged. It deliberately uses plain bullets, not checkboxes: ticking a box

@@ -91,7 +91,7 @@ Two things to know:
 | metric              | stored as                 | notes                                    |
 |---------------------|---------------------------|------------------------------------------|
 | sleep_session       | minutes asleep, `min`     | per-stage breakdown (light/deep/rem/awake) in detail |
-| steps               | per-record count          | daily total = SUM per journal date       |
+| steps               | per-record count          | daily total = SUM per journal date and app; the busier app when two wrote it |
 | weight              | `kg`                      | converted from Health Connect's grams    |
 | heart_rate          | avg `bpm` per record      | min/max/sample-count in detail           |
 | resting_heart_rate  | `bpm`                     |                                          |
@@ -138,9 +138,11 @@ document this database, so the first real export must confirm:
 - [ ] What lands in "unmapped tables" — candidates for the next mapper
 - [ ] Zip size and whether daily cadence actually fires without opening the app
 - [ ] **One app per metric.** Samsung Health and Google Fit (or a watch app)
-      can both write steps, sleep or calories into Health Connect; every
-      day-total here — the steps and sleep dashboards, `lifecrm ask` — SUMs
-      a day's records, so a second writer silently doubles those days. The
+      can both write steps, sleep or calories into Health Connect. Every
+      day-total here — `lifecrm ask`, the web UI, the Obsidian export, the
+      Health dashboards — sums each app's records and takes the app with
+      the larger total for the day, so a second writer never doubles a day;
+      but that day is then one app's count, not both merged. The
       dry-run prints `WARNING steps: written by 2 apps (...)` when the export
       shows it (`--json`: `origin_apps`), and after import doctor keeps
       warning (`health_multi_origin`). Check what actually landed:

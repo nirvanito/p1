@@ -38,6 +38,18 @@
 #   message, and is never a person here. Rows without a direction (a
 #   calendar event) count every attendee except the entity linked to a
 #   handle some import names as its own account.
+# - Contact on the people dashboard is the rule `ask` uses
+#   (recall.last_contact): a text, a call that connected (a missed call has
+#   value 0) or a calendar event, dated no later than today. A calendar
+#   export reaches months ahead, and next week's meeting is not contact.
+#   "Today" is date('now', 'localtime'), this machine's clock - Datasette
+#   cannot read [time] timezone or the rollover hour.
+# - Summed health metrics (sleep, steps, food energy, workouts) are summed
+#   per day and origin_app first, and each day takes the app with the larger
+#   total: Samsung Health and Google Fit both write the same walk into Health
+#   Connect, an iPhone and a Watch both count the same steps. That is
+#   recall._health_days, the rule `ask`, the web UI and the Obsidian export
+#   use. Averages (weight, heart rate) pool every app.
 # - Datasette cancels a query after 1 s, and an all-time card over years of
 #   texts gets near that. Queries joining messages to their participants
 #   walk observation_participants first and CROSS JOIN observations (SQLite
@@ -200,12 +212,14 @@ plugins:
           title: Last night
           db: lifecrm
           query: >-
-            SELECT COALESCE((SELECT ROUND(SUM(value) / 60.0, 1) || ' h'
+            SELECT COALESCE((SELECT ROUND(MAX(t) / 60.0, 1) || ' h'
+            FROM (SELECT COALESCE(origin_app, '') AS o, SUM(value) AS t
             FROM health_records
-            WHERE metric='sleep_session' AND status='active'
+            WHERE metric='sleep_session' AND status='active' AND value IS NOT NULL
             AND journal_date = (SELECT MAX(journal_date) FROM health_records
             WHERE metric='sleep_session' AND status='active'
-            AND value IS NOT NULL)),
+            AND value IS NOT NULL)
+            GROUP BY o)),
             'no data') AS hours
           library: metric
           display:
@@ -214,10 +228,14 @@ plugins:
           title: Workouts
           db: lifecrm
           query: >-
-            SELECT COUNT(*) AS sessions FROM health_records
-            WHERE metric='exercise_session' AND status='active'
+            SELECT COALESCE(SUM(n), 0) AS sessions FROM (SELECT n,
+            ROW_NUMBER() OVER (PARTITION BY day ORDER BY t DESC, o DESC) AS rn
+            FROM (SELECT journal_date AS day, COALESCE(origin_app, '') AS o,
+            SUM(value) AS t, COUNT(*) AS n FROM health_records
+            WHERE metric='exercise_session' AND status='active' AND value IS NOT NULL
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
+            GROUP BY day, o)) WHERE rn = 1
           library: metric
           display:
             field: sessions
@@ -225,11 +243,13 @@ plugins:
           title: Sleep per night (hours asleep)
           db: lifecrm
           query: >-
-            SELECT journal_date AS night, ROUND(SUM(value) / 60.0, 2) AS hours
-            FROM health_records
-            WHERE metric='sleep_session' AND status='active'
+            SELECT night, ROUND(MAX(t) / 60.0, 2) AS hours
+            FROM (SELECT journal_date AS night, COALESCE(origin_app, '') AS o,
+            SUM(value) AS t FROM health_records
+            WHERE metric='sleep_session' AND status='active' AND value IS NOT NULL
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
+            GROUP BY night, o)
             GROUP BY night ORDER BY night DESC
           library: vega-lite
           display:
@@ -257,11 +277,13 @@ plugins:
           title: Steps per day
           db: lifecrm
           query: >-
-            SELECT journal_date AS day, CAST(SUM(value) AS INTEGER) AS steps
-            FROM health_records
-            WHERE metric='steps' AND status='active'
+            SELECT day, CAST(MAX(t) AS INTEGER) AS steps
+            FROM (SELECT journal_date AS day, COALESCE(origin_app, '') AS o,
+            SUM(value) AS t FROM health_records
+            WHERE metric='steps' AND status='active' AND value IS NOT NULL
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
+            GROUP BY day, o)
             GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
@@ -290,11 +312,13 @@ plugins:
           title: Food energy per day
           db: lifecrm
           query: >-
-            SELECT journal_date AS day, ROUND(SUM(value)) AS kcal
-            FROM health_records
-            WHERE metric='nutrition' AND status='active'
+            SELECT day, ROUND(MAX(t)) AS kcal
+            FROM (SELECT journal_date AS day, COALESCE(origin_app, '') AS o,
+            SUM(value) AS t FROM health_records
+            WHERE metric='nutrition' AND status='active' AND value IS NOT NULL
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
+            GROUP BY day, o)
             GROUP BY day ORDER BY day DESC
           library: vega-lite
           display:
@@ -618,7 +642,8 @@ plugins:
       # linked to the handle an import named as its own account), `contact`
       # (one row per person, day and stream with n = distinct records - an
       # observation or entry lies on one day, so summing n never counts one
-      # twice), `person` (contact without places, merged entities or me).
+      # twice; no missed call, nothing dated after today), `person` (contact
+      # without places, merged entities or me).
       charts:
         people-in-touch:
           title: People in touch
@@ -640,6 +665,8 @@ plugins:
             AND (o.direction IS NULL OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
+            AND o.journal_date <= date('now', 'localtime')
+            AND NOT (o.stream IN ('ios_call','android_call') AND COALESCE(o.value, 1) <= 0)
             [[ AND o.journal_date >= :date_start ]]
             [[ AND o.journal_date <= :date_end ]]
             GROUP BY h.entity_id, o.journal_date, o.stream
@@ -696,6 +723,8 @@ plugins:
             AND (o.direction IS NULL OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
+            AND o.journal_date <= date('now', 'localtime')
+            AND NOT (o.stream IN ('ios_call','android_call') AND COALESCE(o.value, 1) <= 0)
             [[ AND o.journal_date >= :date_start ]]
             [[ AND o.journal_date <= :date_end ]]
           library: metric
@@ -721,6 +750,8 @@ plugins:
             AND (o.direction IS NULL OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
+            AND o.journal_date <= date('now', 'localtime')
+            AND NOT (o.stream IN ('ios_call','android_call') AND COALESCE(o.value, 1) <= 0)
             [[ AND o.journal_date >= :date_start ]]
             [[ AND o.journal_date <= :date_end ]]
             GROUP BY h.entity_id, o.journal_date, o.stream
@@ -779,6 +810,8 @@ plugins:
             AND (o.direction IS NULL OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
+            AND o.journal_date <= date('now', 'localtime')
+            AND NOT (o.stream IN ('ios_call','android_call') AND COALESCE(o.value, 1) <= 0)
             [[ AND o.journal_date >= :date_start ]]
             [[ AND o.journal_date <= :date_end ]]
             GROUP BY h.entity_id, o.journal_date, o.stream
@@ -830,6 +863,8 @@ plugins:
             AND (o.direction IS NULL OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
+            AND o.journal_date <= date('now', 'localtime')
+            AND NOT (o.stream IN ('ios_call','android_call') AND COALESCE(o.value, 1) <= 0)
             [[ AND o.journal_date >= :date_start ]]
             [[ AND o.journal_date <= :date_end ]]
             GROUP BY h.entity_id, o.journal_date, o.stream

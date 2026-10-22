@@ -30,7 +30,8 @@ from zoneinfo import ZoneInfo
 from . import CONTRACT_VERSION, SCHEMA_VERSION
 from .config import MENTION_ROLES, TIME_OF_DAY
 from .domain.util import DomainError, now_utc
-from .recall import HEALTH_METRICS, JOURNAL_METRICS, fmt_value
+from .recall import (CALL_STREAMS, HEALTH_METRICS, JOURNAL_METRICS, STREAM_GROUPS,
+                     TEXT_STREAMS, _health_days, fmt_value)
 from .views import entry_provenance
 
 
@@ -486,6 +487,12 @@ _MESSAGE_STREAMS = ("imessage", "sms", "rcs", "android_sms", "android_mms",
 _CALL_STREAMS = ("ios_call", "android_call")
 _CHAT_STREAMS = {"claude_chat": "Claude", "chatgpt_chat": "ChatGPT"}
 _NOT_CONTACT = ("text_reaction", "text_event")
+# What makes an entity "seen" on a day: not a contact card (dated the day the
+# contacts were exported), a tapback or thread event, or a missed call; and
+# for a person only what `ask` counts as contact (recall.last_contact) — a
+# text, a call or a calendar event.
+_NOT_SEEN = ("contact_card", *_NOT_CONTACT)
+_PERSON_SEEN = (*TEXT_STREAMS, *CALL_STREAMS, *STREAM_GROUPS["calendar"])
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
              "Saturday", "Sunday")
 _RECENT_DAYS = 14
@@ -571,6 +578,41 @@ def _snip(text: str | None, n: int = 80) -> str:
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
+# What can start Markdown, Obsidian or HTML syntax in a line of text: images
+# and links (![](https://...) makes Obsidian fetch the URL when the note
+# opens), <img> and other HTML, [[wikilinks]], $math$, ^block ids, emphasis,
+# code spans, table pipes and the backslash itself, always; '==' highlights,
+# '~~' strikes and '%%' comments (which hide the rest of a note) only as the
+# pairs they are; a '#' that would begin a tag — not one inside a word, so
+# 'page#section' in a link stays as it was.
+_MD_ALWAYS = re.compile(r"([\\`*\[\]<>|$^])")
+_MD_PAIRED = re.compile(r"={2,}|~{2,}|%{2,}")
+_MD_TAG = re.compile(r"(?<![0-9A-Za-z])#")
+
+
+def _md_text(text: str) -> str:
+    """Imported free text made inert in Markdown: a stranger's message, an
+    invite title, a note, an AI chat's name, what a source calls a handle.
+    Each syntax character gets a backslash, which Obsidian renders as the
+    character itself, so the note reads the same and can neither fetch a
+    remote image nor add a link, tag or graph edge. Applied after _snip, so a
+    cut never splits an escape. Journal text the owner reviewed is left as
+    it was written."""
+    text = _MD_ALWAYS.sub(r"\\\1", text)
+    text = _MD_PAIRED.sub(lambda m: "".join("\\" + c for c in m.group()), text)
+    return _MD_TAG.sub(r"\\#", text)
+
+
+def _code(text: str) -> str:
+    """`text` as an inline code span that a backtick inside it cannot close
+    (and so cannot let the rest of the line out as Markdown), on one line:
+    a line break would end the list item it sits in."""
+    text = " ".join(text.split())
+    run = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    pad = " " if run else ""          # CommonMark trims one space each side
+    return f"{'`' * (run + 1)}{pad}{text}{pad}{'`' * (run + 1)}"
+
+
 def _num(value) -> str:
     v = float(value)
     if v.is_integer() and abs(v) < 1e15:
@@ -625,11 +667,16 @@ def _hm(row, tz: ZoneInfo) -> str:
     return at.strftime("%H:%M") if at else row["started_at"][11:16]
 
 
-def _callout(head: str, text: str) -> list[str]:
+def _callout(head: str, text: str, *, imported: bool = False) -> list[str]:
+    """A quote callout; `imported` text (an observed row's) is escaped line by
+    line, the owner's own transcript is quoted as spoken."""
     body = text.strip()
     if len(body) > _EXCERPT_MAX:
         body = body[:_EXCERPT_MAX - 1].rstrip() + "…"
-    return [f"> [!quote] {head}"] + [f"> {ln}".rstrip() for ln in body.splitlines()]
+    lines = body.splitlines()
+    if imported:
+        lines = [_md_text(ln) for ln in lines]
+    return [f"> [!quote] {head}"] + [f"> {ln}".rstrip() for ln in lines]
 
 
 def _render(lines: list[str]) -> str:
@@ -678,23 +725,40 @@ def _day_measurements(conn, jd: str) -> tuple[dict, list[str]]:
 
 def _health_line(conn, jd: str) -> str | None:
     """Sleep, steps, workouts and weight from the sensor tier, citing the
-    export file(s) — the provenance anchor of a health record."""
+    export file(s) — the provenance anchor of a health record.
+
+    Sleep, steps and workouts are the day's numbers by the rule `ask` and the
+    web UI use (recall._health_days): when two apps recorded the day —
+    Samsung Health and Google Fit writing the same walk, an iPhone and a
+    Watch counting the same steps — the one with the larger total, never
+    both added up."""
     rows = {r["metric"]: r for r in conn.execute(
-        "SELECT metric, SUM(value) AS total, AVG(value) AS mean, COUNT(*) AS n "
+        "SELECT metric, AVG(value) AS mean, COUNT(*) AS n "
         "FROM health_records WHERE journal_date=? AND status='active' "
         "GROUP BY metric ORDER BY metric", (jd,))}
     if not rows:
         return None
+    window = {"start": jd, "end": jd}
+
+    def day_total(metric: str) -> tuple[float | None, int]:
+        """(total, records) from the app the day's number comes from."""
+        found = _health_days(conn, metric, HEALTH_METRICS[metric], window)[0]
+        return (found[0][1], found[0][2]) if found else (None, rows[metric]["n"])
+
     parts = []
-    if "sleep_session" in rows and rows["sleep_session"]["total"] is not None:
-        hours = rows["sleep_session"]["total"] * HEALTH_METRICS["sleep_session"]["factor"]
-        parts.append(f"sleep {_amount(round(hours, 1), 'h')}")
-    if "steps" in rows and rows["steps"]["total"] is not None:
-        parts.append(_amount(round(rows["steps"]["total"]), "steps"))
+    if "sleep_session" in rows:
+        total, _ = day_total("sleep_session")
+        if total is not None:
+            hours = total * HEALTH_METRICS["sleep_session"]["factor"]
+            parts.append(f"sleep {_amount(round(hours, 1), 'h')}")
+    if "steps" in rows:
+        total, _ = day_total("steps")
+        if total is not None:
+            parts.append(_amount(round(total), "steps"))
     if "exercise_session" in rows:
-        w = rows["exercise_session"]
-        mins = f" ({_amount(round(w['total']), 'min')})" if w["total"] else ""
-        parts.append(f"{w['n']} workout{'s' if w['n'] != 1 else ''}{mins}")
+        total, n = day_total("exercise_session")
+        mins = f" ({_amount(round(total), 'min')})" if total else ""
+        parts.append(f"{n} workout{'s' if n != 1 else ''}{mins}")
     if "weight" in rows and rows["weight"]["mean"] is not None:
         parts.append(f"weight {_amount(round(rows['weight']['mean'], 2), 'kg')}")
     others = [m for m in rows if m not in
@@ -706,7 +770,8 @@ def _health_line(conn, jd: str) -> str | None:
     files = [r[0] for r in conn.execute(
         "SELECT DISTINCT source_file FROM health_records "
         "WHERE journal_date=? AND status='active' ORDER BY source_file", (jd,))]
-    shown = ", ".join(files[:3]) + (f" +{len(files) - 3}" if len(files) > 3 else "")
+    shown = ", ".join(_md_text(f) for f in files[:3]) + (
+        f" +{len(files) - 3}" if len(files) > 3 else "")
     return f"**Health** · {' · '.join(parts)} — observed, from {shown}"
 
 
@@ -787,7 +852,7 @@ def _entry_block(ctx: dict, e: dict) -> list[str]:
             text = text[o["char_start"]:o["char_end"]]
         state = "" if o["status"] == "active" else f" ({o['status']})"
         lines += _callout(f"Observed · {o['stream']}{state} · `{o['uuid']}`",
-                          text or "(no text)") + [""]
+                          text or "(no text)", imported=True) + [""]
     return lines
 
 
@@ -817,7 +882,7 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
         return f" — observed `{row['uuid']}`"
 
     def what(row) -> str:
-        return _snip(row["title"] or row["body"], 100) or row["stream"]
+        return _md_text(_snip(row["title"] or row["body"], 100)) or row["stream"]
 
     def name_key(eid):
         return (ctx["ents"][eid]["name"].casefold(), eid)
@@ -855,7 +920,7 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
         msgs = texts[eid]
         last = msgs[-1]
         streams = ", ".join(sorted({m["stream"] for m in msgs}))
-        said = _snip(last["body"] or last["title"], 80) or "[attachment]"
+        said = _md_text(_snip(last["body"] or last["title"], 80)) or "[attachment]"
         items.append(((1, *name_key(eid)),
                       f"- {len(msgs)} text{'s' if len(msgs) != 1 else ''} with "
                       f"{_entity_link(ctx, eid)} ({streams}) · latest "
@@ -868,7 +933,7 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
                       f"{cite(rs[-1])}"))
     for (stream, title), msgs in chats.items():
         items.append(((4, msgs[0]["started_at"], stream, title),
-                      f"- {_CHAT_STREAMS[stream]} chat: {_snip(title, 100)} "
+                      f"- {_CHAT_STREAMS[stream]} chat: {_md_text(_snip(title, 100))} "
                       f"({len(msgs)} message{'s' if len(msgs) != 1 else ''})"
                       f"{cite(msgs[0])}"))
 
@@ -944,13 +1009,21 @@ def _day_note(ctx: dict, jd: str, prev: str | None, nxt: str | None) -> str:
 
 
 def _entity_facts(conn: sqlite3.Connection) -> dict[int, dict]:
-    """Per entity: aliases, journal days, observed days, handles, and the
-    latest observed contact — gathered in a few passes, not per entity."""
+    """Per entity: aliases, journal days, observed days, the observed days it
+    was seen on, handles, and the latest observed contact — gathered in a few
+    passes, not per entity.
+
+    "Seen" (first and last seen, the latest contact) leaves out what is not
+    an encounter (_NOT_SEEN, a missed call; for a person anything but a text,
+    call or calendar event) and anything dated after the newest import. A
+    calendar export reaches months ahead, and next week's meeting has not
+    been seen yet. The newest import's time stands in for "now", so the same
+    database still renders the same vault on any day."""
     facts: dict[int, dict] = {}
 
     def f(eid):
         return facts.setdefault(eid, {"aliases": [], "journal": {}, "observed": {},
-                                      "handles": [], "latest_obs": None})
+                                      "seen": set(), "handles": [], "latest_obs": None})
 
     for r in conn.execute("SELECT entity_id, alias FROM entity_aliases "
                           "ORDER BY entity_id, alias"):
@@ -964,11 +1037,12 @@ def _entity_facts(conn: sqlite3.Connection) -> dict[int, dict]:
     for r in conn.execute("SELECT * FROM entity_handles WHERE entity_id IS NOT NULL "
                           "ORDER BY entity_id, kind, value"):
         f(r["entity_id"])["handles"].append(dict(r))
-    linked = ("FROM entity_handles h "
-              "JOIN observation_participants p "
-              "  ON h.kind=p.handle_kind AND h.value=p.handle_value "
-              "JOIN observations o ON o.id=p.observation_id "
-              "WHERE h.entity_id IS NOT NULL AND o.status='active' ")
+    joins = ("FROM entity_handles h "
+             "JOIN observation_participants p "
+             "  ON h.kind=p.handle_kind AND h.value=p.handle_value "
+             "JOIN observations o ON o.id=p.observation_id ")
+    live = "WHERE h.entity_id IS NOT NULL AND o.status='active' "
+    linked = joins + live
     for r in conn.execute(
             "SELECT h.entity_id, o.journal_date, o.stream, "
             "COUNT(DISTINCT o.id) AS n " + linked +
@@ -976,23 +1050,40 @@ def _entity_facts(conn: sqlite3.Connection) -> dict[int, dict]:
             "ORDER BY h.entity_id, o.journal_date, o.stream"):
         day = f(r["entity_id"])["observed"].setdefault(r["journal_date"], {})
         day[r["stream"]] = r["n"]
-    marks = ",".join("?" for _ in _NOT_CONTACT)
+
+    def marks(items) -> str:
+        return ",".join("?" for _ in items)
+
+    as_of = conn.execute("SELECT MAX(started_at) FROM imports").fetchone()[0] or ""
+    seen_from = (joins + "JOIN entities et ON et.id=h.entity_id " + live +
+                 f"AND o.stream NOT IN ({marks(_NOT_SEEN)}) "
+                 f"AND NOT (o.stream IN ({marks(CALL_STREAMS)}) "
+                 "AND COALESCE(o.value, 1) <= 0) "
+                 "AND o.started_at <= ? "
+                 f"AND (et.type <> 'person' OR o.stream IN ({marks(_PERSON_SEEN)})) ")
+    seen_args = (*_NOT_SEEN, *CALL_STREAMS, as_of, *_PERSON_SEEN)
+    for r in conn.execute("SELECT DISTINCT h.entity_id, o.journal_date " + seen_from,
+                          seen_args):
+        f(r["entity_id"])["seen"].add(r["journal_date"])
     for r in conn.execute(
             "SELECT * FROM (SELECT h.entity_id AS eid, o.uuid, o.stream, "
             "o.started_at, o.utc_offset_sec, o.journal_date, o.title, o.body, "
             "ROW_NUMBER() OVER (PARTITION BY h.entity_id "
-            "  ORDER BY o.started_at DESC, o.uuid DESC) AS rn " + linked +
-            f"AND o.stream NOT IN ({marks})) WHERE rn=1", _NOT_CONTACT):
+            "  ORDER BY o.started_at DESC, o.uuid DESC) AS rn " + seen_from +
+            ") WHERE rn=1", seen_args):
         f(r["eid"])["latest_obs"] = dict(r)
     return facts
 
 
-_EMPTY_FACTS = {"aliases": [], "journal": {}, "observed": {}, "handles": [],
-                "latest_obs": None}
+_EMPTY_FACTS = {"aliases": [], "journal": {}, "observed": {}, "seen": set(),
+                "handles": [], "latest_obs": None}
 
 
 def _seen_span(facts: dict) -> tuple[str | None, str | None]:
-    days = sorted(set(facts["journal"]) | set(facts["observed"]))
+    """First and last seen: the journal days plus the observed days that were
+    an encounter (_entity_facts' "seen") — never a contact card's export date
+    or an upcoming event."""
+    days = sorted(set(facts["journal"]) | facts["seen"])
     return (days[0], days[-1]) if days else (None, None)
 
 
@@ -1029,7 +1120,7 @@ def _entity_note(ctx: dict, ent: dict, facts: dict) -> str:
     if obs:
         at = _local(obs["started_at"], obs["utc_offset_sec"], tz)
         when = at.strftime("%Y-%m-%d %H:%M") if at else obs["started_at"]
-        said = _snip(obs["body"] or obs["title"], 80)
+        said = _md_text(_snip(obs["body"] or obs["title"], 80))
         latest.append(((obs["journal_date"], 1),
                        f"- observed · {when} · {obs['stream']}"
                        + (f" — “{said}”" if said else "")
@@ -1042,9 +1133,10 @@ def _entity_note(ctx: dict, ent: dict, facts: dict) -> str:
     if facts["handles"]:
         lines += ["## Handles", ""]
         for h in facts["handles"]:
-            bits = [f"- {h['kind']} `{h['value']}`"]
+            bits = [f"- {h['kind']} {_code(h['value'])}"]
             if h["display_name"]:
-                bits.append(f"the source calls it “{h['display_name']}”")
+                # the name a sender or a contacts export gave it: not ours
+                bits.append(f"the source calls it “{_md_text(_snip(h['display_name'], 120))}”")
             bits.append(f"{h['observation_count']:,} observation"
                         f"{'s' if h['observation_count'] != 1 else ''}")
             if h["observation_count"]:

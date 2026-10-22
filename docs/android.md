@@ -214,8 +214,9 @@ directly; Samsung Health writes into Health Connect.
    exercise, heart rate, nutrition). **(verify)** the menu path.
 2. Health Connect itself: on Android 14 and later it is part of the system
    (Settings › search "Health Connect"). Under *App permissions*, let **only
-   one app write each metric** — Samsung Health *and* Google Fit both writing
-   steps doubles every daily total.
+   one app write each metric** — with Samsung Health *and* Google Fit both
+   writing steps, each day's total is whichever app counted more (never the
+   two added up), so one app's partial day can stand in for the other's.
 3. Health Connect › **Export / Scheduled export** **(verify)**: daily, to a
    folder the computer can reach (Google Drive, or OneDrive if it is offered
    as a destination).

@@ -144,9 +144,11 @@ Sleep is handled already: the iPhone's Bedtime schedule writes "in bed" only,
 which is stored with its in-bed minutes in detail and **no value**, so
 nothing sums it next to the watch's night.
 
-For steps, distance and energy, the dashboards and `ask` currently add up a
-day's rows, so a day both devices recorded is counted twice. Until they take
-the busiest device per day instead, check what you have with:
+For steps, distance and energy, a day both devices recorded is never counted
+twice: `ask`, the web UI, the Obsidian export and the Health dashboards add
+up each device's rows and take the device with the larger total for that
+day. The warning is still worth reading — that day's number is one device's
+count, not both merged. Check what you have with:
 
 ```
 python -m lifecrm sql "SELECT metric, origin_app, COUNT(*) n, MIN(journal_date) first, MAX(journal_date) last FROM health_records WHERE status='active' GROUP BY metric, origin_app ORDER BY metric, n DESC" --json

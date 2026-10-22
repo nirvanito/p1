@@ -1223,6 +1223,7 @@ async function viewPerson(id) {
       p.notes ? h("div", { class: "small", style: "margin-top:4px" }, p.notes) : null));
   const parts = [head];
 
+  if (p.is_owner) parts.push(h("p", { class: "muted small" }, "This is you: one of these handles is the phone or account your imports came from, so " + first + " is in every text, call and meeting. Not listed under People, and no last contact."));
   const lc = p.last_contact;
   const lastTiles = [];
   if (lc) lastTiles.push(h("div", { class: "tile" }, h("div", { class: "label" }, "Last contact"), h("div", { class: "value" }, relDay(lc.date)), h("div", { class: "note" }, lc.tier === "observed" ? "observed · " + streamLabel(lc.observation.stream) : "journal entry")));
@@ -1231,7 +1232,7 @@ async function viewPerson(id) {
   if (lc && lc.entry) lastTiles.push(h("a", { class: "tile", href: "#/entry/" + lc.entry.uuid, style: "color:inherit;text-decoration:none" }, h("div", { class: "label" }, "Last journal mention"), h("div", { class: "value" }, relDay(lc.entry.date)), h("div", { class: "note" }, lc.entry.title)));
   lastTiles.push(h("div", { class: "tile" }, h("div", { class: "label" }, "In your journal"), h("div", { class: "value" }, String(p.mention_count)), h("div", { class: "note" }, "entries")));
   parts.push(h("div", { class: "tiles" }, lastTiles));
-  parts.push(h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "chip", href: "#/ask?q=" + encodeURIComponent("when did I last talk to " + first) }, icon("ask"), "Ask: when did I last talk to " + first + "?")));
+  if (!p.is_owner) parts.push(h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "chip", href: "#/ask?q=" + encodeURIComponent("when did I last talk to " + first) }, icon("ask"), "Ask: when did I last talk to " + first + "?")));
 
   for (const card of p.contact_cards || []) {
     parts.push(section("Contact card", null, h("div", { class: "card", style: "background:var(--observed-soft);border:1px dashed var(--observed-border);box-shadow:none" },
@@ -1248,6 +1249,10 @@ async function viewPerson(id) {
     parts.push(h("div", { class: "row", style: "margin-top:14px" }, p.streams.map(st => h("span", { class: "badge obs" }, streamLabel(st.stream) + " · " + st.count))));
   }
   parts.push(section("Journal mentions", p.mention_count, p.mentions.length ? h("div", { class: "list" }, p.mentions.map(m => entryRow({ ...m, entities: [], measurements: [] }, { showDate: true }))) : h("div", { class: "muted small" }, "Not mentioned in a reviewed entry yet.")));
+  if ((p.upcoming || []).length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Upcoming"), h("div", { class: "tier-note" }, "Dated after today — on the calendar, not contact yet."),
+      h("div", { class: "list observed" }, p.upcoming.map(o => obsRow(o, { showDate: true, showStream: true })))));
+  }
   if ((p.observations || []).length) {
     parts.push(h("section", { class: "section" }, h("h3", null, "Recent observed records"), h("div", { class: "tier-note" }, "Texts, calls and chats that name one of " + first + "'s handles — imported, not reviewed."),
       h("div", { class: "list observed" }, p.observations.map(o => obsRow(o, { showDate: true, showStream: true })))));
@@ -1354,9 +1359,15 @@ async function viewHealth(daysArg) {
   const days = Number(daysArg) || Number(store("healthDays")) || 14;
   const seg = h("div", { class: "seg", role: "group", "aria-label": "Window" }, [14, 30].map(n =>
     h("button", { type: "button", "aria-pressed": String(n === days), onclick: () => { store("healthDays", String(n)); location.hash = "#/health/" + n; } }, n + " days")));
-  const dash = STATUS && STATUS.dashboards && STATUS.dashboards.running
-    ? h("a", { class: "btn", href: location.protocol + "//" + location.hostname + ":" + STATUS.dashboards.port + "/-/dashboards/health", target: "_blank", rel: "noopener noreferrer" }, "Full dashboards", icon("ext"))
-    : null;
+  // The server probed the dashboards at this page's own host name, so the
+  // link is offered only where it would open; on a phone with Datasette
+  // listening on the laptop's loopback, say why there is none.
+  const ds = STATUS && STATUS.dashboards;
+  const dash = ds && ds.running
+    ? h("a", { class: "btn", href: location.protocol + "//" + location.hostname + ":" + ds.port + "/-/dashboards/health", target: "_blank", rel: "noopener noreferrer" }, "Full dashboards", icon("ext"))
+    : ds && ds.local_only
+      ? h("span", { class: "muted small" }, "Full dashboards are open on the computer only — start them with ", h("code", null, "lifecrm dashboard --host 0.0.0.0"), " to open them here")
+      : null;
   const head = pageHead("Health", "What your phone and watch recorded, beside what you said.", h("div", { class: "row" }, seg, dash));
   setView(head, skeleton(3));
   let d;

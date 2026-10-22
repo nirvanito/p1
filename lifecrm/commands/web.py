@@ -69,8 +69,7 @@ def serve(
         typer.echo(line)
     if open_browser:
         import webbrowser
-        webbrowser.open(f"http://127.0.0.1:{actual}/"
-                        + (f"?k={token}" if token else ""))
+        webbrowser.open(web_server.local_url(actual, token))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

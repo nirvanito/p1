@@ -10,9 +10,12 @@ come back under separate keys, and every observed row carries its uuid and
 the import that brought it in, so the page can cite it rather than assert it
 (CLAUDE.md: observed rows are never stated as fact without citing the row).
 
-Health numbers come from recall's own series function, and day aggregates use
-recall.HEALTH_METRICS, so the Health page, the day view and `ask` can never
-disagree about what a day's sleep or steps were.
+Health numbers come from recall's own per-day rule (recall._health_days: a
+summed metric takes the one app with the larger total, an averaged one pools
+them), for the Health page's series and the day view's tiles alike, so they
+and `ask` can never disagree about what a day's sleep or steps were. "Last
+contact" is recall.last_contact's rule too: a text, a call that connected or
+a calendar event, nothing dated after today.
 """
 
 from __future__ import annotations
@@ -34,9 +37,16 @@ class NotFound(LookupError):
 
 # ---------------------------------------------------------------- helpers
 
-# Streams a contact card or a calendar invite is not: what "last contact"
-# means when it is read off the observed tier.
+# A contact card is not a record of anything that happened with the person:
+# it stays off the recent-records list (it has its own panel).
 NOT_CONTACT_STREAMS = ("contact_card",)
+
+# Whose side of a directed record the person is on, for the "you → them" and
+# "them → you" tiles: an incoming record is from its sender, an outgoing one
+# to its recipients, and a call log names only the other number, as a plain
+# participant. A group message Jake sent is not one from Maya, who was only
+# in the room (review._contacts reads roles the same way).
+_THEIR_ROLES = {"in": ("sender", "participant"), "out": ("recipient", "participant")}
 
 # Health metrics in the order the day view and the Health page show them.
 HEALTH_ORDER = ("sleep_session", "steps", "resting_heart_rate", "heart_rate",
@@ -356,29 +366,42 @@ _TIME_ORDER = ("CASE e.time_of_day WHEN 'morning' THEN 1 WHEN 'afternoon' THEN 2
 
 
 def _day_health(conn: sqlite3.Connection, journal_date: str) -> list[dict]:
+    """The day's sensor numbers, each by the rule `ask` and the Health page
+    use (recall._health_days). Samsung Health and Google Fit both write the
+    same walk into Health Connect, and an iPhone and a Watch both count the
+    same steps, so a summed metric takes the one app with the larger total
+    rather than adding them; `origin_app` names it when more than one
+    recorded the day. A metric recall has no spec for is averaged."""
     rows = conn.execute(
-        "SELECT metric, SUM(value) AS total, AVG(value) AS mean, COUNT(*) AS n, "
+        "SELECT metric, AVG(value) AS mean, COUNT(*) AS n, "
         "MAX(unit) AS unit, GROUP_CONCAT(DISTINCT source_file) AS files "
         "FROM health_records WHERE journal_date=? AND status='active' "
         "AND value IS NOT NULL GROUP BY metric", (journal_date,)).fetchall()
     by_metric = {r["metric"]: r for r in rows}
     order = list(HEALTH_ORDER) + sorted(m for m in by_metric if m not in HEALTH_ORDER)
+    window = {"start": journal_date, "end": journal_date}
     out = []
     for metric in order:
         r = by_metric.get(metric)
         if r is None:
             continue
         spec = recall.HEALTH_METRICS.get(metric)
+        origin = None
+        files = sorted((r["files"] or "").split(",")) if r["files"] else []
         if spec:
-            raw = r["total"] if spec["agg"] == "sum" else r["mean"]
+            found, _, _, files = recall._health_days(conn, metric, spec, window)
+            _, raw, records, origin = found[0]
             value = recall._round(raw * spec.get("factor", 1), spec["unit"])
             unit, label, agg = spec["unit"], spec["label"], spec["agg"]
         else:
             value, unit, label, agg = round(r["mean"], 2), r["unit"] or "", metric, "avg"
-        out.append({"metric": metric, "label": label, "value": value,
-                    "unit": unit, "agg": agg, "records": r["n"],
-                    "origin": "sensor import",
-                    "source_files": sorted((r["files"] or "").split(",")) if r["files"] else []})
+            records = r["n"]
+        item = {"metric": metric, "label": label, "value": value,
+                "unit": unit, "agg": agg, "records": records,
+                "origin": "sensor import", "source_files": files}
+        if origin is not None:
+            item["origin_app"] = origin
+        out.append(item)
     return out
 
 
@@ -509,14 +532,60 @@ def _merged_into_map(conn: sqlite3.Connection) -> dict[int, int]:
     return out
 
 
+def _owner_entities(conn: sqlite3.Connection, roots: dict[int, int]) -> set[int]:
+    """The entities that are the owner: linked to a handle that sends the
+    outgoing records, that a live import names as its own account, or that
+    the source itself labels as the owner ('you (this phone)'). The owner
+    takes part in every text, call and meeting, so listed as a person they
+    would head People as the most recently contacted — review._load_people
+    and the dashboards' `me` leave them out the same way."""
+    if not _observed(conn):
+        return set()
+    senders = {(r["handle_kind"], r["handle_value"].lower()) for r in conn.execute(
+        "SELECT DISTINCT p.handle_kind, p.handle_value FROM observation_participants p "
+        "JOIN observations o ON o.id=p.observation_id "
+        "WHERE o.direction='out' AND p.role='sender'")}
+    accounts = {r["account"].lower() for r in conn.execute(
+        "SELECT DISTINCT account FROM imports WHERE account IS NOT NULL "
+        "AND status <> 'retracted'")}
+    owners = set()
+    for r in conn.execute("SELECT kind, value, display_name, entity_id FROM "
+                          "entity_handles WHERE entity_id IS NOT NULL"):
+        value = r["value"].lower()
+        if ((r["kind"], value) in senders or value in accounts
+                or (r["display_name"] or "").lower().startswith("you (")):
+            owners.add(roots.get(r["entity_id"], r["entity_id"]))
+    return owners
+
+
+def _contact_clause(today_iso: str) -> tuple[str, list]:
+    """What counts as contact with someone — the rule `ask` answers 'when did
+    I last talk to X' with (recall.last_contact): a text, a call that
+    connected, or a calendar event, never dated after today. A missed call
+    is an attempt, a reaction or a note is not a conversation, and next
+    week's meeting has not happened yet."""
+    texts, calls = recall.TEXT_STREAMS, recall.CALL_STREAMS
+    calendar = recall.STREAM_GROUPS["calendar"]
+    return ((f"(o.stream IN ({_marks(texts)}) OR o.stream IN ({_marks(calendar)}) "
+             f"OR (o.stream IN ({_marks(calls)}) "
+             "AND (o.value IS NULL OR o.value > 0))) AND o.journal_date <= ?"),
+            [*texts, *calendar, *calls, today_iso])
+
+
+_RECENT_FIRST = "o.journal_date DESC, o.started_at DESC, o.id DESC"
+
+
 def people(conn: sqlite3.Connection, cfg: Config) -> dict:
     """Every person entity with when you were last in touch, across both
-    tiers: the latest journal entry mentioning them and the latest observed
-    record (text, call, chat) naming one of their handles."""
+    tiers: the latest journal entry mentioning them and the latest text,
+    connected call or past calendar event naming one of their handles. The
+    owner is not a contact and is left out."""
     roots = _merged_into_map(conn)
-    persons = conn.execute(
+    owners = _owner_entities(conn, roots)
+    now = today(cfg)
+    persons = [p for p in conn.execute(
         "SELECT id, uuid, name, notes FROM entities WHERE type='person' "
-        "AND status='active' ORDER BY name COLLATE NOCASE").fetchall()
+        "AND status='active' ORDER BY name COLLATE NOCASE") if p["id"] not in owners]
     aliases: dict[int, list] = {}
     for r in conn.execute("SELECT entity_id, alias FROM entity_aliases ORDER BY alias"):
         aliases.setdefault(roots.get(r["entity_id"], r["entity_id"]), []).append(r["alias"])
@@ -531,20 +600,23 @@ def people(conn: sqlite3.Connection, cfg: Config) -> dict:
                               "WHERE entity_id IS NOT NULL GROUP BY entity_id"):
             eid = roots.get(r["entity_id"], r["entity_id"])
             handles[eid] = handles.get(eid, 0) + r["n"]
+        contact, contact_args = _contact_clause(now)
         for r in conn.execute(
                 "SELECT h.entity_id, COUNT(DISTINCT o.id) AS n, "
-                "MAX(o.journal_date) AS last FROM entity_handles h "
+                f"MAX(CASE WHEN {contact} THEN o.journal_date END) AS last "
+                "FROM entity_handles h "
                 "JOIN observation_participants p ON p.handle_kind=h.kind "
                 "AND p.handle_value=h.value "
                 "JOIN observations o ON o.id=p.observation_id "
                 "WHERE h.entity_id IS NOT NULL AND o.status='active' "
                 f"AND o.stream NOT IN ({_marks(NOT_CONTACT_STREAMS)}) "
-                "GROUP BY h.entity_id", NOT_CONTACT_STREAMS):
+                "GROUP BY h.entity_id", (*contact_args, *NOT_CONTACT_STREAMS)):
             eid = roots.get(r["entity_id"], r["entity_id"])
             prev = observed.get(eid)
             observed[eid] = {"n": r["n"] + (prev["n"] if prev else 0),
                              "last": max(filter(None, [r["last"],
-                                                       prev and prev["last"]]))}
+                                                       prev and prev["last"]]),
+                                         default=None)}
     out = []
     for p in persons:
         m = mentions.get(p["id"])
@@ -566,12 +638,14 @@ def people(conn: sqlite3.Connection, cfg: Config) -> dict:
     # Most recent contact first; a stable sort keeps the never-contacted in
     # name order at the end.
     out.sort(key=lambda x: (x["last_contact"] or {}).get("date") or "", reverse=True)
-    return {"today": today(cfg), "people": out}
+    return {"today": now, "people": out}
 
 
 def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
     """One entity across both tiers: aliases, linked handles, journal
-    mentions, recent observed records, contact-card fields, last contact."""
+    mentions, recent observed records (and upcoming ones, apart), contact-card
+    fields, last contact. On the owner's own page (`is_owner`) there is no
+    last contact: every record they took part in would claim to be one."""
     row = conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)).fetchone()
     if row is None:
         raise NotFound(f"entity id={entity_id} does not exist")
@@ -579,9 +653,11 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
     # Merging moves mentions but leaves handles on the merged entity, so the
     # survivor's view includes everything merged into it.
     ids = [entity_id] + [e for e, root in roots.items() if root == entity_id]
+    now = today(cfg)
+    is_owner = roots.get(entity_id, entity_id) in _owner_entities(conn, roots)
     out = {"id": row["id"], "uuid": row["uuid"], "name": row["name"],
            "type": row["type"], "notes": row["notes"], "status": row["status"],
-           "merged_into": roots.get(entity_id), "today": today(cfg)}
+           "merged_into": roots.get(entity_id), "today": now, "is_owner": is_owner}
     out["aliases"] = [r["alias"] for r in conn.execute(
         f"SELECT DISTINCT alias FROM entity_aliases WHERE entity_id IN ({_marks(ids)}) "
         "ORDER BY alias", ids)]
@@ -595,7 +671,7 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
         "SELECT COUNT(DISTINCT m.entry_id) AS c FROM mentions m "
         "JOIN entries e ON e.id=m.entry_id "
         f"WHERE m.entity_id IN ({_marks(ids)}) AND e.status='active'", ids).fetchone()["c"]
-    out.update({"handles": [], "observations": [], "streams": [],
+    out.update({"handles": [], "observations": [], "upcoming": [], "streams": [],
                 "contact_cards": [], "last_contact": None,
                 "last_in": None, "last_out": None})
     latest_entry = out["mentions"][0] if out["mentions"] else None
@@ -606,33 +682,57 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
             "last_seen_at, confirmed_at FROM entity_handles "
             f"WHERE entity_id IN ({_marks(ids)}) "
             "ORDER BY observation_count DESC, kind, value", ids)]
-        involving = ("o.id IN (SELECT p.observation_id FROM observation_participants p "
-                     "JOIN entity_handles h ON h.kind=p.handle_kind "
-                     "AND h.value=p.handle_value "
-                     f"WHERE h.entity_id IN ({_marks(ids)})) AND o.status='active' ")
-        contact = f"AND o.stream NOT IN ({_marks(NOT_CONTACT_STREAMS)}) "
+
+        def party(roles: tuple[str, ...] = ()) -> tuple[str, list]:
+            """Observations naming one of the person's handles — in one of
+            `roles` when given."""
+            role = f"AND p.role IN ({_marks(roles)}) " if roles else ""
+            return ("o.id IN (SELECT p.observation_id FROM observation_participants p "
+                    "JOIN entity_handles h ON h.kind=p.handle_kind "
+                    "AND h.value=p.handle_value "
+                    f"WHERE h.entity_id IN ({_marks(ids)}) {role}) "
+                    "AND o.status='active' ", [*ids, *roles])
+
+        involving, args = party()
+        not_card = f"AND o.stream NOT IN ({_marks(NOT_CONTACT_STREAMS)}) "
         rows = conn.execute(
-            _OBS_SELECT + "WHERE " + involving + contact +
+            _OBS_SELECT + "WHERE " + involving + not_card + "AND o.journal_date <= ? "
             "ORDER BY o.started_at DESC, o.id DESC LIMIT 30",
-            (*ids, *NOT_CONTACT_STREAMS)).fetchall()
+            (*args, *NOT_CONTACT_STREAMS, now)).fetchall()
         out["observations"] = _obs_items(conn, cfg, rows)
+        # A calendar export reaches months ahead: the next few events are
+        # shown apart, never as "recent".
+        rows = conn.execute(
+            _OBS_SELECT + "WHERE " + involving + not_card + "AND o.journal_date > ? "
+            "ORDER BY o.journal_date, o.started_at, o.id LIMIT 5",
+            (*args, *NOT_CONTACT_STREAMS, now)).fetchall()
+        out["upcoming"] = _obs_items(conn, cfg, rows)
         out["streams"] = [dict(r) for r in conn.execute(
             "SELECT o.stream, COUNT(*) AS count, MAX(o.started_at) AS latest "
             "FROM observations o WHERE " + involving +
-            "GROUP BY o.stream ORDER BY count DESC", ids)]
+            "GROUP BY o.stream ORDER BY count DESC", args)]
         cards = conn.execute(
             _OBS_SELECT + "WHERE " + involving + "AND o.stream='contact_card' "
-            "ORDER BY o.started_at DESC LIMIT 3", ids).fetchall()
+            "ORDER BY o.started_at DESC LIMIT 3", args).fetchall()
         out["contact_cards"] = [
             {**item, "fields": _card_fields(_loads(r["value_json"]))}
             for item, r in zip(_obs_items(conn, cfg, cards, full=True), cards)]
-        latest_obs = out["observations"][0] if out["observations"] else None
-        for direction in ("in", "out"):
+        if not is_owner:
+            contact, contact_args = _contact_clause(now)
             hit = conn.execute(
-                _OBS_SELECT + "WHERE " + involving + contact +
-                "AND o.direction=? ORDER BY o.started_at DESC, o.id DESC LIMIT 1",
-                (*ids, *NOT_CONTACT_STREAMS, direction)).fetchall()
-            out[f"last_{direction}"] = _obs_items(conn, cfg, hit)[0] if hit else None
+                _OBS_SELECT + "WHERE " + involving + f"AND {contact} "
+                f"ORDER BY {_RECENT_FIRST} LIMIT 1", (*args, *contact_args)).fetchall()
+            latest_obs = _obs_items(conn, cfg, hit)[0] if hit else None
+            for direction, roles in _THEIR_ROLES.items():
+                theirs, their_args = party(roles)
+                hit = conn.execute(
+                    _OBS_SELECT + "WHERE " + theirs + f"AND {contact} "
+                    "AND o.direction=? "
+                    f"ORDER BY {_RECENT_FIRST} LIMIT 1",
+                    (*their_args, *contact_args, direction)).fetchall()
+                out[f"last_{direction}"] = _obs_items(conn, cfg, hit)[0] if hit else None
+    if is_owner:
+        latest_entry = None
     if latest_entry or latest_obs:
         observed_wins = latest_obs is not None and (
             latest_entry is None or latest_obs["date"] > latest_entry["date"])

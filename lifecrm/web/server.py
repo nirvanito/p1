@@ -49,7 +49,7 @@ from contextlib import contextmanager
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .. import db as db_mod
 from .. import platforms, recall
@@ -86,6 +86,19 @@ class Unavailable(RuntimeError):
 def web_settings(cfg: Config) -> dict:
     value = (cfg.extra or {}).get("web")
     return value if isinstance(value, dict) else {}
+
+
+def key_query(token: str | None) -> str:
+    """'?k=<token>' as it goes into a link, percent-encoded: the server reads
+    the key back through parse_qs, which turns a raw '+' into a space and
+    stops at '&' (and a browser drops everything after '#'), so a key of
+    your own like 'a+b' would print a link that answers 401."""
+    return f"?k={quote(token, safe='')}" if token else ""
+
+
+def local_url(port: int, token: str | None) -> str:
+    """The page on this computer, with the key when there is one."""
+    return f"http://127.0.0.1:{port}/{key_query(token)}"
 
 
 def flag(value, default: bool) -> bool:
@@ -275,7 +288,7 @@ class WebApp:
         self._transcribe_lock = threading.Lock()
         self._probe_lock = threading.Lock()
         self._llm_state: tuple[float, dict] | None = None
-        self._dash_state: tuple[float, bool] | None = None
+        self._dash_state: dict[str, tuple[float, bool]] = {}
 
     def host_allowed(self, name: str) -> bool:
         """A Host name that is this machine's own, or listed in [web]
@@ -308,19 +321,34 @@ class WebApp:
             self._llm_state = (time.monotonic(), state)
         return state
 
-    def dashboards_running(self) -> bool:
+    def dashboards_running(self, host: str = "127.0.0.1") -> bool:
+        """Whether Datasette answers on `host` — the name the browser used for
+        this page, which is where the page's link to it will point.
+        `lifecrm dashboard` listens on 127.0.0.1 unless told otherwise, so a
+        probe of the laptop's own loopback says nothing about the phone,
+        whose link goes to the laptop's LAN address."""
         with self._probe_lock:
-            if self._dash_state and time.monotonic() - self._dash_state[0] < 10:
-                return self._dash_state[1]
+            cached = self._dash_state.get(host)
+            if cached and time.monotonic() - cached[0] < 10:
+                return cached[1]
         try:
-            with socket.create_connection(("127.0.0.1", self.dashboard_port),
-                                          timeout=0.25):
+            with socket.create_connection((host, self.dashboard_port), timeout=0.25):
                 running = True
         except OSError:
             running = False
         with self._probe_lock:
-            self._dash_state = (time.monotonic(), running)
+            self._dash_state[host] = (time.monotonic(), running)
         return running
+
+    def dashboards_state(self, host: str) -> dict:
+        """The Health page's link to the full dashboards: shown only when they
+        answer at the address the page would link to; `local_only` when they
+        run on this computer but not there (a phone, Datasette on loopback)."""
+        running = self.dashboards_running(host)
+        local_only = (not running and not is_loopback(host)
+                      and self.dashboards_running("127.0.0.1"))
+        return {"port": self.dashboard_port, "running": running,
+                "local_only": local_only}
 
     # ---- voice
 
@@ -421,8 +449,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         if self._cookie:
-            self.send_header("Set-Cookie", f"{COOKIE}={self.app.token}; Path=/; "
-                                           f"HttpOnly; SameSite=Lax; Max-Age=31536000")
+            # Encoded like the link: a raw ';', ',' or space would end the
+            # cookie's value early.
+            self.send_header("Set-Cookie", f"{COOKIE}={quote(self.app.token, safe='')}; "
+                                           f"Path=/; HttpOnly; SameSite=Lax; "
+                                           f"Max-Age=31536000")
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
@@ -437,15 +468,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- gatekeeping
 
-    def _host_ok(self) -> bool:
+    def _host_name(self) -> str:
+        """The name in the request's Host header, without its port: what the
+        browser calls this machine (and what location.hostname is)."""
         host = (self.headers.get("Host") or "").strip().lower()
-        if not host:
-            return True
         if host.startswith("["):
             name = host[1:host.find("]")] if "]" in host else host
         else:
             name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
-        name = name.rstrip(".")
+        return name.rstrip(".")
+
+    def _host_ok(self) -> bool:
+        if not (self.headers.get("Host") or "").strip():
+            return True
+        name = self._host_name()
         if name == "localhost" or name.endswith(".localhost") or name.endswith(".local"):
             return True
         try:
@@ -467,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
         except CookieError:
             return False
         held = jar.get(COOKIE)
-        return held is not None and hmac.compare_digest(held.value.encode(),
+        return held is not None and hmac.compare_digest(unquote(held.value).encode(),
                                                         token.encode())
 
     def _authorized_key(self, query: dict) -> str | None:
@@ -517,7 +553,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def page(self, query):
         key = self._authorized_key(query)
-        manifest = "/manifest.webmanifest" + (f"?k={key}" if key else "")
+        manifest = "/manifest.webmanifest" + key_query(key)
         html = PAGE.read_text(encoding="utf-8").replace("{{MANIFEST}}", manifest)
         self._send(200, html.encode("utf-8"), "text/html; charset=utf-8",
                    headers=(("Content-Security-Policy", CSP),))
@@ -528,7 +564,7 @@ class Handler(BaseHTTPRequestHandler):
             "name": "Life CRM", "short_name": "Life CRM",
             "description": "Your life database: ask with citations, timeline, "
                            "people, loops, health.",
-            "start_url": "/" + (f"?k={key}" if key else ""), "scope": "/",
+            "start_url": "/" + key_query(key), "scope": "/",
             "display": "standalone", "background_color": "#0f1115",
             "theme_color": "#4f46e5",
             "icons": [
@@ -562,6 +598,14 @@ class Handler(BaseHTTPRequestHandler):
         with self.app.snapshot.reader() as conn:
             return fn(conn, self.app.cfg, *args)
 
+    def _probe_host(self) -> str:
+        """Where the dashboards link would point, as an address to probe:
+        loopback for this computer's own names, the Host name otherwise."""
+        name = self._host_name()
+        if not name or name == "localhost" or name.endswith(".localhost"):
+            return "127.0.0.1"
+        return name
+
     def status(self, query):
         out = self._read(api.status)
         snap = self.app.snapshot
@@ -573,8 +617,7 @@ class Handler(BaseHTTPRequestHandler):
             "llm": self.app.llm_state(),
             "voice": {"model": self.app.whisper_model,
                       "loaded": self.app._model is not None},
-            "dashboards": {"port": self.app.dashboard_port,
-                           "running": self.app.dashboards_running()},
+            "dashboards": self.app.dashboards_state(self._probe_host()),
             "token": bool(self.app.token),
         })
         self._json(200, out)
@@ -766,8 +809,8 @@ def is_loopback(host: str) -> bool:
 
 def banner(cfg: Config, host: str, port: int, token: str | None,
            log_questions: bool) -> list[str]:
-    key = f"?k={token}" if token else ""
-    local = f"http://127.0.0.1:{port}/{key}" if host in ("0.0.0.0", "") or \
+    key = key_query(token)
+    local = local_url(port, token) if host in ("0.0.0.0", "") or \
         is_loopback(host) else f"http://{host}:{port}/{key}"
     lines = [f"serving a read-only snapshot of {cfg.db_path} — refreshed when "
              f"the database changes; the live file is never held open",
