@@ -5,6 +5,7 @@
 #   local.lifecrm.backup          daily 21:30 (tiered retention)
 #   local.lifecrm.doctor          daily 08:00 (invariants on the live database)
 #   local.lifecrm.verify-restore  Sunday 12:00 (an untested backup is not a backup)
+#   local.lifecrm.review          Sunday 19:00 (last week's review pack, waiting for /review-week)
 # Run once, as yourself (no sudo); re-running replaces the jobs:
 #   /bin/bash scripts/install-tasks.sh             write + load the jobs
 #   /bin/bash scripts/install-tasks.sh --print     show the plists, change nothing
@@ -29,7 +30,7 @@ done
 
 AGENTS="${LIFECRM_LAUNCHAGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOGDIR="$LIFECRM_REPO/data"
-JOBS="intake backup doctor verify-restore"
+JOBS="intake backup doctor verify-restore review"
 
 # The plists are built from bash builtins only — no $(...) or cat per job.
 # Every fork is slow under Git Bash, where the tests run this on Windows.
@@ -54,6 +55,7 @@ plist_for() {
         backup) script=backup.sh; hour=21; minute=30 ;;
         doctor) script=doctor.sh; hour=8; minute=0 ;;
         verify-restore) script=verify-restore.sh; hour=12; minute=0; weekday=0 ;;
+        review) script=review.sh; hour=19; minute=0; weekday=0 ;;
     esac
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \

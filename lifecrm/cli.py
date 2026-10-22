@@ -865,7 +865,10 @@ def dashboard(
                        "find it with ipconfig (Windows) or ipconfig getifaddr en0 (Mac)")
     raise typer.Exit(subprocess.call(
         [sys.executable, "-m", "datasette", "serve", "-i", str(snap),
-         "--metadata", str(metadata), "--host", host, "--port", str(port)]))
+         "--metadata", str(metadata), "--host", host, "--port", str(port),
+         # Person cards over a few hundred thousand texts pass Datasette's
+         # 1 s default and would render blank.
+         "--setting", "sql_time_limit_ms", "5000"]))
 
 
 # ---------------------------------------------------------------- health
@@ -1087,8 +1090,16 @@ def observe(
                 _fail(f"{connector} needs a path to read — the export file or folder")
             p = finder(cfg)
         else:
-            p = Path(target)
-            if not p.exists():
+            p = Path(target).expanduser()
+            try:
+                found = p.exists()
+            except PermissionError:
+                # macOS privacy protection (TCC) raises here rather than
+                # answering False for ~/Library/Messages and friends.
+                _fail(f"cannot read {p}: permission denied — on a Mac, grant your "
+                      f"terminal app Full Disk Access (System Settings > Privacy & "
+                      f"Security > Full Disk Access) and open a new window")
+            if not found:
                 _fail(f"not found: {p}")
         scan = c.scan(p, cfg)
     except DomainError as e:

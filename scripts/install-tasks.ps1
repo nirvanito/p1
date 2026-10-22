@@ -3,6 +3,7 @@
 #   LifeCRM doctor         - daily 08:00 (the live database, after intake)
 #   LifeCRM backup         - daily 21:30 (tiered retention)
 #   LifeCRM verify-restore - weekly Sunday 12:00 (an untested backup is not a backup)
+#   LifeCRM review         - weekly Sunday 19:00 (last week's review pack, for /review-week)
 # Run once, as your own user (no admin needed); re-running replaces them:
 #   powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 
@@ -38,5 +39,8 @@ Register-LifeCrmTask "LifeCRM backup" "backup.ps1" @(
 Register-LifeCrmTask "LifeCRM verify-restore" "verify-restore.ps1" @(
     (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 12:00)
 )
+Register-LifeCrmTask "LifeCRM review" "review.ps1" @(
+    (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 19:00)
+)
 Write-Host "done - inspect with: Get-ScheduledTask -TaskName 'LifeCRM*'"
-Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log"
+Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log, data\review.log"

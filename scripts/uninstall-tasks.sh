@@ -24,7 +24,7 @@ uid=""
 if [ -n "$unload" ]; then
     uid=$(id -u)
 fi
-for job in intake backup doctor verify-restore; do
+for job in intake backup doctor verify-restore review; do
     label="local.lifecrm.$job"
     file="$AGENTS/$label.plist"
     if [ -n "$unload" ]; then

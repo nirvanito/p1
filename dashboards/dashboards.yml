@@ -204,7 +204,8 @@ plugins:
             FROM health_records
             WHERE metric='sleep_session' AND status='active'
             AND journal_date = (SELECT MAX(journal_date) FROM health_records
-            WHERE metric='sleep_session' AND status='active')),
+            WHERE metric='sleep_session' AND status='active'
+            AND value IS NOT NULL)),
             'no data') AS hours
           library: metric
           display:
