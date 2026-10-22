@@ -1,0 +1,43 @@
+# The full suite on both supported machines: Windows (laptop + Android) and
+# macOS (MacBook + iPhone). Each runner builds the project's own .venv, the
+# way setup.ps1 / setup.sh do, because the scheduled-task script tests run
+# the real scripts against it. Offline Hugging Face: no test downloads a
+# model, and none may try.
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+      HF_HUB_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Create .venv and install requirements
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          "$PY" -m pip install -q -U pip
+          "$PY" -m pip install -q -r requirements.txt
+          echo "PY=$PY" >> "$GITHUB_ENV"
+
+      - name: pytest
+        shell: bash
+        run: '"$PY" -m pytest tests -q'

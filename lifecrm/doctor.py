@@ -24,15 +24,16 @@ BACKUP_MAX_AGE_DAYS = 7
 STUCK_DRAFT_DAYS = 2
 HEALTH_STALE_DAYS = 14
 INBOX_STUCK_DAYS = 2
-# System litter the phone or OneDrive leaves beside real files.
-_INBOX_LITTER = {"desktop.ini", "thumbs.db", ".ds_store"}
+# System litter the phone, OneDrive or Finder leaves beside real files
+# ('Icon\r' is a folder's custom-icon file; the CR is part of its name).
+_INBOX_LITTER = {"desktop.ini", "thumbs.db", ".ds_store", "icon\r"}
 
 
 def _capture_checks(cfg: Config, _add) -> None:
     """The capture side. A typo in an inbox path, a recording intake fails on
     every run, and a format nothing reads all look exactly like a quiet day —
     no error anywhere, just nothing arriving. These make them visible."""
-    from .transcribe import AUDIO_EXTS, TEXT_EXTS
+    from .transcribe import AUDIO_EXTS, TEXT_EXTS, icloud_stub
     folders = [("inbox_dir", cfg.inbox_dir, AUDIO_EXTS),
                ("inbox_text_dir", cfg.inbox_text_dir, TEXT_EXTS),
                ("archive_dir", cfg.archive_dir, None)]
@@ -47,11 +48,18 @@ def _capture_checks(cfg: Config, _add) -> None:
         _add("ok", "configured_dirs")
 
     cutoff = time.time() - INBOX_STUCK_DAYS * 86400
-    stuck, unknown = [], []
+    stuck, unknown, in_cloud = [], [], []
     for name, path, exts in folders:
         if exts is None or path is None or not path.is_dir():
             continue
         for p in sorted(path.iterdir()):
+            # A hidden '.x.m4a.icloud' stub is a note iCloud has not put on
+            # this disk: skipped with the other dotfiles, it would read as a
+            # quiet day.
+            target = icloud_stub(p, exts)
+            if target:
+                in_cloud.append(f"{name}/{target}")
+                continue
             if not p.is_file() or p.name.lower() in _INBOX_LITTER \
                     or p.name.startswith((".", "~")):
                 continue
@@ -63,12 +71,20 @@ def _capture_checks(cfg: Config, _add) -> None:
                     stuck.append(f"{name}/{p.name}")
             except OSError:
                 continue
+    problems = []
     if stuck:
-        _add("warn", "inbox_stuck",
-             f"{len(stuck)} file(s) waiting over {INBOX_STUCK_DAYS} days — intake "
-             f"is failing on them or not running: {', '.join(stuck[:5])}"
-             + (" …" if len(stuck) > 5 else "")
-             + " — see data/transcribe.log")
+        problems.append(
+            f"{len(stuck)} file(s) waiting over {INBOX_STUCK_DAYS} days — intake "
+            f"is failing on them or not running: {', '.join(stuck[:5])}"
+            + (" …" if len(stuck) > 5 else "")
+            + " — see data/transcribe.log")
+    if in_cloud:
+        problems.append(
+            f"{len(in_cloud)} note(s) still in iCloud — open the VoiceJournal "
+            f"folder in Finder or set it to Keep Downloaded: "
+            f"{', '.join(in_cloud[:5])}" + (" …" if len(in_cloud) > 5 else ""))
+    if problems:
+        _add("warn", "inbox_stuck", "; ".join(problems))
     else:
         _add("ok", "inbox_stuck")
     if unknown:

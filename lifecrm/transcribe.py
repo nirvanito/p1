@@ -31,12 +31,15 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
+from . import platforms
 from .config import Config
 from .domain import days, sources
 from .domain.util import DomainError, is_iso_date
@@ -51,7 +54,12 @@ AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".aac", ".flac", ".wma",
               ".amr", ".mp4", ".3ga", ".3gp", ".webm", ".caf"}
 TEXT_EXTS = {".txt", ".md"}
 FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
+# macOS st_flags bit for a File Provider file whose bytes are not on disk
+# (iCloud Drive with Optimize Mac Storage). stat.SF_DATALESS is 3.13+ only.
+SF_DATALESS = 0x40000000
 MIN_FILE_AGE_SEC = 60
+# Stubs already asked for in this process — intake scans each inbox twice.
+_DOWNLOAD_REQUESTED: set[str] = set()
 
 # No digit may precede the year: a date inside a longer digit run is a phone
 # number or a counter ("+12020101234" holds a valid-looking 2020-10-12).
@@ -239,16 +247,20 @@ def filename_times(name: str, cfg: Config) -> tuple[str, str | None] | None:
 
 
 def is_placeholder(path: Path) -> bool:
-    """True when the file is a OneDrive Files On-Demand placeholder."""
+    """True when the file's bytes live only in the cloud: a OneDrive Files
+    On-Demand placeholder (a Windows attribute) or a dataless iCloud Drive
+    file (a macOS flag). Reading either one downloads it."""
     try:
-        attrs = os.stat(path).st_file_attributes
-    except (OSError, AttributeError):
+        st = os.stat(path)
+    except OSError:
         return False
-    return bool(attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+    attrs = getattr(st, "st_file_attributes", 0)
+    flags = getattr(st, "st_flags", 0)
+    return bool(attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS or flags & SF_DATALESS)
 
 
 def read_hydrated(path: Path, retries: int = 3, wait_sec: float = 2.0) -> bytes:
-    """Read file bytes; opening a placeholder triggers OneDrive hydration."""
+    """Read file bytes; opening a placeholder makes the cloud client download it."""
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
@@ -257,7 +269,42 @@ def read_hydrated(path: Path, retries: int = 3, wait_sec: float = 2.0) -> bytes:
             last_err = e
             time.sleep(wait_sec * (attempt + 1))
     raise DomainError(
-        f"could not read {path.name} (OneDrive offline or hydration failed): {last_err}")
+        f"could not read {path.name} (cloud file offline or not downloaded yet): "
+        f"{last_err}")
+
+
+def icloud_stub(path: Path, exts: set[str]) -> str | None:
+    """The note an iCloud stub stands for ('.a.m4a.icloud' -> 'a.m4a'), or
+    None when `path` is not a stub for a file of one of these types."""
+    if not platforms.is_icloud_placeholder(path):
+        return None
+    target = platforms.icloud_placeholder_target(path)
+    return target if Path(target).suffix.lower() in exts else None
+
+
+def _request_download(stub: Path, target: str) -> None:
+    """Ask iCloud for an evicted note, once per process, and say so.
+
+    A stub is never read: its bytes are a few hundred bytes of metadata, not
+    the note. `brctl download` only queues the download — the real file
+    appears beside the stub later and the next run picks it up. Elsewhere
+    (a Mac-synced folder copied to Windows) there is nothing to ask, only
+    something to report.
+    """
+    key = str(stub)
+    if key in _DOWNLOAD_REQUESTED:
+        return
+    _DOWNLOAD_REQUESTED.add(key)
+    asked = ""
+    if platforms.is_mac():
+        try:
+            subprocess.run(["brctl", "download", key], capture_output=True,
+                           timeout=30, check=False)
+            asked = " — download requested"
+        except (OSError, subprocess.SubprocessError):
+            asked = " — could not ask for it (brctl failed)"
+    print(f"waiting: {target} is still in iCloud, not on this computer{asked}; "
+          f"the next run picks it up", file=sys.stderr)
 
 
 def _scan(directory: Path, exts: set[str]) -> list[Path]:
@@ -266,6 +313,15 @@ def _scan(directory: Path, exts: set[str]) -> list[Path]:
     now = time.time()
     out = []
     for p in sorted(directory.iterdir()):
+        if p.name.startswith("."):
+            # Hidden names are never notes. AppleDouble '._x.m4a' (exFAT,
+            # SMB, unzipped archives) even carries a real suffix, with no
+            # audio in it. An iCloud stub '.x.m4a.icloud' IS a note — one not
+            # downloaded yet — so it is asked for, never read.
+            target = icloud_stub(p, exts)
+            if target:
+                _request_download(p, target)
+            continue
         if not p.is_file() or p.suffix.lower() not in exts:
             continue
         try:

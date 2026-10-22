@@ -1,13 +1,25 @@
 # Life CRM configuration.
-# Copy to config.toml and adjust. Relative paths resolve against the project root.
+# Easiest: `python -m lifecrm configure` writes config.toml from this file with
+# this machine's journal folders and timezone filled in (and creates the
+# folders). Or copy this file to config.toml and adjust by hand.
+# Relative paths resolve against the project root; '~' is your home folder on
+# Windows and macOS alike.
 
 [paths]
 data_dir = "data"                  # canonical private data (SQLite DB, transcripts, staging)
 backups_dir = "backups"            # local DB snapshots
+# The VoiceJournal folders the phone saves into (`lifecrm configure` fills these in).
 inbox_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox'
 inbox_text_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox-text'   # dictated quick notes
 archive_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\archive'
-onedrive_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'
+onedrive_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'  # any cloud folder
+# On a Mac with an iPhone they live in iCloud Drive (Shortcuts save to a fixed
+# folder there, no picker):
+# inbox_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/inbox'
+# inbox_text_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/inbox-text'
+# archive_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/archive'
+# onedrive_backups_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/backups'
+# OneDrive on a Mac lives at '~/Library/CloudStorage/OneDrive-Personal/VoiceJournal/...'.
 
 [time]
 timezone = "America/Chicago"       # IANA name; recorded per source at ingest
@@ -17,8 +29,8 @@ day_rollover_hour = 5              # recordings before 05:00 local count as the 
 model = "distil-large-v3"          # benchmarked vs "small": same CPU speed, fewer name errors
                                    # (names are what the entity graph is built from);
                                    # drop to "small" only if transcription is too slow for you
-device = "cpu"
-compute_type = "int8"
+device = "cpu"                     # on Apple Silicon too: faster-whisper has no Metal
+compute_type = "int8"              # backend, and int8 on the CPU is its fast path
 vad_filter = false
 language = "en"
 # Seeding initial_prompt with known entity names is a marginal aid to roughly the

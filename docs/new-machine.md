@@ -1,24 +1,49 @@
 # Setting up Life CRM on a new machine
 
 This walks you from nothing to your first applied day. It assumes you are
-*not* the original author: fresh Windows PC, fresh database — your journal,
+*not* the original author: fresh computer, fresh database — your journal,
 your machine, your data. Nothing here touches anyone else's copy.
+
+Two combinations are supported end to end, and the steps differ only where
+the operating system does:
+
+| | Windows laptop + Android (Samsung) | MacBook + iPhone |
+|---|---|---|
+| phone guide | [android.md](android.md) | [iphone.md](iphone.md) |
+| journal folder | OneDrive › VoiceJournal | iCloud Drive › VoiceJournal |
+| scripts | PowerShell (`scripts\*.ps1`) | bash (`/bin/bash scripts/*.sh`) |
+| scheduler | Task Scheduler | launchd |
+| run a command | `.venv\Scripts\python.exe -m lifecrm …` | `.venv/bin/python -m lifecrm …` |
+
+A Mac has its own complete guide, [mac.md](mac.md), which also covers
+importing Messages, Contacts, Photos, Notes and Apple Health; the Mac lines
+below are the short version.
 
 Time: ~20 minutes at the computer, plus ~10 on the phone.
 
 ## 0. Prerequisites
 
-- A **Windows PC** (the automation scripts are PowerShell).
-- **git** — check with `git --version`; if missing:
-  `winget install Git.Git` (then open a new terminal).
+Both:
+
 - A **GitHub account**, with the collaborator invite to the private repo
   accepted (check your email / github.com notifications).
 - **Claude Code** with a Pro or Max login — install per
   <https://claude.com/claude-code>. Extraction (`/log`) runs on your
   subscription; a nightly run is small and fits comfortably in Pro limits.
+
+Windows:
+
+- **git** — check with `git --version`; if missing:
+  `winget install Git.Git` (then open a new terminal).
 - **OneDrive** signed into **your own** Microsoft account, on PC and phone.
   (Only your phone's recordings and your DB snapshots go there — see
   `docs/privacy.md` before you decide you're OK with that.)
+
+Mac:
+
+- **Homebrew** (<https://brew.sh>), then `brew install python@3.12`.
+  (macOS's own python3 is too old.) `xcode-select --install` provides git.
+- **iCloud Drive** on, on the Mac and the iPhone, same Apple Account.
 
 ## 1. Clone the repo
 
@@ -28,38 +53,48 @@ cd lifecrm
 ```
 
 First clone pops a browser window to sign into GitHub (Git Credential
-Manager); that's normal.
+Manager on Windows); that's normal.
+
+**Mac:** clone into your home folder (`~/LifeCRM`), **not** under
+`~/Documents` or `~/Desktop` — iCloud's *Desktop & Documents* sync would sync
+the live database.
 
 ## 2. Run setup
+
+Windows:
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 ```
 
-This finds (or installs) Python 3.12, creates `.venv`, installs
-dependencies, copies `config.example.toml` → `config.toml`, and initializes
-an empty database. It prints what it's doing; a fresh run takes a few
-minutes.
-
-## 3. Create your OneDrive folders and edit config.toml
-
-In OneDrive (Explorer is fine), create:
+Mac:
 
 ```
-OneDrive\VoiceJournal\inbox
-OneDrive\VoiceJournal\inbox-text
-OneDrive\VoiceJournal\archive
-OneDrive\VoiceJournal\backups
+/bin/bash scripts/setup.sh
 ```
 
-Right-click `VoiceJournal` → **Always keep on this device**.
+Both find (Windows: or install) Python 3.12, create `.venv`, install
+dependencies, write `config.toml` for this machine with
+`lifecrm configure`, and initialize an empty database. They print what they
+do; a fresh run takes a few minutes.
 
-Then open `config.toml` (in the repo root) and set:
+## 3. Check what `configure` chose
 
-- the four `[paths]` entries to those folders (replace `<you>` with your
-  Windows username);
-- `timezone` to your IANA zone (e.g. `America/Chicago` — list:
-  <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>);
+`lifecrm configure` (run by setup) proposed this machine's own answers and
+printed them:
+
+- the **journal folder** — `OneDrive\VoiceJournal` on Windows, iCloud Drive's
+  `VoiceJournal` on a Mac — with its four subfolders created:
+  `inbox` (audio), `inbox-text` (dictated notes), `archive`, `backups`;
+- the **timezone**, read from the operating system and written as an IANA
+  name (e.g. `America/Chicago`);
+- everything else from `config.example.toml`.
+
+If the cloud folder did not exist yet (OneDrive not signed in, iCloud Drive
+off), it says so and creates nothing — fix that, then re-run
+`python -m lifecrm configure --force`. Other folders or zone:
+`--journal-root DIR`, `--timezone Area/City`. Or edit `config.toml` by hand:
+
 - leave `day_rollover_hour = 5` (notes recorded before 05:00 file under the
   previous day);
 - `model = "distil-large-v3"` — benchmarked against `small` on the original
@@ -69,33 +104,57 @@ Then open `config.toml` (in the repo root) and set:
 
 The first transcription downloads the whisper model (~1.5 GB, one time).
 
+Keep the journal folder downloaded, so the sync client keeps real files
+rather than placeholders (the code guards against placeholders anyway):
+
+- Windows: in Explorer, right-click `VoiceJournal` → **Always keep on this
+  device**.
+- Mac: in Finder, right-click `VoiceJournal` → **Keep Downloaded**.
+
+`python -m lifecrm where` lists the journal folders, how many notes are
+waiting, and every other source this machine has that Life CRM can import.
+
 ## 4. Set up your phone
 
-Follow **[docs/iphone.md](iphone.md)** (or `android.md`). You're saving into
-your *own* OneDrive, so skip the "someone else's journal" paragraph. Build
-both shortcuts — "Log My Day" (evening audio) and "Quick Note" (ten-second
-daytime thoughts).
+Follow **[docs/android.md](android.md)** or **[docs/iphone.md](iphone.md)**.
+You're saving into your *own* cloud folder, so skip the "someone else's
+journal" paragraph. Build both captures — the evening audio note and the
+ten-second daytime quick note.
 
-Optional but recommended, back at the PC:
+Optional but recommended, back at the computer, schedule the jobs:
+
+Windows:
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 ```
 
-That schedules daily intake (transcripts ready before you sit down), daily
-tiered backups (local + OneDrive), and a weekly restore-verification.
+Mac:
 
-If a task fails, Task Scheduler's *Last Run Result* for it shows `0x1`, and
-intake writes what went wrong — including the file name — to
-`data\transcribe.log`. Run `.venv\Scripts\python.exe -m lifecrm doctor` any
-time: it flags a mistyped inbox path, a recording stuck in the inbox, or a
-file in a format intake can't read.
+```
+/bin/bash scripts/install-tasks.sh
+```
+
+That schedules daily intake (transcripts ready before you sit down), daily
+tiered backups (local + cloud folder), and a weekly restore-verification;
+the Mac also runs `doctor` daily.
+
+If a job fails it says so. On Windows, Task Scheduler's *Last Run Result*
+shows `0x1`; on a Mac, `launchctl print gui/$(id -u)/local.lifecrm.intake`
+shows *last exit code = 1*. Either way intake writes what went wrong —
+including the file name — to `data/transcribe.log`. Run `lifecrm doctor` any
+time: it flags a mistyped inbox path, a recording stuck in the inbox, a file
+in a format intake can't read, and (Mac) notes still in iCloud.
+
+A Mac also needs **Full Disk Access** for anything that reads Messages,
+Contacts, Photos, Notes or an iPhone backup — see mac.md, section 5.
 
 ## 5. First run, end to end
 
-1. On the phone: run **Quick Note**, dictate one sentence. Confirm the
-   `.txt` appears in `OneDrive\VoiceJournal\inbox-text`.
-2. On the PC, after sync:
+1. On the phone: run the quick note, dictate one sentence. Confirm the
+   `.txt` appears in `VoiceJournal/inbox-text`.
+2. On the computer, after sync (Windows shown; on a Mac use
+   `.venv/bin/python`):
    ```
    .venv\Scripts\python.exe -m lifecrm intake
    .venv\Scripts\python.exe -m lifecrm status
@@ -108,13 +167,13 @@ file in a format intake can't read.
    .venv\Scripts\python.exe -m lifecrm doctor
    ```
    Expect `0 failure(s)`.
-5. Same evening or next: record a real **Log My Day** note and repeat.
+5. Same evening or next: record a real evening note and repeat.
 
 ## 6. During the trial
 
-- Run the **verification checklist** at the end of iphone.md once, on your
-  real phone, and report the three facts it asks for (whether Save File let
-  you pin the OneDrive folder, sync latency, whisper wall-clock).
+- Run the **verification checklist** at the end of your phone guide once, on
+  your real phone, and report the facts it asks for (for iPhone: whether
+  Save File let you pin the folder, sync latency, whisper wall-clock).
 - Keep a plain-text **friction log** next to the repo. Any time something
   takes more than two–three minutes or makes you not want to record — write
   it down in the moment. That file is the trial's most valuable output.
@@ -128,10 +187,11 @@ git pull
 ```
 
 Your data is never in git — pulling only updates code and docs. If a pull
-brings a new file under `lifecrm\migrations\`, run:
+brings a new file under `lifecrm/migrations/`, run:
 
 ```
-.venv\Scripts\python.exe -m lifecrm migrate
+.venv\Scripts\python.exe -m lifecrm migrate      # Windows
+.venv/bin/python -m lifecrm migrate              # Mac
 ```
 
 (it snapshots the DB before touching anything). `lifecrm doctor` after a

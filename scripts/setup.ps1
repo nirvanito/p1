@@ -33,9 +33,12 @@ if (-not (Test-Path "$Root\.venv")) { & $py312 -m venv "$Root\.venv" }
 & "$Root\.venv\Scripts\python.exe" -m pip install -q -r "$Root\requirements.txt"
 
 # --- config + database ---
+# configure proposes this PC's OneDrive VoiceJournal folders and timezone,
+# creates the folders, and prints every value it chose; it never replaces an
+# existing config.toml.
 if (-not (Test-Path "$Root\config.toml")) {
-    Copy-Item "$Root\config.example.toml" "$Root\config.toml"
-    Write-Host "Created config.toml from example - EDIT THE PATHS before continuing."
+    & "$Root\.venv\Scripts\python.exe" -m lifecrm configure
+    if ($LASTEXITCODE -ne 0) { Write-Error "lifecrm configure failed - see the line above" }
 }
 & "$Root\.venv\Scripts\python.exe" -m lifecrm init
 
@@ -43,4 +46,5 @@ if (-not (Test-Path "$Root\config.toml")) {
 if (-not (Test-Path "$Root\.git")) { git init | Out-Null; git add -A; git commit -m "Initial commit" | Out-Null }
 
 Write-Host ""
-Write-Host "Setup complete. Try:  .venv\Scripts\python.exe -m lifecrm status"
+Write-Host "Setup complete. Try:  .venv\Scripts\python.exe -m lifecrm where"
+Write-Host "(lists the journal folders and everything else this PC can import)"
