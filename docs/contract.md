@@ -83,9 +83,14 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
   `{"segments": [idx, ...]}` (whisper segment indexes). `source_id` may be
   omitted only in single-source drafts. **Required on every entry in a
   multi-source draft** — provenance must never degrade from "the passage
-  behind this record" to "one of today's notes".
-- **extraction** — optional metadata; `interface` must be `claude_skill` or
-  `manual`.
+  behind this record" to "one of today's notes". Offsets index the transcript
+  **as stored**, which is normalized: CRLF/CR become LF and outer whitespace
+  is stripped. For an inline `text` source, count offsets in that normalized
+  form — ingest checks them against it, not against the raw draft string.
+- **extraction** — optional object: `provider` (non-empty string), `model`
+  (string or null), `interface` (`claude_skill` or `manual`). Anything else —
+  a non-object, an unknown key — is a contract error, so `ingest --dry-run`
+  refuses exactly what a real ingest would.
 - **day.summary** — optional non-empty string. Conflicts with an existing
   different summary become a decision item in the diff.
 - **measurements** (day-level or per-entry) — `metric`, plus `numeric_value`
@@ -106,9 +111,14 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
   A `new` entity whose name exactly matches an existing active entity (or
   alias) of the same type is rejected — resolve with `lifecrm entities match`
   first.
-- **entries[].uuid** — only for proposing an update to an existing same-day
-  entry. Changes to user-confirmed entries always become requires-decision
-  diff items.
+- **entries[].uuid** — only for proposing an update to an existing
+  **active entry of the same journal day**, and each uuid at most once.
+  Changes to user-confirmed entries always become requires-decision diff
+  items. A uuid on another day, or of a retracted/superseded entry, is
+  refused (decision #5, 2026-10): cross-day closures go through
+  `entry_updates`, any other cross-day change through `lifecrm entry edit`.
+  (A cross-day uuid used to be auto-edited without a decision and outside the
+  day fingerprint that guards the review.)
 - **entry_updates** — the cross-day operation: *"finished the thing I
   mentioned Tuesday"* closes an entry on a DIFFERENT day than the one being
   extracted. Constraints, all enforced:
@@ -141,6 +151,26 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
 3. `lifecrm apply diff.json` — transactional persistence with audit +
    revision records. Applying is the user's confirmation: created entries are
    marked confirmed.
+4. Or, for a diff that will never be applied (a wrong extraction, a diff
+   superseded by a fresh ingest): `lifecrm admin discard-run <run>` — the
+   full run uuid or the 8-character prefix in the diff's file name. The run
+   stays on record as `discarded` (audited), its diff is renamed
+   `.discarded`, apply refuses it, and its sources show as unprocessed again
+   until another run applies them. Doctor's `stuck_drafts` warning names the
+   runs and this command.
+
+**Possible duplicates.** An entry without a uuid is compared with the day's
+active entries. An exactly equal title (case and spacing aside) is always a
+possible duplicate — that is what keeps a re-ingested day collapsing onto
+itself. A merely similar title is one only with a corroborating signal: a
+shared entity, an overlapping passage of the same source, or a body that says
+the same thing (similarity >= 0.6). Title similarity >= 0.9 needs one signal;
+>= 0.75 also needs the same kind and primary category. So "Called Mom" and
+"Called Tom" (0.9, nothing shared) are two calls. Each `possible_duplicate`
+item carries the incumbent for review — `of_title`, `of_body`, `of_kind`,
+`of_categories`, `of_entities` — plus `similarity` and `signals`
+(`same_title`, `similar_title`, `shared_entity`, `same_passage`,
+`similar_body`). Apply reads none of these; they are there to decide by.
 
 A diff is a review of one before-state, and it says so: `day_fingerprint`
 records the day as ingest saw it. If anything about that day changed since —

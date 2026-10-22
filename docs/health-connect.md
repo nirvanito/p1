@@ -123,6 +123,27 @@ document this database, so the first real export must confirm:
       identical, not conflicts (record ids are stable across exports)
 - [ ] What lands in "unmapped tables" — candidates for the next mapper
 - [ ] Zip size and whether daily cadence actually fires without opening the app
+- [ ] **One app per metric.** Samsung Health and Google Fit (or a watch app)
+      can both write steps, sleep or calories into Health Connect; every
+      day-total here — the steps and sleep dashboards, `lifecrm ask` — SUMs
+      a day's records, so a second writer silently doubles those days. The
+      dry-run prints `WARNING steps: written by 2 apps (...)` when the export
+      shows it (`--json`: `origin_apps`), and after import doctor keeps
+      warning (`health_multi_origin`). Check what actually landed:
+
+      ```
+      python -m lifecrm sql "SELECT metric, origin_app, COUNT(*) n, MIN(journal_date) first, MAX(journal_date) last FROM health_records WHERE status='active' GROUP BY metric, origin_app ORDER BY metric, n DESC" --json
+      ```
+
+      If two apps share a summed metric, fix it at the source before relying
+      on the totals: in Health Connect let only one app write it (app
+      permissions, or the data type's sources/priority list — the menu
+      wording varies by Android version; record what yours says here).
+      The importer has no per-app filter yet, and `health retract` works per
+      export file, not per app — so the cleanest moment to settle this is
+      before the first `--apply`. Averaged metrics (weight, heart rate, body
+      fat) only get a `note` line: two writers mix readings rather than double
+      them.
 
 Once trusted, wrap the download-and-dry-run in the scheduled-task setup —
 deliberately manual until then.

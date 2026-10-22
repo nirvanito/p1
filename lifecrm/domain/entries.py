@@ -162,6 +162,25 @@ def detach_entity(conn: sqlite3.Connection, entry_id: int, entity_id: int,
     return cur.rowcount
 
 
+# A second call for the same (entry, source) fills gaps and never replaces.
+# The passage columns move as one unit: a row that already points at a
+# passage keeps all four, so offsets from two different passages never mix.
+_PASSAGE_COLS = ("segment_start", "segment_end", "char_start", "char_end")
+_HAS_PASSAGE = ("entry_sources.segment_start IS NOT NULL "
+                "OR entry_sources.char_start IS NOT NULL")
+_UPSERT_PROVENANCE = (
+    "INSERT INTO entry_sources (entry_id, source_id, transcript_id, "
+    "segment_start, segment_end, char_start, char_end, extraction_run_id, "
+    "original_json, confirmed_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(entry_id, source_id) DO UPDATE SET "
+    + ", ".join(
+        [f"{c}=COALESCE(entry_sources.{c}, excluded.{c})"
+         for c in ("transcript_id", "extraction_run_id", "original_json",
+                   "confirmed_json")]
+        + [f"{c}=CASE WHEN {_HAS_PASSAGE} THEN entry_sources.{c} "
+           f"ELSE excluded.{c} END" for c in _PASSAGE_COLS]))
+
+
 def add_provenance(conn: sqlite3.Connection, *, entry_id: int, source_id: int,
                    transcript_id: int | None = None,
                    segment_start: int | None = None, segment_end: int | None = None,
@@ -169,10 +188,15 @@ def add_provenance(conn: sqlite3.Connection, *, entry_id: int, source_id: int,
                    extraction_run_id: int | None = None,
                    original_json: dict | None = None,
                    confirmed_json: dict | None = None) -> None:
+    """Record that a source supports an entry — without ever clobbering.
+
+    The key is (entry_id, source_id). An entry_update that closes an entry
+    from the same source that created it used to INSERT OR REPLACE that row,
+    and the passage and original extraction JSON behind the entry were gone
+    for good. An existing row now keeps what it has; only its gaps are filled.
+    """
     conn.execute(
-        "INSERT OR REPLACE INTO entry_sources (entry_id, source_id, transcript_id, "
-        "segment_start, segment_end, char_start, char_end, extraction_run_id, "
-        "original_json, confirmed_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        _UPSERT_PROVENANCE,
         (entry_id, source_id, transcript_id, segment_start, segment_end, char_start,
          char_end, extraction_run_id,
          json.dumps(original_json, ensure_ascii=False) if original_json else None,

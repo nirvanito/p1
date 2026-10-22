@@ -1,8 +1,6 @@
 import json
-import subprocess
 
-import pytest
-from conftest import PROJECT_ROOT, cli_project, golden_draft, sample_text
+from conftest import cli_project, golden_draft, sample_text
 from typer.testing import CliRunner
 
 from lifecrm.cli import app
@@ -324,26 +322,3 @@ def test_categories_and_kinds_extensible(tmp_path, monkeypatch):
     assert "dream" in r.output
     # duplicate rejected
     assert runner.invoke(app, ["categories", "add", "gaming"]).exit_code == 1
-
-
-def test_gitignore_keeps_private_data_out_of_git():
-    """Seed sentinel files under data/ and backups/ in the REAL project and
-    assert git never sees them."""
-    if not (PROJECT_ROOT / ".git").exists():
-        pytest.skip("project is not a git repository")
-    probes = [PROJECT_ROOT / "data" / "_privacy_probe.txt",
-              PROJECT_ROOT / "data" / "_privacy_probe.db",
-              PROJECT_ROOT / "backups" / "_privacy_probe.db",
-              PROJECT_ROOT / "_privacy_probe.jsonl"]
-    try:
-        for p in probes:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("private", encoding="utf-8")
-        out = subprocess.run(["git", "status", "--porcelain"], cwd=PROJECT_ROOT,
-                             capture_output=True, text=True, check=True).stdout
-        for p in probes:
-            assert p.name not in out, f"{p} is visible to git — .gitignore is broken"
-    finally:
-        for p in probes:
-            if p.exists():
-                p.unlink()

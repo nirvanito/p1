@@ -5,6 +5,14 @@
 *.db-wal
 *.db-shm
 *.jsonl
+# exports carry the same content as the database: README's export commands
+# write archive/ and archive-data/, and phone/health exports arrive as zips.
+# /demo/ is a generated demo root (rebuildable, never source).
+/archive/
+/archive-data/
+/exports/
+/demo/
+*.zip
 
 # --- environment ---
 /.venv/

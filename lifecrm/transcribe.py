@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Config
 from .domain import days, sources
-from .domain.util import DomainError
+from .domain.util import DomainError, is_iso_date
 from .importer import _write_transcript_copy, import_text, normalize_text
 
 AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".aac", ".flac", ".wma", ".amr", ".mp4"}
@@ -211,7 +211,8 @@ def transcribe_audio(cfg: Config, model, audio_path: Path,
             "language": info.language}
 
 
-def process_file(conn: sqlite3.Connection, cfg: Config, get_model, path: Path) -> dict:
+def process_file(conn: sqlite3.Connection, cfg: Config, get_model, path: Path,
+                 date_override: str | None = None) -> dict:
     """Transcribe one inbox file into source+transcript rows.
 
     Does not commit and does NOT archive on the success path — the caller
@@ -220,7 +221,16 @@ def process_file(conn: sqlite3.Connection, cfg: Config, get_model, path: Path) -
     here (no rows are at stake for them).
 
     get_model is a zero-arg callable so duplicate-only runs never load whisper.
+
+    date_override replaces the resolved journal date BEFORE anything is
+    written: the source row, its audit entry, the duplicate check and the
+    transcript copy's file name all see the same date. (It used to be a raw
+    UPDATE after the fact, leaving all four on the old one.) The recording
+    instant still comes from the file — the override says which day it is
+    ABOUT, not when it was spoken.
     """
+    if date_override is not None and not is_iso_date(date_override):
+        raise DomainError(f"invalid journal date '{date_override}' (expected YYYY-MM-DD)")
     if is_placeholder(path):
         read_hydrated(path)  # hydrate before whisper opens it
     data = read_hydrated(path)
@@ -230,6 +240,8 @@ def process_file(conn: sqlite3.Connection, cfg: Config, get_model, path: Path) -
         "SELECT id, journal_date FROM sources WHERE content_hash=? AND type='audio'",
         (content_hash,)).fetchone()
     journal_date, recorded_at = resolve_file_times(path, cfg)
+    if date_override is not None:
+        journal_date = date_override
 
     if already:
         archived = archive_file(cfg, path, journal_date)
@@ -311,6 +323,9 @@ def _archive_after_commit(conn: sqlite3.Connection, cfg: Config, path: Path,
 def transcribe_inbox(conn: sqlite3.Connection, cfg: Config,
                      only_file: Path | None = None,
                      date_override: str | None = None) -> list[dict]:
+    if date_override is not None and only_file is None:
+        # One date for a whole inbox would re-date every recording in it.
+        raise DomainError("date_override applies to one recording — pass only_file")
     files = [only_file] if only_file else scan_inbox(cfg)
     if not files:
         return []
@@ -325,12 +340,7 @@ def transcribe_inbox(conn: sqlite3.Connection, cfg: Config,
     for f in files:
         path = Path(f)
         try:
-            res = process_file(conn, cfg, get_model, path)
-            if date_override and res.get("source_id"):
-                days.ensure_day(conn, date_override)
-                conn.execute("UPDATE sources SET journal_date=? WHERE id=?",
-                             (date_override, res["source_id"]))
-                res["journal_date"] = date_override
+            res = process_file(conn, cfg, get_model, path, date_override=date_override)
             conn.commit()  # per-file commit so one failure never loses prior work
         except Exception as e:  # keep going; report per file
             conn.rollback()

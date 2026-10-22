@@ -214,11 +214,21 @@ def import_cmd(
 @app.command()
 def transcribe(
     file: str = typer.Option(None, "--file", help="Transcribe one specific file"),
-    date: str = typer.Option(None, "--date", help="Override journal date YYYY-MM-DD"),
+    date: str = typer.Option(None, "--date",
+                             help="Journal date YYYY-MM-DD for the --file recording"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Transcribe new audio in the OneDrive inbox with local faster-whisper."""
+    from .domain.util import is_iso_date
     from .transcribe import scan_inbox, transcribe_inbox
+    # Checked before whisper loads: a typo'd date used to fail only after a
+    # full transcription, and without --file it re-dated the whole inbox.
+    if date is not None:
+        if not file:
+            _fail("--date sets ONE recording's journal date — name it with "
+                  "--file (each inbox file dates itself from its name)")
+        if not is_iso_date(date):
+            _fail(f"--date '{date}' is not a valid YYYY-MM-DD date")
     cfg = _cfg()
     conn = _conn(cfg)
     try:
@@ -289,6 +299,7 @@ def ingest(
     dry_run: bool = typer.Option(False, "--dry-run", help="Validate only"),
 ) -> None:
     """Validate a draft and reconcile it into a reviewable diff (never destructive)."""
+    from .importer import normalize_text
     cfg = _cfg()
     p = Path(draft_file)
     if not p.exists():
@@ -304,7 +315,7 @@ def ingest(
     try:
         texts: dict[int, str] = {}
         inline_text = None
-        srcs = draft.get("sources")
+        srcs = draft.get("sources") if isinstance(draft, dict) else None
         if isinstance(srcs, list):
             for src in srcs:
                 if not isinstance(src, dict):
@@ -319,7 +330,10 @@ def ingest(
                                       (src["source_id"],)).fetchone():
                         _fail(f"source id={src['source_id']} has no transcript")
                 elif isinstance(src.get("text"), str):
-                    inline_text = src["text"]
+                    # Offsets index the transcript as STORED — import_text
+                    # normalizes (CRLF -> LF, outer whitespace stripped), so a
+                    # char_end valid against the raw string can overrun it.
+                    inline_text = normalize_text(src["text"])
 
         errors = contract_mod.validate_draft(conn, draft, texts, inline_text)
         if errors:
@@ -355,7 +369,7 @@ def ingest(
                 all_texts.append(row["text"])
             meta = draft.get("extraction") or {}
             interface = meta.get("interface", "claude_skill")
-            if interface not in ("claude_skill", "manual"):
+            if interface not in contract_mod.INTERFACES:   # backstop; validated above
                 raise DomainError(f"extraction.interface '{interface}' must be "
                                   f"claude_skill or manual")
             run = reconcile.create_extraction_run(
@@ -739,6 +753,33 @@ def ask(
 
 # ---------------------------------------------------------------- dashboard
 
+def _is_loopback(host: str) -> bool:
+    import ipaddress
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False   # a hostname or interface name: assume it is reachable
+
+
+def _lan_ip() -> str | None:
+    """This machine's address on its local network — what a phone on the same
+    Wi-Fi types. connect() on a UDP socket sends nothing; it only asks the OS
+    which interface would route there. 192.0.2.1 is a documentation address
+    (RFC 5737): no real host, nothing contacted."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))
+        ip = s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+    return None if ip.startswith("127.") or ip == "0.0.0.0" else ip
+
+
 @app.command()
 def dashboard(
     port: int = typer.Option(8001, "--port"),
@@ -753,9 +794,11 @@ def dashboard(
     Ctrl+C to stop. Dashboard definitions live in dashboards\\dashboards.yml.
     """
     import importlib.util
+
+    from . import platforms
     if importlib.util.find_spec("datasette") is None:
-        _fail("datasette is not installed — run: .venv\\Scripts\\python.exe "
-              "-m pip install -r requirements.txt")
+        _fail(f"datasette is not installed — run: "
+              f"{platforms.venv_python(Path('.'))} -m pip install -r requirements.txt")
     cfg = _cfg()
     # A customized copy in the active root wins; otherwise the repo default
     # (same fallback pattern as config.example.toml).
@@ -774,7 +817,18 @@ def dashboard(
     finally:
         conn.close()
     typer.echo("serving a snapshot taken just now — rerun to refresh the data")
-    typer.echo(f"dashboards: http://{host}:{port}/-/dashboards")
+    wildcard = host in ("0.0.0.0", "::", "")
+    typer.echo(f"dashboards: http://{'127.0.0.1' if wildcard else host}:{port}"
+               f"/-/dashboards")
+    if not _is_loopback(host):
+        typer.echo(f"warning: serving on {host or '*'}:{port} — anyone on this "
+                   f"network can read the whole journal (no login); trusted "
+                   f"networks only", err=True)
+        if wildcard:
+            lan = _lan_ip()
+            typer.echo(f"from your phone (same Wi-Fi): http://{lan}:{port}/-/dashboards"
+                       if lan else "could not work out this machine's LAN address — "
+                       "find it with ipconfig (Windows) or ipconfig getifaddr en0 (Mac)")
     raise typer.Exit(subprocess.call(
         [sys.executable, "-m", "datasette", "serve", "-i", str(snap),
          "--metadata", str(metadata), "--host", host, "--port", str(port)]))
@@ -1737,6 +1791,57 @@ def purge_day(journal_date: str,
     result = _commit_or_rollback(
         conn, lambda: corrections.purge_day(conn, journal_date))
     typer.echo(f"purged {journal_date}: {result['entries_deleted']} entries deleted")
+
+
+def _mark_discarded(cfg: Config, run_uuid: str) -> list[tuple[Path, Path]]:
+    """Rename a discarded run's diff file(s) like apply renames applied ones,
+    so the folder and doctor's staging sweep stop offering them. Only files
+    whose content names this run are touched; a failed rename is a warning —
+    the run is already discarded in the database."""
+    renamed = []
+    if not cfg.staging_dir.exists():
+        return renamed
+    for p in sorted(cfg.staging_dir.glob(
+            f"diff-*-{run_uuid[:reconcile.RUN_PREFIX_LEN]}.json")):
+        try:
+            if json.loads(p.read_text(encoding="utf-8-sig")).get(
+                    "extraction_run_uuid") != run_uuid:
+                continue
+        except (OSError, ValueError, AttributeError):
+            continue
+        target = p.with_name(p.name + ".discarded")
+        n = 2
+        while target.exists():
+            target = p.with_name(f"{p.name}.discarded.{n}")
+            n += 1
+        try:
+            p.rename(target)
+        except OSError as e:
+            typer.echo(f"warning: discarded, but could not rename {p.name}: {e}", err=True)
+            continue
+        renamed.append((p, target))
+    return renamed
+
+
+@admin_app.command("discard-run")
+def discard_run(
+    run: str = typer.Argument(..., help="Run uuid, or the 8-character prefix in "
+                                        "the diff file name (diff-<date>-<prefix>.json)"),
+    reason: str = typer.Option(None, "--reason", help="Why, for the audit log"),
+) -> None:
+    """Discard an extraction run that will never be applied (a wrong draft, a
+    diff superseded by a fresh ingest). Not destructive: the run stays on
+    record as 'discarded', its diff is renamed .discarded, apply refuses it,
+    and its sources show as unprocessed again until another run applies them."""
+    cfg = _cfg()
+    conn = _conn(cfg)
+    result = _commit_or_rollback(
+        conn, lambda: reconcile.discard_run(conn, run, reason=reason))
+    typer.echo(f"discarded extraction run {result['uuid']} "
+               f"({', '.join(result['journal_dates']) or 'no date'}; source id(s) "
+               f"{', '.join(map(str, result['source_ids']))})")
+    for old, new in _mark_discarded(cfg, result["uuid"]):
+        typer.echo(f"  {old.name} -> {new.name}")
 
 
 @app.command()

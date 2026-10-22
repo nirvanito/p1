@@ -28,6 +28,7 @@ from .util import DomainError, new_uuid, now_utc
 DIFF_VERSION = 3
 DUPLICATE_TITLE_SIM = 0.9
 DUPLICATE_RELATED_SIM = 0.75
+DUPLICATE_BODY_SIM = 0.6
 
 COMPARE_FIELDS = ["title", "body", "kind", "time_of_day", "occurred_at",
                   "ended_at", "due_at", "confidence", "data"]
@@ -58,8 +59,214 @@ def run_source_ids(conn: sqlite3.Connection, run_id: int) -> list[int]:
         "ORDER BY source_id", (run_id,))]
 
 
+RUN_PREFIX_LEN = 8   # what a diff file name carries: diff-<date>-<uuid[:8]>.json
+
+
+def find_run(conn: sqlite3.Connection, ref: str) -> sqlite3.Row:
+    """An extraction run by full uuid or by the prefix its diff file name
+    carries. A prefix matching two runs is refused, never guessed."""
+    ref = (ref or "").strip().lower()
+    if len(ref) < RUN_PREFIX_LEN:
+        raise DomainError(
+            f"run '{ref}' is too short — give the full uuid or the "
+            f"{RUN_PREFIX_LEN}-character prefix in the diff file name "
+            f"(diff-<date>-<prefix>.json)")
+    rows = conn.execute(
+        "SELECT * FROM extraction_runs WHERE substr(uuid, 1, ?)=? ORDER BY id",
+        (len(ref), ref)).fetchall()
+    if not rows:
+        raise DomainError(f"no extraction run matches '{ref}'")
+    if len(rows) > 1:
+        raise DomainError(f"'{ref}' matches {len(rows)} extraction runs "
+                          f"({', '.join(r['uuid'] for r in rows)}) — give the full uuid")
+    return rows[0]
+
+
+def discard_run(conn: sqlite3.Connection, ref: str, actor: str = "user",
+                reason: str | None = None) -> dict:
+    """Mark a draft run as never-to-be-applied.
+
+    Every ingest creates a run in 'draft'; one whose diff is wrong (a bad
+    extraction, a stale diff superseded by a fresh ingest) used to sit in
+    draft forever, and doctor nagged about it with no command to answer. The
+    run row stays — it is part of the history of what was extracted — but
+    'discarded' ends it: apply refuses it, and its sources count as
+    unprocessed again unless another run already applied them.
+    """
+    run = find_run(conn, ref)
+    if run["status"] == "applied":
+        raise DomainError(
+            f"extraction run {run['uuid']} was applied — discarding cannot undo "
+            f"that; correct its entries with lifecrm entry edit/retract")
+    if run["status"] == "discarded":
+        raise DomainError(f"extraction run {run['uuid']} is already discarded")
+    source_ids = run_source_ids(conn, run["id"])
+    marks = ",".join("?" for _ in source_ids)
+    dates = [r["journal_date"] for r in conn.execute(
+        f"SELECT DISTINCT journal_date FROM sources WHERE id IN ({marks}) "
+        f"ORDER BY journal_date", source_ids)]
+    conn.execute("UPDATE extraction_runs SET status='discarded', reviewed_at=? "
+                 "WHERE id=?", (now_utc(), run["id"]))
+    details = {"source_ids": source_ids, "journal_dates": dates,
+               "was": run["status"]}
+    if reason:
+        details["reason"] = reason
+    audit.log(conn, actor, "discard", "extraction_runs", run["uuid"], details)
+    return {"uuid": run["uuid"], "source_ids": source_ids, "journal_dates": dates}
+
+
 def _title_sim(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+
+# ---------------------------------------------------------------- duplicates
+# Title similarity alone is a coin toss on short titles: "Called Mom" and
+# "Called Tom" score exactly 0.9, and the second call would have been skipped
+# as a duplicate of the first. A near-identical title now needs a second,
+# independent reason to believe it is the same record: the same people or
+# places, the same passage of the same note, or a body that says the same
+# thing. Only an exactly equal title stands on its own — re-ingesting a day
+# must keep collapsing onto the entries it already produced.
+
+def _norm_title(title: str) -> str:
+    return " ".join(title.casefold().split())
+
+
+def _segment_spans(conn: sqlite3.Connection, transcript_id: int | None,
+                   idxs) -> list[tuple[int, int]]:
+    if transcript_id is None:
+        return []
+    idxs = sorted(set(idxs))
+    if not idxs:
+        return []
+    marks = ",".join("?" for _ in idxs)
+    return [(r["char_start"], r["char_end"]) for r in conn.execute(
+        f"SELECT char_start, char_end FROM transcript_segments "
+        f"WHERE transcript_id=? AND idx IN ({marks})", (transcript_id, *idxs))]
+
+
+def _latest_transcript(conn: sqlite3.Connection, source_id: int) -> int | None:
+    row = conn.execute("SELECT id FROM transcripts WHERE source_id=? "
+                       "ORDER BY id DESC LIMIT 1", (source_id,)).fetchone()
+    return row["id"] if row else None
+
+
+def _existing_passages(conn: sqlite3.Connection,
+                       entry_id: int) -> set[tuple[int, int, int]]:
+    """(source_id, char_start, char_end) for every passage behind an entry."""
+    out = set()
+    for r in conn.execute(
+            "SELECT source_id, transcript_id, segment_start, segment_end, "
+            "char_start, char_end FROM entry_sources WHERE entry_id=?", (entry_id,)):
+        if r["char_start"] is not None and r["char_end"] is not None:
+            out.add((r["source_id"], r["char_start"], r["char_end"]))
+        elif r["segment_start"] is not None:
+            tid = r["transcript_id"] or _latest_transcript(conn, r["source_id"])
+            last = r["segment_end"] if r["segment_end"] is not None else r["segment_start"]
+            for cs, ce in _segment_spans(conn, tid, range(r["segment_start"], last + 1)):
+                out.add((r["source_id"], cs, ce))
+    return out
+
+
+def _draft_passage(conn: sqlite3.Connection, draft_entry: dict,
+                   sole_source: int | None) -> tuple[int | None, set]:
+    """(source_id, {(source_id, char_start, char_end)}) for a draft entry."""
+    prov = draft_entry.get("provenance") or {}
+    sid = prov.get("source_id", sole_source)
+    if sid is None:
+        return None, set()
+    if prov.get("char_start") is not None and prov.get("char_end") is not None:
+        return sid, {(sid, prov["char_start"], prov["char_end"])}
+    if prov.get("segments"):
+        return sid, {(sid, cs, ce) for cs, ce in _segment_spans(
+            conn, _latest_transcript(conn, sid), prov["segments"])}
+    return sid, set()
+
+
+def _duplicate_signals(draft_entry: dict, passage: tuple, info: dict) -> list[str]:
+    """Independent evidence, beyond the title, that two entries are one."""
+    snap = info["snap"]
+    signals = []
+    refs = draft_entry.get("entities", []) or []
+    ids = {r.get("id") for r in refs if r.get("ref") == "existing"}
+    names = {(r.get("type"), str(r.get("name", "")).casefold().strip())
+             for r in refs if r.get("ref") == "new"}
+    if any(e["id"] in ids or (e["type"], e["name"].casefold().strip()) in names
+           for e in snap["entities"]):
+        signals.append("shared_entity")
+    sid, spans = passage
+    if sid is not None and sid in info["sources"]:
+        theirs = {p for p in info["passages"] if p[0] == sid}
+        if spans and theirs:
+            # Both passages known: overlap is the strongest signal there is;
+            # apart, they are two parts of one note — no signal at all.
+            if any(a[1] < b[2] and b[1] < a[2] for a in spans for b in theirs):
+                signals.append("same_passage")
+        else:
+            # A re-extraction of the same note that did not pin the passage.
+            signals.append("same_source")
+    d_body, e_body = draft_entry.get("body"), snap.get("body")
+    if d_body and e_body and SequenceMatcher(
+            None, d_body.casefold(), e_body.casefold()).ratio() >= DUPLICATE_BODY_SIM:
+        signals.append("similar_body")
+    return signals
+
+
+def _duplicate_verdict(draft_entry: dict, passage: tuple, info: dict,
+                       exact_only: bool) -> dict | None:
+    """Why this existing entry is a possible duplicate of the draft entry —
+    or None when it is not."""
+    snap = info["snap"]
+    if _norm_title(draft_entry["title"]) == _norm_title(snap["title"]):
+        return {"similarity": 1.0, "signals": ["same_title"]}
+    if exact_only:
+        return None
+    sim = _title_sim(draft_entry["title"], snap["title"])
+    if sim < DUPLICATE_RELATED_SIM:
+        return None
+    signals = _duplicate_signals(draft_entry, passage, info)
+    if not signals:
+        return None
+    if sim < DUPLICATE_TITLE_SIM:
+        same_cat = (draft_entry["categories"]["primary"].lower()
+                    == (snap["categories"]["primary"] or "").lower())
+        same_kind = draft_entry["kind"].lower() == snap["kind"].lower()
+        if not (same_cat and same_kind):
+            return None
+    return {"similarity": sim, "signals": ["similar_title", *signals]}
+
+
+def _match_duplicates(conn: sqlite3.Connection, draft_entries: list[dict],
+                      existing: dict, matched: set[str],
+                      sole_source: int | None) -> dict[int, tuple[str, dict]]:
+    """draft index -> (existing uuid, verdict) for every possible duplicate.
+
+    Exact titles are matched first, across the whole draft, so a near match
+    earlier in the draft can never take the entry another draft entry names
+    exactly. Each existing entry is the duplicate of at most one draft entry.
+    """
+    passages = {i: _draft_passage(conn, e, sole_source)
+                for i, e in enumerate(draft_entries) if not e.get("uuid")}
+    found: dict[int, tuple[str, dict]] = {}
+    for exact_only in (True, False):
+        for index, passage in passages.items():
+            if index in found:
+                continue
+            best_uuid, best, best_rank = None, None, None
+            for uuid_, info in existing.items():
+                if uuid_ in matched:
+                    continue
+                verdict = _duplicate_verdict(draft_entries[index], passage, info,
+                                             exact_only)
+                if verdict is None:
+                    continue
+                rank = (verdict["similarity"], len(verdict["signals"]))
+                if best is None or rank > best_rank:
+                    best_uuid, best, best_rank = uuid_, verdict, rank
+            if best is not None:
+                matched.add(best_uuid)
+                found[index] = (best_uuid, best)
+    return found
 
 
 def _draft_vs_existing_changes(conn: sqlite3.Connection, draft_entry: dict,
@@ -163,21 +370,32 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
             "SELECT source_id FROM entry_sources WHERE entry_id=?", (row["id"],))]
         existing[row["uuid"]] = {"id": row["id"], "snap": snap,
                                  "confirmed": bool(row["confirmed_at"]),
-                                 "sources": from_sources}
+                                 "sources": from_sources,
+                                 "passages": _existing_passages(conn, row["id"])}
+    sole_source = source_ids[0] if len(source_ids) == 1 else None
 
     items: list[dict] = []
-    matched: set[str] = set()
+    # An entry the draft names by uuid is spoken for: it never doubles as
+    # some other draft entry's fuzzy duplicate.
+    matched: set[str] = {e["uuid"] for e in draft.get("entries", []) if e.get("uuid")}
+    targeted: set[str] = set()
+    duplicates = _match_duplicates(conn, draft.get("entries", []), existing,
+                                   matched, sole_source)
 
     for index, draft_entry in enumerate(draft.get("entries", [])):
         target_uuid = draft_entry.get("uuid")
         if target_uuid:
             info = existing.get(target_uuid)
-            if info is None:
-                # Exists (contract validated) but not active on this date.
-                row = entries_mod.get_by_uuid(conn, target_uuid)
-                info = {"id": row["id"], "snap": entries_mod.snapshot(conn, row["id"]),
-                        "confirmed": bool(row["confirmed_at"]), "sources": []}
-            matched.add(target_uuid)
+            if info is None or target_uuid in targeted:
+                # The contract refuses both (decision #5): a uuid edit is a
+                # same-day re-extraction of an active entry, named once. Edit
+                # anything else by hand; this day's fingerprint would not even
+                # cover it, so the review could go stale unnoticed.
+                raise DomainError(
+                    f"entries[{index}].uuid: {target_uuid} is not an active "
+                    f"{journal_date} entry this draft may target — cross-day "
+                    f"changes go through entry_updates or lifecrm entry edit")
+            targeted.add(target_uuid)
             changes = _draft_vs_existing_changes(conn, draft_entry, info["snap"])
             if not changes:
                 items.append({"action": "unchanged", "index": index,
@@ -191,28 +409,20 @@ def build_diff(conn: sqlite3.Connection, draft: dict, extraction_run: dict) -> d
                               "accepted": None if info["confirmed"] else True})
             continue
 
-        best_uuid, best_sim = None, 0.0
-        for uuid_, info in existing.items():
-            if uuid_ in matched:
-                continue
-            sim = _title_sim(draft_entry["title"], info["snap"]["title"])
-            if sim > best_sim:
-                best_uuid, best_sim = uuid_, sim
-        is_dup = False
-        if best_uuid is not None:
-            info = existing[best_uuid]
-            same_cat = (draft_entry["categories"]["primary"].lower()
-                        == (info["snap"]["categories"]["primary"] or "").lower())
-            same_kind = draft_entry["kind"].lower() == info["snap"]["kind"].lower()
-            if best_sim >= DUPLICATE_TITLE_SIM or (
-                    best_sim >= DUPLICATE_RELATED_SIM and same_cat and same_kind):
-                is_dup = True
-        if is_dup:
-            matched.add(best_uuid)
+        if index in duplicates:
+            best_uuid, best = duplicates[index]
+            snap = existing[best_uuid]["snap"]
+            # The incumbent travels with the item: the reviewer decides
+            # "same record or not" by comparing both, not from a title alone.
             items.append({"action": "possible_duplicate", "index": index,
                           "entry": draft_entry, "of_entry_uuid": best_uuid,
-                          "of_title": existing[best_uuid]["snap"]["title"],
-                          "similarity": round(best_sim, 3), "accepted": None})
+                          "of_title": snap["title"], "of_body": snap["body"],
+                          "of_kind": snap["kind"], "of_categories": snap["categories"],
+                          "of_entities": [{"id": e["id"], "name": e["name"],
+                                           "type": e["type"], "role": e["role"]}
+                                          for e in snap["entities"]],
+                          "similarity": round(best["similarity"], 3),
+                          "signals": best["signals"], "accepted": None})
         else:
             items.append({"action": "add", "index": index, "entry": draft_entry})
 
@@ -338,6 +548,10 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
     if run["status"] == "applied":
         raise DomainError(
             f"extraction run {diff['extraction_run_uuid']} was already applied — "
+            f"re-run ingest to build a fresh diff")
+    if run["status"] == "discarded":
+        raise DomainError(
+            f"extraction run {diff['extraction_run_uuid']} was discarded — "
             f"re-run ingest to build a fresh diff")
 
     journal_date = diff["journal_date"]
@@ -521,7 +735,9 @@ def apply_diff(conn: sqlite3.Connection, diff: dict) -> dict:
     sm = day_diff.get("summary", {})
     if sm.get("action") == "set" or (sm.get("action") == "conflict"
                                      and sm.get("accepted") is True):
-        days.set_summary(conn, journal_date, sm["value"])
+        # Replacing an existing summary is a decision the user made.
+        days.set_summary(conn, journal_date, sm["value"],
+                         actor="user" if sm["action"] == "conflict" else "extraction")
     for md in day_diff.get("measurements", []):
         m = md["measurement"]
         if md["action"] == "add" or (md["action"] == "conflict"

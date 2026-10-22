@@ -81,6 +81,34 @@ def _capture_checks(cfg: Config, _add) -> None:
         _add("ok", "inbox_unrecognized")
 
 
+def _health_multi_origin(conn: sqlite3.Connection, _add) -> None:
+    """Two apps recording the same metric on the same day — Samsung Health and
+    Google Fit both counting steps, a phone and a watch both logging sleep.
+    Dashboards and `ask` SUM a day's records, so every such day reads double.
+    Not corruption, so a warning; it persists until one writer is gone."""
+    from .health_connect import AVERAGED_METRICS
+    marks = ",".join("?" for _ in AVERAGED_METRICS)
+    rows = conn.execute(
+        f"SELECT metric, COUNT(*) days, "
+        f"(SELECT group_concat(origin_app, ', ') FROM (SELECT DISTINCT origin_app "
+        f" FROM health_records h2 WHERE h2.metric=d.metric AND h2.status='active' "
+        f" AND h2.origin_app IS NOT NULL ORDER BY origin_app)) apps "
+        f"FROM (SELECT metric, journal_date FROM health_records "
+        f"      WHERE status='active' AND origin_app IS NOT NULL "
+        f"      AND metric NOT IN ({marks}) "
+        f"      GROUP BY metric, journal_date "
+        f"      HAVING COUNT(DISTINCT origin_app) > 1) d "
+        f"GROUP BY metric ORDER BY metric", sorted(AVERAGED_METRICS)).fetchall()
+    if rows:
+        _add("warn", "health_multi_origin",
+             "; ".join(f"{r['metric']}: {r['apps']} on {r['days']} day(s)"
+                       for r in rows)
+             + " — more than one app wrote these, so daily totals double-count; "
+               "see docs/health-connect.md (first-import checklist)")
+    else:
+        _add("ok", "health_multi_origin")
+
+
 def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     checks: list[dict] = []
 
@@ -223,17 +251,19 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
 
         _capture_checks(cfg, _add)
 
-    stuck = conn.execute(
-        "SELECT COUNT(*) c FROM extraction_runs WHERE status='draft' "
-        "AND started_at < ?",
+    stuck = [r["uuid"][:8] for r in conn.execute(
+        "SELECT uuid FROM extraction_runs WHERE status='draft' "
+        "AND started_at < ? ORDER BY id",
         ((datetime.now(timezone.utc)
-          .strftime("%Y-%m-%dT%H:%M:%SZ")[:10]),)).fetchone()["c"]
+          .strftime("%Y-%m-%dT%H:%M:%SZ")[:10]),))]
     # started_at is a full timestamp; comparing against today's date string
     # flags anything started before today — close enough for a nudge.
     if stuck:
         _add("warn", "stuck_drafts",
-             f"{stuck} extraction run(s) still in draft from before today — "
-             f"apply or discard them")
+             f"{len(stuck)} extraction run(s) still in draft from before today: "
+             f"{', '.join(stuck[:5])}" + (" …" if len(stuck) > 5 else "")
+             + f" — apply the diff (data/staging/diff-<date>-<run>.json) or "
+               f"discard the run: python -m lifecrm admin discard-run {stuck[0]}")
     else:
         _add("ok", "stuck_drafts")
 
@@ -264,6 +294,7 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
                      f"over {HEALTH_STALE_DAYS} days")
             else:
                 _add("ok", "health_data_age")
+            _health_multi_origin(conn, _add)
     except sqlite3.OperationalError:
         pass   # pre-v3 schema; pending_migrations already failed above
 

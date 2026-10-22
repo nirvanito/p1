@@ -34,6 +34,7 @@ ENTRY_KEYS = {
 TOP_KEYS = {"contract_version", "journal_date", "sources", "day", "entries",
             "entry_updates", "links", "ambiguities", "extraction"}
 CLOSURES = ("done", "dropped", "obsolete")
+INTERFACES = ("claude_skill", "manual")
 
 
 def validate_draft(conn: sqlite3.Connection, draft: dict,
@@ -148,9 +149,12 @@ def validate_draft(conn: sqlite3.Connection, draft: dict,
         entries_list = []
     known_kinds = _known(conn, "entry_kinds")
     known_cats = _known(conn, "categories")
+    draft_date = jd if isinstance(jd, str) and is_iso_date(jd) else None
+    targeted: set[str] = set()
     for i, entry in enumerate(entries_list):
         errors.extend(_validate_entry(conn, entry, i, known_kinds, known_cats,
-                                      declared_ids, multi_source, prov_len))
+                                      declared_ids, multi_source, prov_len,
+                                      draft_date, targeted))
 
     # --- entry_updates ---
     updates = draft.get("entry_updates")
@@ -181,6 +185,25 @@ def validate_draft(conn: sqlite3.Connection, draft: dict,
                 if not isinstance(a, dict) or not isinstance(a.get("note"), str):
                     errors.append(f"ambiguities[{i}]: must be an object with a string 'note'")
 
+    # --- extraction --- validated here, not only at ingest time, so a
+    # --dry-run that says "valid" means the real ingest will not refuse it.
+    ext = draft.get("extraction")
+    if ext is not None:
+        if not isinstance(ext, dict):
+            errors.append(f"extraction: must be an object {{provider, model, "
+                          f"interface}} (got {type(ext).__name__})")
+        else:
+            for key in set(ext) - {"provider", "model", "interface"}:
+                errors.append(f"extraction.{key}: unknown key")
+            if "interface" in ext and ext["interface"] not in INTERFACES:
+                errors.append(f"extraction.interface: '{ext['interface']}' must be "
+                              f"{' or '.join(INTERFACES)}")
+            if "provider" in ext and (not isinstance(ext["provider"], str)
+                                      or not ext["provider"].strip()):
+                errors.append("extraction.provider: must be a non-empty string")
+            if ext.get("model") is not None and not isinstance(ext["model"], str):
+                errors.append("extraction.model: must be a string or null")
+
     return errors
 
 
@@ -202,7 +225,8 @@ def _validate_measurement(m, path: str) -> str | None:
 
 def _validate_entry(conn: sqlite3.Connection, entry, i: int, known_kinds: list[str],
                     known_cats: list[str], declared_ids: list[int],
-                    multi_source: bool, prov_len) -> list[str]:
+                    multi_source: bool, prov_len, draft_date: str | None = None,
+                    targeted: set[str] | None = None) -> list[str]:
     errs: list[str] = []
     p = f"entries[{i}]"
     if not isinstance(entry, dict):
@@ -274,10 +298,35 @@ def _validate_entry(conn: sqlite3.Connection, entry, i: int, known_kinds: list[s
                     f"entry must name which source supports it")
 
     if "uuid" in entry:
-        if conn.execute("SELECT 1 FROM entries WHERE uuid=?", (entry["uuid"],)).fetchone() is None:
-            errs.append(f"{p}.uuid: entry {entry['uuid']} does not exist "
-                        f"(omit uuid for new entries)")
+        errs.extend(_validate_entry_uuid(conn, entry["uuid"], p, draft_date,
+                                         targeted if targeted is not None else set()))
     return errs
+
+
+def _validate_entry_uuid(conn: sqlite3.Connection, u, p: str,
+                         draft_date: str | None, targeted: set[str]) -> list[str]:
+    """entries[].uuid re-extracts an ACTIVE entry of THIS day (decision #5:
+    forbid, not surface). A cross-day uuid used to be auto-edited without a
+    decision, outside the day fingerprint that guards the review, and a
+    retracted target failed the whole apply. Cross-day edits stay explicit."""
+    if not isinstance(u, str):
+        return [f"{p}.uuid: must be a string"]
+    row = conn.execute("SELECT journal_date, status FROM entries WHERE uuid=?",
+                       (u,)).fetchone()
+    if row is None:
+        return [f"{p}.uuid: entry {u} does not exist (omit uuid for new entries)"]
+    if u in targeted:
+        return [f"{p}.uuid: entry {u} is targeted by more than one entry — "
+                f"merge them into one"]
+    targeted.add(u)
+    if row["status"] != "active":
+        return [f"{p}.uuid: entry {u} is {row['status']} — only active entries "
+                f"can be re-extracted (omit uuid to propose a new entry)"]
+    if draft_date is not None and row["journal_date"] != draft_date:
+        return [f"{p}.uuid: entry {u} is on {row['journal_date']}, not "
+                f"{draft_date} — entries[].uuid targets same-day entries only; "
+                f"cross-day changes go through entry_updates or lifecrm entry edit"]
+    return []
 
 
 def _validate_entity_ref(conn: sqlite3.Connection, ref, path: str) -> list[str]:

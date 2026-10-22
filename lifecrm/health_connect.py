@@ -114,6 +114,34 @@ MAPPERS = [
 # Child tables a mapper consumes — never reported as unmapped.
 _CHILD_TABLES = {"sleep_stages_table", "heart_rate_record_series_table"}
 
+# Metrics whose day figure is an average or a reading. Every other metric
+# (steps, sleep, distance, energy, food, water, workouts) is SUMMED per day by
+# the dashboards and by `ask` — so when two apps both write it (Samsung Health
+# and Google Fit counting the same walk, a phone and a watch logging the same
+# night) every day both recorded reads double. Listing the averaged ones keeps
+# a new metric on the cautious side by default.
+AVERAGED_METRICS = frozenset({"weight", "heart_rate", "resting_heart_rate",
+                              "body_fat"})
+
+
+def origin_report(records: list[dict]) -> dict[str, dict]:
+    """Per metric: which apps wrote it, and on how many journal days more
+    than one of them did. Records without an origin app are not counted —
+    unknown is not evidence of a second writer."""
+    apps: dict[str, set[str]] = {}
+    per_day: dict[tuple[str, str], set[str]] = {}
+    for r in records:
+        if not r.get("origin_app"):
+            continue
+        apps.setdefault(r["metric"], set()).add(r["origin_app"])
+        per_day.setdefault((r["metric"], r["journal_date"]), set()).add(r["origin_app"])
+    out = {}
+    for metric in sorted(apps):
+        overlap = sum(1 for (m, _), s in per_day.items() if m == metric and len(s) > 1)
+        out[metric] = {"apps": sorted(apps[metric]), "days_with_several": overlap,
+                       "summed": metric not in AVERAGED_METRICS}
+    return out
+
 
 def open_export(path: Path):
     """Return (cleanup_or_None, db_path, inner_name). Zip members are
@@ -393,7 +421,8 @@ def plan_summary(scan: dict, plan: dict) -> dict:
             "refreshed": len(plan["refreshed"]), "identical": plan["identical"],
             "duplicates_in_export": plan["dup_incoming"],
             "conflicts": plan["conflicts"], "unmapped": scan["unmapped"],
-            "skipped": scan["skipped"]}
+            "skipped": scan["skipped"],
+            "origin_apps": origin_report(scan["records"])}
 
 
 # ---------------------------------------------------------------- report
@@ -448,6 +477,20 @@ def report_lines(scan: dict, plan: dict) -> list[str]:
         lines.append(f"  CONFLICT {c['metric']} {c['external_id'][:12]}…: "
                      f"differs from stored record but is not newer — kept "
                      f"existing ({', '.join(sorted(c['changes']))})")
+    # Over the whole export, not just what is new: a second writer is a
+    # property of the phone's setup, and it is the dry-run that must say so.
+    for metric, o in origin_report(scan["records"]).items():
+        if len(o["apps"]) < 2:
+            continue
+        who = f"written by {len(o['apps'])} apps ({', '.join(o['apps'])})"
+        if o["summed"] and o["days_with_several"]:
+            lines.append(f"  WARNING {metric}: {who} — on {o['days_with_several']} "
+                         f"day(s) more than one recorded it, so daily totals "
+                         f"will double-count")
+        else:
+            lines.append(f"  note {metric}: {who}"
+                         + (" — day figures mix both apps' readings"
+                            if not o["summed"] else " — never on the same day"))
     for s in scan["skipped"]:
         lines.append(f"  skipped mapper: {s}")
     if scan["unmapped"]:

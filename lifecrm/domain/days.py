@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from . import audit
 from .util import DomainError, is_iso_date, now_utc
 
 
@@ -32,9 +33,20 @@ def ensure_day(conn: sqlite3.Connection, journal_date: str) -> None:
     )
 
 
-def set_summary(conn: sqlite3.Connection, journal_date: str, summary: str) -> None:
+def set_summary(conn: sqlite3.Connection, journal_date: str, summary: str,
+                actor: str = "extraction") -> bool:
+    """Set a day's summary; True when it changed. Audited like every other
+    domain mutation — the old text goes in the audit row, because a summary
+    replaced by an accepted conflict has no revision table to fall back on."""
     ensure_day(conn, journal_date)
+    old = conn.execute("SELECT summary FROM days WHERE journal_date=?",
+                       (journal_date,)).fetchone()["summary"]
+    if old == summary:
+        return False
     conn.execute(
         "UPDATE days SET summary=?, updated_at=? WHERE journal_date=?",
         (summary, now_utc(), journal_date),
     )
+    audit.log(conn, actor, "set_summary", "days", None,
+              {"journal_date": journal_date, "old": old, "new": summary})
+    return True
