@@ -248,8 +248,10 @@ def test_ask_through_a_local_model_has_its_citations_checked(web, monkeypatch):
                         "You slept fine [M1], and ran a marathon [M9].")
     c = start(use_llm=True)
     r = c.get("/api/ask?q=how+did+I+sleep+in+July")
-    assert r["answer_source"] == "model:fake:1b"
-    assert r["citations"]["unknown"] == ["M9"]
+    # recall.answer sets aside a model answer citing evidence that does not
+    # exist; the page gets the deterministic answer and the reason.
+    assert r["answer_source"] == "deterministic"
+    assert r["model_rejected"]["unknown"] == ["M9"]
     off = c.get("/api/ask?q=how+did+I+sleep+in+July&llm=0")
     assert off["answer_source"] == "deterministic"
 

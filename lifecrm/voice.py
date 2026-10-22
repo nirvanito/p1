@@ -219,6 +219,10 @@ def vetted(result: dict, warn: Callable[[str], None] | None = None) -> dict:
     none while evidence exists — is swapped for the deterministic answer.
     The swap is visible in answer_source; the evidence is untouched."""
     c = result["citations"]
+    if result.get("model_rejected") and result["answer_source"] == "deterministic":
+        # recall.answer already set the model's answer aside (and warned);
+        # only say so where the answer source is shown.
+        return {**result, "answer_source": "deterministic (model answer rejected)"}
     if not result["answer_source"].startswith("model:") \
             or not (c["unknown"] or c["uncited"]):
         return result

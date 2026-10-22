@@ -1012,6 +1012,7 @@ function answerCard(r) {
   const cit = r.citations || {};
   if (cit.unknown && cit.unknown.length) warnings.push(h("div", { class: "warning" }, "The model cited evidence that does not exist (" + cit.unknown.join(", ") + ") — treat those claims as unsupported."));
   if (cit.uncited && src.startsWith("model:")) warnings.push(h("div", { class: "warning" }, "The model cited no evidence — check it against the evidence below."));
+  if (r.model_rejected) warnings.push(h("div", { class: "note" }, "The local model's answer was set aside" + (r.model_rejected.unknown && r.model_rejected.unknown.length ? " (it cited " + r.model_rejected.unknown.join(", ") + ", which is not in the evidence)" : " (it stated numbers or dates its citations do not contain)") + " — this answer is built from the evidence alone."));
   for (const wmsg of r.warnings || []) warnings.push(h("div", { class: "note" }, wmsg));
   if (r.model && !r.model.available && r.model.reason && src === "deterministic" && STATUS && STATUS.llm && STATUS.llm.available) warnings.push(h("div", { class: "note" }, r.model.reason));
 
