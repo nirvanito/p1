@@ -195,7 +195,8 @@ def test_last_contact_is_never_an_upcoming_event_a_missed_call_or_a_tapback(
     people = {p["name"]: p for p in api.people(conn, cfg)["people"]}
     # Sam's newest record is next week's meeting; Priya's a tapback, a contact
     # card and a missed call. None of them is contact.
-    assert people["Sam Okafor"]["last_contact"] == {"date": d(-1), "tier": "observed"}
+    # Jake's group message (d-1) is not Sam texting you: the 1:1 texts (d-5) are.
+    assert people["Sam Okafor"]["last_contact"] == {"date": d(-5), "tier": "observed"}
     assert people["Priya Natarajan"]["last_contact"] == {"date": d(-10),
                                                          "tier": "observed"}
     for name in ("Sam Okafor", "Priya Natarajan"):

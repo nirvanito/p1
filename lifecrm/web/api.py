@@ -558,18 +558,23 @@ def _owner_entities(conn: sqlite3.Connection, roots: dict[int, int]) -> set[int]
     return owners
 
 
-def _contact_clause(today_iso: str) -> tuple[str, list]:
+def _contact_clause(today_iso: str, they_sent: str,
+                    they_sent_args: tuple = ()) -> tuple[str, list]:
     """What counts as contact with someone — the rule `ask` answers 'when did
-    I last talk to X' with (recall.last_contact): a text, a call that
-    connected, or a calendar event, never dated after today. A missed call
-    is an attempt, a reaction or a note is not a conversation, and next
-    week's meeting has not happened yet."""
+    I last talk to X' with (recall.last_contact): a text that passed between
+    you and them (one they sent, or one you sent), a call that connected, or
+    a calendar event, never dated after today. A group message someone else
+    sent is not them texting you, a missed call is an attempt, a reaction or
+    a note is not a conversation, and next week's meeting has not happened
+    yet. `they_sent` is the SQL saying this person sent row o."""
     texts, calls = recall.TEXT_STREAMS, recall.CALL_STREAMS
     calendar = recall.STREAM_GROUPS["calendar"]
-    return ((f"(o.stream IN ({_marks(texts)}) OR o.stream IN ({_marks(calendar)}) "
+    return ((f"((o.stream IN ({_marks(texts)}) "
+             f"AND (o.direction = 'out' OR {they_sent})) "
+             f"OR o.stream IN ({_marks(calendar)}) "
              f"OR (o.stream IN ({_marks(calls)}) "
              "AND (o.value IS NULL OR o.value > 0))) AND o.journal_date <= ?"),
-            [*texts, *calendar, *calls, today_iso])
+            [*texts, *they_sent_args, *calendar, *calls, today_iso])
 
 
 _RECENT_FIRST = "o.journal_date DESC, o.started_at DESC, o.id DESC"
@@ -600,7 +605,8 @@ def people(conn: sqlite3.Connection, cfg: Config) -> dict:
                               "WHERE entity_id IS NOT NULL GROUP BY entity_id"):
             eid = roots.get(r["entity_id"], r["entity_id"])
             handles[eid] = handles.get(eid, 0) + r["n"]
-        contact, contact_args = _contact_clause(now)
+        # p is this person's own participant row on o.
+        contact, contact_args = _contact_clause(now, "p.role = 'sender'")
         for r in conn.execute(
                 "SELECT h.entity_id, COUNT(DISTINCT o.id) AS n, "
                 f"MAX(CASE WHEN {contact} THEN o.journal_date END) AS last "
@@ -718,7 +724,12 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
             {**item, "fields": _card_fields(_loads(r["value_json"]))}
             for item, r in zip(_obs_items(conn, cfg, cards, full=True), cards)]
         if not is_owner:
-            contact, contact_args = _contact_clause(now)
+            sent_by_them = (
+                "EXISTS (SELECT 1 FROM observation_participants ps "
+                "JOIN entity_handles hs ON hs.kind=ps.handle_kind "
+                "AND hs.value=ps.handle_value WHERE ps.observation_id=o.id "
+                f"AND ps.role='sender' AND hs.entity_id IN ({_marks(ids)}))")
+            contact, contact_args = _contact_clause(now, sent_by_them, tuple(ids))
             hit = conn.execute(
                 _OBS_SELECT + "WHERE " + involving + f"AND {contact} "
                 f"ORDER BY {_RECENT_FIRST} LIMIT 1", (*args, *contact_args)).fetchall()
