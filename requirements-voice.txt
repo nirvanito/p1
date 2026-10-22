@@ -1,0 +1,9 @@
+# Optional extras for `lifecrm voice` (docs/voice.md). Nothing else in the
+# project imports these, and `voice --text` / `voice --file` work without
+# them. Install into the project venv:
+#   Windows:  .venv\Scripts\python.exe -m pip install -r requirements-voice.txt
+#   macOS:    .venv/bin/python -m pip install -r requirements-voice.txt
+# sounddevice's Windows and macOS wheels bundle PortAudio; on Linux install
+# it first (Debian/Ubuntu: sudo apt install libportaudio2).
+sounddevice>=0.4.6        # push-to-talk microphone capture, 16 kHz mono
+openwakeword>=0.6,<0.7    # optional "hey jarvis" wake word (--wake); brings numpy + onnxruntime
