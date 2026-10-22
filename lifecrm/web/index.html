@@ -1,0 +1,1541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Life CRM</title>
+<meta name="description" content="Your life database: ask with citations, the day timeline, people, open loops, sources and health.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f6fa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Life CRM">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="{{MANIFEST}}">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+/* ---------------------------------------------------------------- tokens */
+:root {
+  color-scheme: light;
+  --bg: #f5f6fa;
+  --surface: #ffffff;
+  --surface-2: #f0f1f6;
+  --surface-3: #e7e9f0;
+  --border: #e2e4eb;
+  --text: #14161c;
+  --text-2: #484d5c;
+  --muted: #747a8a;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0ff;
+  --accent-ink: #ffffff;
+  --observed: #0e7490;
+  --observed-soft: #f0fbfd;
+  --observed-border: #9fdbe6;
+  --good: #15803d;
+  --good-soft: #ecfdf3;
+  --warn: #b45309;
+  --warn-soft: #fff7e6;
+  --bad: #b91c1c;
+  --bad-soft: #fef2f2;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --grid: #e8eaf0;
+  --heat-0: #eef0f5;
+  --heat-1: #cde2fb;
+  --heat-2: #9ec5f4;
+  --heat-3: #5598e7;
+  --heat-4: #2a78d6;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  --shadow-lg: 0 8px 24px rgba(16, 24, 40, .10);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --nav-h: 64px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115;
+    --surface: #171a21;
+    --surface-2: #1d2129;
+    --surface-3: #262b35;
+    --border: #2a2f3a;
+    --text: #eef0f5;
+    --text-2: #b9bfcc;
+    --muted: #8a91a2;
+    --accent: #8b93ff;
+    --accent-hover: #a5abff;
+    --accent-soft: #23264a;
+    --accent-ink: #0f1115;
+    --observed: #6fd3e4;
+    --observed-soft: #11252b;
+    --observed-border: #24525b;
+    --good: #4ade80;
+    --good-soft: #10291b;
+    --warn: #fbbf24;
+    --warn-soft: #2d2410;
+    --bad: #f87171;
+    --bad-soft: #351718;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --grid: #262b35;
+    --heat-0: #1d2129;
+    --heat-1: #104281;
+    --heat-2: #1c5cab;
+    --heat-3: #2a78d6;
+    --heat-4: #5598e7;
+    --shadow: none;
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, .45);
+  }
+}
+
+/* ---------------------------------------------------------------- base */
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1, h2, h3 { margin: 0; line-height: 1.2; }
+h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+h3 { font-size: 13px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: inherit; border-radius: 3px; padding: 0 2px; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.nowrap { white-space: nowrap; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- layout */
+.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+.nav {
+  position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 2px;
+  padding: 20px 12px; border-right: 1px solid var(--border); background: var(--surface);
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+.brand svg { width: 28px; height: 28px; border-radius: 8px; }
+.nav a {
+  display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 10px;
+  color: var(--text-2); font-weight: 550; text-decoration: none;
+}
+.nav a svg { width: 20px; height: 20px; flex: none; }
+.nav a:hover { background: var(--surface-2); color: var(--text); }
+.nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.nav-foot { margin-top: auto; padding: 12px 10px 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.nav-foot .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 6px; vertical-align: 1px; }
+main { width: 100%; max-width: 900px; padding: 32px 36px 64px; margin: 0 auto; outline: none; }
+@media (max-width: 880px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .nav {
+    position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; top: auto; height: auto;
+    flex-direction: row; justify-content: space-around; gap: 0;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    border-right: 0; border-top: 1px solid var(--border);
+    background: var(--surface);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    -webkit-backdrop-filter: saturate(1.6) blur(14px); backdrop-filter: saturate(1.6) blur(14px);
+  }
+  .brand, .nav-foot { display: none; }
+  .nav a { flex: 1 1 0; flex-direction: column; gap: 2px; padding: 6px 2px; font-size: 11px; font-weight: 600; border-radius: 10px; min-width: 0; }
+  .nav a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .nav a[aria-current="page"] { background: transparent; }
+  main { padding: calc(18px + env(safe-area-inset-top)) 16px calc(var(--nav-h) + 28px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 23px; }
+}
+
+/* ---------------------------------------------------------------- building blocks */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.page-head .sub { color: var(--muted); margin-top: 4px; font-size: 14px; }
+.section { margin-top: 26px; }
+.section > h3 { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.section > h3 .count { color: var(--muted); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.card + .card { margin-top: 10px; }
+.stack > * + * { margin-top: 10px; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-2);
+  font-size: 13.5px; cursor: pointer; text-align: left; line-height: 1.35; text-decoration: none;
+}
+.chip:hover { border-color: var(--accent); color: var(--text); text-decoration: none; }
+.chip svg { width: 15px; height: 15px; flex: none; }
+.chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 650; letter-spacing: .02em; background: var(--surface-2);
+  color: var(--text-2); white-space: nowrap; line-height: 1.6;
+}
+.badge.k-task, .badge.k-plan { background: var(--accent-soft); color: var(--accent); }
+.badge.k-idea, .badge.k-thought, .badge.k-reflection { background: var(--warn-soft); color: var(--warn); }
+.badge.k-decision, .badge.k-fact { background: var(--good-soft); color: var(--good); }
+.badge.obs { background: var(--observed-soft); color: var(--observed); border: 1px dashed var(--observed-border); }
+.badge.bad { background: var(--bad-soft); color: var(--bad); }
+.badge.good { background: var(--good-soft); color: var(--good); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge svg { width: 12px; height: 12px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-weight: 600; font-size: 14px;
+  color: var(--text); text-decoration: none;
+}
+.btn:hover { border-color: var(--accent); text-decoration: none; }
+.btn svg { width: 16px; height: 16px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.icon-btn {
+  width: 42px; height: 42px; flex: none; border-radius: 12px; border: 0; display: grid; place-items: center;
+  background: transparent; color: var(--text-2); cursor: pointer;
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn svg { width: 22px; height: 22px; }
+.empty { text-align: center; color: var(--muted); padding: 36px 16px; }
+.empty svg { width: 34px; height: 34px; opacity: .55; display: block; margin: 0 auto 10px; }
+.error { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); background: var(--bad-soft); color: var(--bad); }
+.skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; height: 72px; }
+.skeleton + .skeleton { margin-top: 10px; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); min-width: 0; }
+.tile .label { font-size: 12.5px; color: var(--muted); }
+.tile .value { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .value .unit { font-size: 13px; font-weight: 550; color: var(--muted); margin-left: 3px; letter-spacing: 0; }
+.tile .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 14px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.list > * { border-top: 1px solid var(--border); }
+.list > *:first-child { border-top: 0; }
+.quote { border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; margin: 8px 0; color: var(--text-2); font-style: italic; overflow-wrap: anywhere; }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom));
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px;
+  box-shadow: var(--shadow-lg); z-index: 50; max-width: min(92vw, 520px);
+}
+@media (min-width: 881px) { .toast { bottom: 28px; } }
+
+/* ---------------------------------------------------------------- ask */
+.hero { margin: 6px 0 18px; }
+.hero h1 { font-size: 30px; }
+.hero .lede { color: var(--text-2); margin: 6px 0 0; font-size: 15.5px; }
+.demo-pill { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: var(--warn); background: var(--warn-soft); padding: 3px 10px; border-radius: 999px; font-weight: 600; }
+.askbox {
+  display: flex; align-items: flex-end; gap: 4px; padding: 8px 8px 8px 18px;
+  background: var(--surface); border: 1.5px solid var(--border); border-radius: 22px; box-shadow: var(--shadow-lg);
+  transition: border-color .15s;
+}
+.askbox:focus-within { border-color: var(--accent); }
+.askbox textarea {
+  flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--text);
+  font: inherit; font-size: 18px; line-height: 1.45; padding: 9px 0; max-height: 180px; min-height: 44px;
+}
+.askbox textarea::placeholder { color: var(--muted); }
+.askbox .send { background: var(--accent); color: var(--accent-ink); border-radius: 14px; }
+.askbox .send:hover { background: var(--accent-hover); color: var(--accent-ink); }
+.askbox .send:disabled { opacity: .5; }
+.askbox .mic.recording { background: var(--bad); color: #fff; animation: pulse 1.2s infinite; }
+.askbox .mic.busy { opacity: .6; pointer-events: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 55%, transparent); } 100% { box-shadow: 0 0 0 12px transparent; } }
+.ask-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 2px 0; font-size: 13px; color: var(--muted); }
+.voice-hint { display: flex; gap: 8px; align-items: flex-start; margin: 10px 2px 0; font-size: 13px; color: var(--muted); }
+.voice-hint svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+.examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.answers { margin-top: 22px; }
+.answer { padding: 18px 20px; }
+.answer + .answer { margin-top: 14px; }
+.answer .q { font-weight: 650; font-size: 15px; color: var(--text-2); display: flex; gap: 8px; align-items: baseline; }
+.answer .q::before { content: "\201C"; color: var(--muted); }
+.answer .q::after { content: "\201D"; color: var(--muted); margin-left: -6px; }
+.answer .a { font-size: 17px; line-height: 1.6; margin: 10px 0 0; overflow-wrap: anywhere; }
+.cite {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 22px; padding: 0 6px;
+  margin: 0 1px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-2);
+  font: 650 11.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--accent);
+  cursor: pointer; vertical-align: 2px;
+}
+.cite:hover, .cite[aria-expanded="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.cite.o { color: var(--observed); border-style: dashed; border-color: var(--observed-border); background: var(--observed-soft); }
+.cite.o:hover, .cite.o[aria-expanded="true"] { background: var(--observed); color: var(--surface); }
+.cite.unknown { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); text-decoration: line-through; cursor: help; }
+.answer .meta { margin-top: 12px; font-size: 12.5px; color: var(--muted); display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; }
+.answer .meta svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 3px; }
+.answer .warning { margin-top: 10px; font-size: 13px; color: var(--bad); background: var(--bad-soft); border-radius: 10px; padding: 8px 12px; }
+.answer .note { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.answer.pending .typing { margin-top: 12px; display: flex; gap: 5px; }
+.typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+.evidence-panel { margin-top: 14px; }
+.ev { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; background: var(--surface); }
+.ev + .ev { margin-top: 8px; }
+.ev.observed { background: var(--observed-soft); border: 1px dashed var(--observed-border); }
+.ev-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.ev-head .id { font: 700 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--accent); }
+.ev.observed .ev-head .id { color: var(--observed); }
+.ev-title { font-weight: 650; margin-top: 4px; overflow-wrap: anywhere; }
+.ev-body { margin-top: 4px; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.ev-links { margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; font-weight: 600; }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--text-2); margin-top: 6px; }
+.stats b { color: var(--text); font-weight: 650; }
+details.all-ev { margin-top: 14px; font-size: 13.5px; }
+details.all-ev summary { cursor: pointer; color: var(--muted); font-weight: 600; list-style: none; }
+details.all-ev summary::-webkit-details-marker { display: none; }
+details.all-ev summary::before { content: "\25B8"; display: inline-block; width: 1em; transition: transform .15s; }
+details.all-ev[open] summary::before { transform: rotate(90deg); }
+.ev-index { margin-top: 8px; display: grid; gap: 6px; }
+.ev-index button { text-align: left; background: none; border: 0; padding: 4px 0; cursor: pointer; color: var(--text-2); display: flex; gap: 8px; align-items: baseline; }
+.ev-index button:hover { color: var(--text); }
+
+/* ---------------------------------------------------------------- charts */
+.chart { position: relative; width: 100%; min-height: 40px; margin-top: 8px; }
+.chart svg { display: block; overflow: visible; }
+.chart .grid { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
+.chart .base { stroke: var(--border); stroke-width: 1; shape-rendering: crispEdges; }
+.chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .endlabel { fill: var(--text-2); font-size: 11.5px; font-weight: 650; }
+.chart .guide { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 0; opacity: .55; }
+.chart .bar.hot { opacity: .78; }
+.tooltip {
+  position: fixed; z-index: 60; pointer-events: none; background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; font-size: 12.5px; box-shadow: var(--shadow-lg);
+  min-width: 110px;
+}
+.tooltip .t-date { color: var(--muted); font-size: 11.5px; margin-bottom: 2px; }
+.tooltip .t-row { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+.tooltip .sw { width: 10px; height: 3px; border-radius: 2px; }
+.legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--text-2); margin-top: 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 12px; }
+.chart-grid > .card + .card, .tiles > .card + .card { margin-top: 0; }
+.chart-card h2 { font-size: 15px; }
+.chart-card .headline { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+.chart-card .headline .big { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
+.chart-card .headline .unit { color: var(--muted); font-weight: 550; }
+.chart-card .headline .sub { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+.seg { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: transparent; padding: 5px 12px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-2); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+/* ---------------------------------------------------------------- day */
+.daynav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.daynav input[type=date] { font: inherit; font-size: 15px; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); min-height: 38px; }
+.heat { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; max-width: 420px; }
+.heat .wd { font-size: 10.5px; color: var(--muted); text-align: center; font-weight: 600; }
+.heat button {
+  aspect-ratio: 1; border-radius: 7px; border: 0; cursor: pointer; position: relative; background: var(--heat-0);
+  font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; padding: 0;
+}
+.heat button.h1 { background: var(--heat-1); } .heat button.h2 { background: var(--heat-2); }
+.heat button.h3 { background: var(--heat-3); color: #fff; } .heat button.h4 { background: var(--heat-4); color: #fff; }
+.heat button.sel { outline: 2px solid var(--text); outline-offset: 1px; }
+.heat button.today::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--accent); }
+.heat button.obs::before { content: ""; position: absolute; right: 3px; top: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--observed); }
+.heat button.future { opacity: .35; cursor: default; }
+.heat-legend { display: flex; align-items: center; gap: 4px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.heat-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.summary-card .text { font-size: 16.5px; line-height: 1.55; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.pill { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 12px; border-radius: 999px; background: var(--surface-2); font-size: 13.5px; color: var(--text-2); }
+.pill b { color: var(--text); font-size: 15px; }
+.entry-row, .obs-row, .person-row, .loop-row, .link-row {
+  display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; color: var(--text); text-decoration: none;
+}
+.entry-row:hover, .obs-row:hover, .person-row:hover, .loop-row:hover, .link-row:hover { background: var(--surface-2); text-decoration: none; }
+.entry-row .badge, .loop-row .badge { margin-top: 2px; }
+.row-main { min-width: 0; flex: 1; }
+.row-title { font-weight: 600; overflow-wrap: anywhere; }
+.row-meta { font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.row-side { font-size: 12.5px; color: var(--muted); white-space: nowrap; text-align: right; }
+.list.observed { background: var(--observed-soft); border: 1px dashed var(--observed-border); box-shadow: none; }
+.list.observed > * { border-top-color: var(--observed-border); }
+.obs-row .time { font: 600 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--observed); min-width: 44px; padding-top: 2px; }
+.obs-row .row-title { font-weight: 550; }
+.obs-row .cite-line { font-size: 11.5px; color: var(--observed); margin-top: 3px; letter-spacing: .01em; }
+.obs-row:hover { background: color-mix(in srgb, var(--observed) 8%, transparent); }
+.obs-row.current { background: color-mix(in srgb, var(--observed) 14%, transparent); }
+.stream-head { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; font-weight: 650; font-size: 14px; }
+.stream-head .badge { font-weight: 600; }
+.tier-note { font-size: 12.5px; color: var(--muted); margin: -4px 0 10px; }
+
+/* ---------------------------------------------------------------- people */
+.search { width: 100%; font: inherit; font-size: 16px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.search:focus { outline: 0; border-color: var(--accent); }
+.avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px; letter-spacing: .02em;
+}
+.avatar.lg { width: 64px; height: 64px; font-size: 22px; }
+.person-head { display: flex; gap: 16px; align-items: center; }
+.handle { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+
+/* ---------------------------------------------------------------- tables (sources) */
+.table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.table th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 650; padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.table td { padding: 9px 12px; border-top: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.table tr:first-child td { border-top: 0; }
+.table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+@media (max-width: 600px) {
+  .table.stackable thead { display: none; }
+  .table.stackable tr { display: block; padding: 10px 14px; border-top: 1px solid var(--border); }
+  .table.stackable tr:first-child { border-top: 0; }
+  .table.stackable td { display: flex; justify-content: space-between; gap: 12px; border: 0; padding: 2px 0; text-align: right; }
+  .table.stackable td::before { content: attr(data-label); color: var(--muted); font-size: 12px; text-align: left; }
+  .table.stackable td.num { white-space: normal; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="nav" id="nav" aria-label="Sections">
+    <div class="brand" aria-hidden="true">
+      <svg viewBox="0 0 512 512"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="url(#bg)"/><circle cx="256" cy="256" r="148" fill="none" stroke="#fff" stroke-width="34"/><circle cx="256" cy="256" r="50" fill="#fff"/></svg>
+      Life CRM
+    </div>
+    <a href="#/ask" data-route="ask"><svg data-icon="ask"></svg><span>Ask</span></a>
+    <a href="#/today" data-route="today"><svg data-icon="today"></svg><span>Today</span></a>
+    <a href="#/people" data-route="people"><svg data-icon="people"></svg><span>People</span></a>
+    <a href="#/loops" data-route="loops"><svg data-icon="loops"></svg><span>Loops</span></a>
+    <a href="#/health" data-route="health"><svg data-icon="health"></svg><span>Health</span></a>
+    <a href="#/sources" data-route="sources"><svg data-icon="sources"></svg><span>Sources</span></a>
+    <div class="nav-foot" id="nav-foot"></div>
+  </nav>
+  <main id="view" tabindex="-1"></main>
+</div>
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script>
+(() => {
+"use strict";
+
+// ---------------------------------------------------------------- basics
+
+const KEY = new URLSearchParams(location.search).get("k");
+const VIEW = document.getElementById("view");
+const SVGNS = "http://www.w3.org/2000/svg";
+let STATUS = null;
+
+function store(name, value) {
+  try {
+    if (value === undefined) return localStorage.getItem("lifecrm." + name);
+    localStorage.setItem("lifecrm." + name, value);
+  } catch (e) { return null; }
+  return value;
+}
+
+async function api(path, opts) {
+  const url = new URL(path, location.origin);
+  if (KEY) url.searchParams.set("k", KEY);
+  let res;
+  try {
+    res = await fetch(url, Object.assign({ credentials: "same-origin" }, opts || {}));
+  } catch (e) {
+    throw new Error("The server is not reachable — is `lifecrm serve` still running?");
+  }
+  let body = null;
+  try { body = await res.json(); } catch (e) { body = null; }
+  if (!res.ok) throw new Error((body && body.error) || ("HTTP " + res.status));
+  return body;
+}
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  setAttrs(el, attrs);
+  append(el, kids);
+  return el;
+}
+
+function s(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVGNS, tag);
+  setAttrs(el, attrs);
+  append(el, kids);
+  return el;
+}
+
+function setAttrs(el, attrs) {
+  if (!attrs) return;
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+    else if (k === "value") el.value = v;
+    else el.setAttribute(k, v === true ? "" : String(v));
+  }
+}
+
+function append(el, kids) {
+  for (const kid of kids.flat(Infinity)) {
+    if (kid === null || kid === undefined || kid === false || kid === "") continue;
+    el.append(kid instanceof Node ? kid : String(kid));
+  }
+}
+
+// replaceChildren with h()'s rules: arrays flatten, null/false are skipped
+// (replaceChildren itself would print them as the text "null").
+function fill(el, ...kids) {
+  el.replaceChildren();
+  append(el, kids);
+  return el;
+}
+
+// Line icons, drawn on a 24px grid.
+const ICONS = {
+  ask: ["M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z", "M8.5 10.5h7", "M8.5 13.5h4.5"],
+  today: ["M4 6.5A1.5 1.5 0 0 1 5.5 5h13A1.5 1.5 0 0 1 20 6.5v12a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z", "M4 10h16", "M8.5 3v4", "M15.5 3v4", "M8 14h3"],
+  people: ["M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z", "M2.5 20a6.5 6.5 0 0 1 13 0", "M16 4.4a3.5 3.5 0 0 1 0 6.2", "M18.5 14.5A6.5 6.5 0 0 1 21.5 20"],
+  loops: ["M9 6h11", "M9 12h11", "M9 18h11", "M3.5 6l1.5 1.5L7.5 4.5", "M3.5 12l1.5 1.5 2.5-3", "M4 18h2"],
+  health: ["M3 12h4l2.5-6 4 12 2.5-6h5"],
+  sources: ["M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3z", "M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6", "M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"],
+  mic: ["M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z", "M5.5 11a6.5 6.5 0 0 0 13 0", "M12 17.5V21"],
+  send: ["M12 19V5", "M5.5 11.5L12 5l6.5 6.5"],
+  speaker: ["M4 9.5h3.5L12 5.5v13l-4.5-4H4z", "M15.5 9a4.2 4.2 0 0 1 0 6", "M18 6.5a7.8 7.8 0 0 1 0 11"],
+  left: ["M14.5 6l-6 6 6 6"],
+  right: ["M9.5 6l6 6-6 6"],
+  ext: ["M14 4h6v6", "M20 4l-9 9", "M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"],
+  alert: ["M12 4l9 16H3z", "M12 10v4.5", "M12 17.5v.2"],
+  check: ["M5 12.5l4.5 4.5L19 7.5"],
+  eye: ["M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z", "M12 14.8a2.8 2.8 0 1 0 0-5.6 2.8 2.8 0 0 0 0 5.6z"],
+  lock: ["M6.5 10.5h11a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19v-7a1.5 1.5 0 0 1 1.5-1.5z", "M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"],
+  spark: ["M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1-5.1-1.9 5.1-1.9z"],
+};
+
+function icon(name) {
+  const el = s("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.8,
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
+  for (const d of ICONS[name] || []) el.append(s("path", { d }));
+  return el;
+}
+
+function hydrateIcons(root) {
+  root.querySelectorAll("svg[data-icon]").forEach(el => el.replaceWith(icon(el.dataset.icon)));
+}
+
+// «term» markers from FTS snippets -> <mark>
+function marked(text) {
+  if (!text) return [];
+  const out = [];
+  let on = false;
+  for (const part of String(text).split(/([«»])/)) {
+    if (part === "«") { on = true; continue; }
+    if (part === "»") { on = false; continue; }
+    if (part) out.push(on ? h("mark", null, part) : part);
+  }
+  return out;
+}
+
+let toastTimer = null;
+function toast(msg) {
+  document.querySelectorAll(".toast").forEach(t => t.remove());
+  const t = h("div", { class: "toast", role: "status" }, msg);
+  document.body.append(t);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.remove(), 4200);
+}
+
+// ---------------------------------------------------------------- dates & numbers
+
+const pad = n => String(n).padStart(2, "0");
+function parseISO(d) { const [y, m, dd] = String(d).slice(0, 10).split("-").map(Number); return new Date(y, m - 1, dd); }
+function iso(dt) { return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); }
+function addDays(d, n) { const t = parseISO(d); t.setDate(t.getDate() + n); return iso(t); }
+function daysBetween(a, b) { return Math.round((parseISO(b) - parseISO(a)) / 86400000); }
+function today() { return (STATUS && STATUS.today) || iso(new Date()); }
+function fmtDay(d, opts) {
+  const dt = parseISO(d);
+  const o = Object.assign({ month: "short", day: "numeric" }, opts || {});
+  if (!("year" in (opts || {})) && dt.getFullYear() !== parseISO(today()).getFullYear()) o.year = "numeric";
+  return dt.toLocaleDateString(undefined, o);
+}
+function relDay(d) {
+  if (!d) return "never";
+  const n = daysBetween(d, today());
+  if (n === 0) return "today";
+  if (n === 1) return "yesterday";
+  if (n > 1 && n < 7) return n + " days ago";
+  if (n === -1) return "tomorrow";
+  if (n < -1 && n > -7) return "in " + (-n) + " days";
+  if (n >= 7 && n < 60) return Math.round(n / 7) + " weeks ago";
+  return fmtDay(d);
+}
+// The database stamps its own times in UTC ('...Z'). Shown as they are, a
+// late-evening import reads as "tomorrow"; so stamped times are converted to
+// the configured home timezone — the zone journal dates are filed in. A time
+// without a zone (an entry's occurred_at, as dictated) is shown as written.
+const STAMPED = /T\d\d:\d\d(:\d\d(\.\d+)?)?(Z|[+-]\d\d:?\d\d)$/;
+function zonedParts(ts) {
+  if (!ts || !STAMPED.test(String(ts))) return null;
+  const opts = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  let parts;
+  try { parts = new Intl.DateTimeFormat("en-CA", Object.assign({ timeZone: (STATUS && STATUS.timezone) || undefined }, opts)).formatToParts(new Date(ts)); }
+  catch (e) { parts = new Intl.DateTimeFormat("en-CA", opts).formatToParts(new Date(ts)); }
+  const v = Object.fromEntries(parts.map(x => [x.type, x.value]));
+  return { day: v.year + "-" + v.month + "-" + v.day, time: v.hour + ":" + v.minute };
+}
+function tsDay(ts) { const z = zonedParts(ts); return z ? z.day : (ts ? String(ts).slice(0, 10) : ts); }
+function tsTime(ts) { const z = zonedParts(ts); return z ? z.time : String(ts || "").slice(11, 16); }
+function tsStamp(ts) { const z = zonedParts(ts); return z ? z.day + " " + z.time : String(ts || "").replace("T", " ").slice(0, 16); }
+function fmtValue(v, unit) {
+  if (v === null || v === undefined || v === "") return "–";
+  if (typeof v !== "number") return String(v) + (unit ? " " + unit : "");
+  const whole = ["steps", "ml", "kcal", "count"].includes(unit);
+  const text = v.toLocaleString(undefined, { maximumFractionDigits: whole ? 0 : (Math.abs(v) >= 100 ? 1 : 2) });
+  if (!unit) return text;
+  return unit.startsWith("/") ? text + unit : text + " " + unit;
+}
+function compact(v) {
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (a >= 1e3) return (v / 1e3).toFixed(a >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "K";
+  return String(Math.round(v * 10) / 10);
+}
+function initials(name) {
+  const words = String(name || "?").replace(/^dr\.?\s+/i, "").split(/\s+/).filter(Boolean);
+  return ((words[0] || "?")[0] + (words.length > 1 ? words[words.length - 1][0] : "")).toUpperCase();
+}
+function plural(n, one, many) { return n + " " + (n === 1 ? one : (many || one + "s")); }
+
+const STREAMS = {
+  imessage: "iMessage", sms: "SMS", rcs: "RCS", text_reaction: "Reactions", text_event: "Thread events",
+  android_sms: "SMS", android_mms: "MMS", android_call: "Calls", ios_call: "Calls", whatsapp: "WhatsApp",
+  claude_chat: "Claude", chatgpt_chat: "ChatGPT", calendar_event: "Calendar", contact_card: "Contacts",
+  note: "Notes", txn: "Transactions", photo: "Photos", place_visit: "Places", browser_visit: "Browsing",
+};
+const streamLabel = st => STREAMS[st] || String(st || "").replace(/_/g, " ");
+const SOURCE_TYPES = { audio: "voice note", pasted: "pasted text", phone_transcript: "phone dictation", manual: "typed note" };
+
+// ---------------------------------------------------------------- shared pieces
+
+function kindBadge(kind) { return h("span", { class: "badge k-" + kind }, kind); }
+function observedBadge() { return h("span", { class: "badge obs", title: "Imported in bulk, never reviewed — cited, not asserted" }, icon("eye"), "observed"); }
+
+function skeleton(n) { return Array.from({ length: n || 3 }, () => h("div", { class: "skeleton" })); }
+
+function errorCard(err) {
+  return h("div", { class: "card error", role: "alert" }, h("div", { class: "row" }, icon("alert"), h("b", null, "Could not load this")), h("div", { class: "small", style: "margin-top:6px" }, String(err && err.message || err)));
+}
+
+function emptyState(iconName, text, extra) {
+  return h("div", { class: "card empty" }, icon(iconName), h("div", null, text), extra || null);
+}
+
+function section(title, count, ...kids) {
+  return h("section", { class: "section" }, h("h3", null, title, count !== null && count !== undefined ? h("span", { class: "count" }, "· " + count) : null), kids);
+}
+
+function pageHead(title, sub, right) {
+  return h("div", { class: "page-head" }, h("div", null, h("h1", null, title), sub ? h("div", { class: "sub" }, sub) : null), right || null);
+}
+
+function setView(...nodes) {
+  fill(VIEW, ...nodes.flat().filter(Boolean));
+  window.scrollTo(0, 0);
+}
+
+function entryRow(e, opts) {
+  const o = opts || {};
+  const meta = [];
+  if (o.showDate) meta.push(fmtDay(e.date, { weekday: "short" }));
+  if (e.time_of_day) meta.push(e.time_of_day);
+  if (e.entities && e.entities.length) meta.push(e.entities.map(x => x.name).join(", "));
+  for (const m of e.measurements || []) meta.push(m.metric.replace(/_/g, " ") + " " + fmtValue(m.value, m.unit || ""));
+  if (e.closure) meta.push(e.closure + " " + (e.closed_at ? fmtDay(tsDay(e.closed_at)) : ""));
+  else if (e.due_at) meta.push("due " + fmtDay(e.due_at));
+  return h("a", { class: "entry-row", href: "#/entry/" + e.uuid },
+    kindBadge(e.kind),
+    h("div", { class: "row-main" }, h("div", { class: "row-title" }, e.title),
+      meta.length ? h("div", { class: "row-meta" }, meta.join(" · ")) : null));
+}
+
+function obsRow(o, opts) {
+  const optsx = opts || {};
+  const time = o.local_time ? (optsx.showDate ? fmtDay(o.date) + " " + o.local_time.slice(11) : o.local_time.slice(11)) : fmtDay(o.date);
+  const title = o.who || streamLabel(o.stream);
+  const thread = o.title && !String(o.stream).endsWith("_chat") ? o.title : (String(o.stream).endsWith("_chat") ? o.title : null);
+  return h("a", { class: "obs-row" + (o.current ? " current" : ""), href: "#/obs/" + o.uuid },
+    h("span", { class: "time" }, time),
+    h("div", { class: "row-main" },
+      h("div", { class: "row-meta", style: "margin-top:0" }, h("b", { style: "color:var(--text-2)" }, title), thread ? " · " + thread : "", optsx.showStream ? " · " + streamLabel(o.stream) : ""),
+      o.text ? h("div", { class: "row-title" }, o.text) : null,
+      o.value !== null && o.value !== undefined && !o.text ? h("div", { class: "row-title" }, fmtValue(o.value, o.unit || "")) : null,
+      h("div", { class: "cite-line" }, "observed · " + ((o.import && o.import.connector) || "import") + " " + String((o.import && o.import.uuid) || "").slice(0, 8))));
+}
+
+// ---------------------------------------------------------------- charts
+
+const tip = document.getElementById("tooltip");
+function showTip(ev, dateIso, rows) {
+  fill(tip, h("div", { class: "t-date" }, fmtDay(dateIso, { weekday: "short" })),
+    rows.map(r => h("div", { class: "t-row" }, r.color ? h("i", { class: "sw", style: "background:" + r.color }) : null, r.text)));
+  tip.hidden = false;
+  const w = tip.offsetWidth, hh = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY - hh - 10;
+  if (x + w > window.innerWidth - 8) x = ev.clientX - w - 14;
+  if (y < 8) y = ev.clientY + 16;
+  tip.style.left = Math.max(8, x) + "px";
+  tip.style.top = y + "px";
+}
+function hideTip() { tip.hidden = true; }
+window.addEventListener("scroll", hideTip, { passive: true });
+
+function niceStep(span, count) {
+  const raw = span / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+  const norm = raw / mag;
+  return (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+}
+function niceDomain(lo, hi, count) {
+  if (hi === lo) { hi = lo + 1; lo = lo - 1; }
+  const step = niceStep(hi - lo, count);
+  return [Math.floor(lo / step) * step, Math.ceil(hi / step) * step, step];
+}
+function dateRange(start, end) {
+  const out = [];
+  for (let d = start; d <= end; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+function barPath(x, y, w, hgt, r) {
+  r = Math.max(0, Math.min(r, w / 2, hgt));
+  const b = y + hgt;
+  return "M" + x + "," + b + "V" + (y + r) + "Q" + x + "," + y + " " + (x + r) + "," + y + "H" + (x + w - r) +
+    "Q" + (x + w) + "," + y + " " + (x + w) + "," + (y + r) + "V" + b + "Z";
+}
+
+// One date axis, one y scale. Bars for per-day totals, lines for per-day
+// averages; several lines share the axis only when they share a unit.
+function chart(c) {
+  const wrap = h("div", { class: "chart" });
+  let lastW = 0;
+  const draw = () => {
+    const W = Math.max(200, Math.round(wrap.clientWidth || 320));
+    if (W === lastW) return;
+    lastW = W;
+    const H = c.height || 150;
+    const m = c.compact ? { l: 2, r: 46, t: 8, b: 4 } : { l: 38, r: 50, t: 10, b: 22 };
+    const dates = dateRange(c.start, c.end);
+    const n = Math.max(1, dates.length);
+    const lines = c.lines.map(l => ({ ...l, byDate: new Map(l.points.map(p => [p.date, p.value])) }));
+    const values = lines.flatMap(l => l.points.map(p => p.value)).filter(v => typeof v === "number");
+    if (!values.length) { fill(wrap, h("div", { class: "muted small" }, "No data in this window.")); return; }
+    let lo, hi, step;
+    if (c.domain) { [lo, hi] = c.domain; step = niceStep(hi - lo, 2); }
+    else if (c.kind === "bar") { [lo, hi, step] = niceDomain(0, Math.max(...values), 3); lo = 0; }
+    else {
+      const mn = Math.min(...values), mx = Math.max(...values);
+      const padv = (mx - mn) * 0.2 || Math.abs(mx) * 0.05 || 1;
+      [lo, hi, step] = niceDomain(mn - padv, mx + padv, 3);
+    }
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const band = iw / n;
+    const X = i => m.l + band * (i + 0.5);
+    const Y = v => m.t + ih - (v - lo) / (hi - lo || 1) * ih;
+    const svg = s("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": c.label || "chart" });
+    if (!c.compact) {
+      for (let t = lo; t <= hi + step / 2; t += step) {
+        svg.append(s("line", { class: "grid", x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t) }));
+        svg.append(s("text", { class: "tick", x: m.l - 6, y: Y(t) + 4, "text-anchor": "end" }, compact(t)));
+      }
+      const labelAt = [0, n - 1];
+      if (n > 9) labelAt.splice(1, 0, Math.floor((n - 1) / 2));
+      for (const i of labelAt) {
+        svg.append(s("text", { class: "tick", x: X(i), y: H - 5, "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" }, fmtDay(dates[i], { year: undefined })));
+      }
+    }
+    if (c.kind === "bar") {
+      const l = lines[0];
+      const bw = Math.max(2, Math.min(24, band - 2));
+      dates.forEach((d, i) => {
+        const v = l.byDate.get(d);
+        if (typeof v !== "number") return;
+        const top = Y(Math.max(v, lo)), base = Y(lo);
+        svg.append(s("path", { class: "bar", "data-i": i, fill: l.color, d: barPath(X(i) - bw / 2, top, bw, Math.max(0.5, base - top), 4) }));
+      });
+      svg.append(s("line", { class: "base", x1: m.l, x2: W - m.r, y1: Y(lo), y2: Y(lo) }));
+    } else {
+      for (const l of lines) {
+        const pts = dates.map((d, i) => [i, l.byDate.get(d)]).filter(p => typeof p[1] === "number");
+        if (!pts.length) continue;
+        const d = pts.map((p, j) => (j ? "L" : "M") + X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1)).join("");
+        if (lines.length === 1) {
+          const area = d + "L" + X(pts[pts.length - 1][0]).toFixed(1) + "," + Y(lo) + "L" + X(pts[0][0]).toFixed(1) + "," + Y(lo) + "Z";
+          svg.append(s("path", { d: area, fill: l.color, "fill-opacity": 0.1, stroke: "none" }));
+        }
+        svg.append(s("path", { d, fill: "none", stroke: l.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+        if (pts.length === 1 || n <= 16) {
+          for (const p of pts) svg.append(s("circle", { cx: X(p[0]), cy: Y(p[1]), r: 2.5, fill: l.color }));
+        }
+        const last = pts[pts.length - 1];
+        svg.append(s("circle", { cx: X(last[0]), cy: Y(last[1]), r: 4, fill: l.color, stroke: "var(--surface)", "stroke-width": 2 }));
+        svg.append(s("text", { class: "endlabel", x: X(last[0]) + 8, y: Y(last[1]) + 4 }, (lines.length > 1 ? l.short + " " : "") + compact(last[1])));
+      }
+    }
+    if (c.kind === "bar") {
+      const l = lines[0], i = dates.length - 1, v = l.byDate.get(dates[i]);
+      if (typeof v === "number") svg.append(s("text", { class: "endlabel", x: X(i) + 14, y: Y(v) + 4 }, compact(v)));
+    }
+    const guide = s("line", { class: "guide", x1: 0, x2: 0, y1: m.t, y2: m.t + ih, visibility: "hidden" });
+    svg.append(guide);
+    const hit = s("rect", { x: m.l, y: 0, width: iw, height: H, fill: "transparent" });
+    let hot = null;
+    const move = ev => {
+      const r = svg.getBoundingClientRect();
+      const i = Math.max(0, Math.min(n - 1, Math.floor((ev.clientX - r.left - m.l) / band)));
+      guide.setAttribute("x1", X(i)); guide.setAttribute("x2", X(i)); guide.setAttribute("visibility", "visible");
+      if (hot) hot.classList.remove("hot");
+      hot = svg.querySelector('.bar[data-i="' + i + '"]');
+      if (hot) hot.classList.add("hot");
+      const rows = lines.map(l => {
+        const v = l.byDate.get(dates[i]);
+        return { color: lines.length > 1 ? l.color : null, text: (lines.length > 1 ? l.name + ": " : "") + (typeof v === "number" ? fmtValue(v, c.unit) : "no data") };
+      });
+      showTip(ev, dates[i], rows);
+    };
+    hit.addEventListener("pointermove", move);
+    hit.addEventListener("pointerdown", move);
+    hit.addEventListener("pointerleave", () => { guide.setAttribute("visibility", "hidden"); if (hot) hot.classList.remove("hot"); hideTip(); });
+    svg.append(hit);
+    fill(wrap, svg);
+  };
+  if (window.ResizeObserver) new ResizeObserver(draw).observe(wrap);
+  else setTimeout(draw, 0);
+  const box = h("div", null, c.lines.length > 1 ? h("div", { class: "legend" }, c.lines.map(l => h("span", null, h("i", { style: "background:" + l.color }), l.name))) : null, wrap);
+  return box;
+}
+
+function metricChart(mtr, start, end, opts) {
+  return chart(Object.assign({
+    start, end, unit: mtr.unit, label: mtr.label,
+    kind: mtr.per_day_agg === "sum" ? "bar" : "line",
+    lines: [{ name: mtr.label, color: "var(--series-1)", points: mtr.series }],
+  }, opts || {}));
+}
+
+// ---------------------------------------------------------------- ask
+
+const ask = {
+  answers: [],
+  busy: false,
+  speak: store("speak") === "1",
+  model: store("model") !== "0",
+  rec: null,
+};
+const PLACEHOLDER = "Ask about your sleep, people, plans…";
+const CITE_RE = /\[((?:[A-Za-z]{1,6}\d+)(?:\s*,\s*[A-Za-z]{1,6}\d+)*)\]/g;
+
+function greeting() {
+  const hr = new Date().getHours();
+  return hr < 5 ? "Still up?" : hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+}
+
+function canRecord() {
+  return window.isSecureContext && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && typeof MediaRecorder !== "undefined";
+}
+
+function speakText(text) {
+  if (!("speechSynthesis" in window) || !text) return;
+  speechSynthesis.cancel();
+  const clean = String(text).replace(CITE_RE, "").replace(/[«»]/g, "").replace(/\s+/g, " ").trim();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(clean));
+}
+
+function viewAsk(prefill) {
+  const input = h("textarea", { rows: 1, placeholder: PLACEHOLDER, enterkeyhint: "send", autocomplete: "off",
+    autocapitalize: "sentences", "aria-label": "Your question", maxlength: 500 });
+  const grow = () => { input.style.height = "auto"; input.style.height = Math.min(180, input.scrollHeight) + "px"; };
+  input.addEventListener("input", grow);
+  input.addEventListener("keydown", ev => {
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); run(input.value); }
+  });
+  const send = h("button", { type: "submit", class: "icon-btn send", "aria-label": "Ask", title: "Ask" }, icon("send"));
+  const voiceReady = canRecord();
+  const mic = voiceReady ? h("button", { type: "button", class: "icon-btn mic", "aria-label": "Ask by voice", title: "Ask by voice (tap to start, tap to stop)" }, icon("mic")) : null;
+  const form = h("form", { class: "askbox", onsubmit: ev => { ev.preventDefault(); run(input.value); } }, input, mic, send);
+  const answers = h("div", { class: "answers", "aria-live": "polite" }, ask.answers.map(answerCard));
+
+  async function run(q) {
+    q = String(q || "").trim();
+    if (!q || ask.busy) return;
+    if (ask.speak && "speechSynthesis" in window) speechSynthesis.speak(new SpeechSynthesisUtterance(""));   // unlock iOS speech while still in the tap
+    ask.busy = true; send.disabled = true;
+    input.value = ""; grow();
+    const pending = h("article", { class: "card answer pending" }, h("div", { class: "q" }, q), h("div", { class: "typing", "aria-label": "Thinking" }, h("i"), h("i"), h("i")));
+    answers.prepend(pending);
+    try {
+      const params = "?q=" + encodeURIComponent(q) + (ask.model ? "" : "&llm=0");
+      const r = await api("/api/ask" + params);
+      ask.answers.unshift(r);
+      ask.answers.splice(20);
+      pending.replaceWith(answerCard(r));
+      if (ask.speak) speakText(r.speech || r.answer);
+    } catch (e) {
+      pending.replaceWith(h("article", { class: "card answer" }, h("div", { class: "q" }, q), h("div", { class: "warning" }, e.message)));
+    } finally {
+      ask.busy = false; send.disabled = false;
+    }
+  }
+
+  if (mic) mic.addEventListener("click", () => toggleRecord(mic, input, run));
+
+  const tools = h("div", { class: "ask-tools" });
+  if ("speechSynthesis" in window) {
+    const t = h("button", { type: "button", class: "chip", "aria-pressed": String(ask.speak) }, icon("speaker"), "Read answers aloud");
+    t.addEventListener("click", () => {
+      ask.speak = !ask.speak; store("speak", ask.speak ? "1" : "0"); t.setAttribute("aria-pressed", String(ask.speak));
+      if (!ask.speak) speechSynthesis.cancel(); else speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+    });
+    tools.append(t);
+  }
+  const llm = STATUS && STATUS.llm;
+  if (llm && llm.available) {
+    const t = h("button", { type: "button", class: "chip", "aria-pressed": String(ask.model), title: "A local model phrases the evidence; its citations are checked. Off: deterministic answers." }, icon("spark"), "Phrase with " + llm.model);
+    t.addEventListener("click", () => { ask.model = !ask.model; store("model", ask.model ? "1" : "0"); t.setAttribute("aria-pressed", String(ask.model)); });
+    tools.append(t);
+  } else {
+    tools.append(h("span", null, "Answers are computed from your data — no model involved."));
+  }
+
+  let hint = null;
+  if (!voiceReady) {
+    hint = h("div", { class: "voice-hint" }, icon("mic"), h("span", null, window.isSecureContext
+      ? "This browser can't record audio here. Tap the mic on your keyboard to dictate the question instead."
+      : "Voice: browsers only allow the microphone on localhost or https. On your phone, tap the mic on your keyboard (Samsung Keyboard, Gboard or iOS dictation) and speak your question."));
+  }
+
+  const examples = h("div", { class: "examples" }, ((STATUS && STATUS.examples) || []).map(q => h("button", { type: "button", class: "chip", onclick: () => run(q) }, q)));
+  setView(
+    h("section", { class: "hero" }, h("h1", null, greeting()),
+      h("p", { class: "lede" }, "Ask anything about your life. Every answer cites the records it came from — tap a citation to see it."),
+      STATUS && STATUS.demo ? h("div", { class: "demo-pill" }, icon("spark"), "Demo data — a fictional life") : null),
+    form, tools, hint, examples, answers);
+  if (prefill) {
+    // A one-shot question from a link: asked once, not again on reload.
+    history.replaceState(null, "", location.pathname + location.search + "#/ask");
+    run(prefill);
+  }
+  else if (window.matchMedia("(min-width: 881px)").matches) input.focus();
+}
+
+async function toggleRecord(btn, input, run) {
+  if (ask.rec) { ask.rec.stop(); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { toast("Microphone unavailable: " + (e.message || e.name)); return; }
+  const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]
+    .find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || "";
+  const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  const chunks = [];
+  let timer = null;
+  rec.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+  rec.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    clearTimeout(timer);
+    ask.rec = null;
+    btn.classList.remove("recording");
+    const blob = new Blob(chunks, { type: rec.mimeType || type || "audio/webm" });
+    if (blob.size < 800) { toast("Didn't catch that — tap, speak, then tap again."); return; }
+    btn.classList.add("busy");
+    input.placeholder = "Transcribing…";
+    try {
+      const r = await api("/api/transcribe", { method: "POST", headers: { "Content-Type": blob.type || "application/octet-stream" }, body: blob });
+      if (r.text) run(r.text); else toast("Heard nothing — try again.");
+    } catch (e) { toast(e.message); }
+    finally { btn.classList.remove("busy"); input.placeholder = PLACEHOLDER; }
+  };
+  rec.start();
+  ask.rec = rec;
+  btn.classList.add("recording");
+  timer = setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, 30000);
+}
+
+// id -> {type, item} for everything a bundle can cite
+function evidenceMap(b) {
+  const map = new Map();
+  for (const m of b.metrics || []) map.set(m.id, { type: "M", item: m });
+  for (const e of b.entries || []) map.set(e.id, { type: "E", item: e });
+  for (const p of b.passages || []) map.set(p.id, { type: "P", item: p });
+  for (const o of b.observations || []) if (o && o.id) map.set(o.id, { type: "O", item: o });
+  return map;
+}
+
+function answerCard(r) {
+  const b = r.evidence || {};
+  const ev = evidenceMap(b);
+  const panel = h("div", { class: "evidence-panel" });
+  let open = null;
+  const toggle = (id, chip) => {
+    const isOpen = open && open.id === id;
+    if (open) open.chip.setAttribute("aria-expanded", "false");
+    panel.replaceChildren();
+    open = null;
+    if (isOpen) return;
+    chip.setAttribute("aria-expanded", "true");
+    open = { id, chip };
+    panel.append(evidenceDetail(id, ev.get(id), b));
+  };
+  const text = h("p", { class: "a" });
+  let last = 0;
+  const answerText = String(r.answer || "");
+  for (const m of answerText.matchAll(CITE_RE)) {
+    text.append(answerText.slice(last, m.index));
+    for (const id of m[1].split(/\s*,\s*/)) {
+      const known = ev.has(id);
+      const chip = h("button", { type: "button", class: "cite" + (id[0] === "O" ? " o" : "") + (known ? "" : " unknown"),
+        "aria-expanded": "false", title: known ? ((r.index || {})[id] || id) : "Not in the evidence — treat this claim as unsupported" }, id);
+      if (known) chip.addEventListener("click", () => toggle(id, chip));
+      text.append(chip);
+    }
+    last = m.index + m[0].length;
+  }
+  text.append(answerText.slice(last));
+
+  const w = b.window || {};
+  const src = r.answer_source || "deterministic";
+  const meta = h("div", { class: "meta" },
+    h("span", null, icon("today"), (w.label || "") + (w.start ? " (" + fmtDay(w.start) + (w.end && w.end !== w.start ? " – " + fmtDay(w.end) : "") + ")" : "")),
+    h("span", null, icon(src.startsWith("model:") ? "spark" : "check"),
+      src.startsWith("model:") ? "phrased by " + src.slice(6) + " · citations checked" : "answered deterministically"),
+    "speechSynthesis" in window ? h("button", { type: "button", class: "chip", style: "padding:2px 8px", onclick: () => speakText(r.speech || r.answer), "aria-label": "Read this answer aloud" }, icon("speaker")) : null);
+
+  const warnings = [];
+  const cit = r.citations || {};
+  if (cit.unknown && cit.unknown.length) warnings.push(h("div", { class: "warning" }, "The model cited evidence that does not exist (" + cit.unknown.join(", ") + ") — treat those claims as unsupported."));
+  if (cit.uncited && src.startsWith("model:")) warnings.push(h("div", { class: "warning" }, "The model cited no evidence — check it against the evidence below."));
+  for (const wmsg of r.warnings || []) warnings.push(h("div", { class: "note" }, wmsg));
+  if (r.model && !r.model.available && r.model.reason && src === "deterministic" && STATUS && STATUS.llm && STATUS.llm.available) warnings.push(h("div", { class: "note" }, r.model.reason));
+
+  const people = (b.entities || []).filter(e => e && e.name);
+  const peopleRow = people.length ? h("div", { class: "row", style: "margin-top:12px" }, h("span", { class: "muted small" }, "Mentioned:"),
+    people.map(e => {
+      const eid = e.entity_id !== undefined ? e.entity_id : e.id;
+      return e.type === "person" && eid !== undefined ? h("a", { class: "chip", href: "#/person/" + eid }, e.name) : h("span", { class: "chip" }, e.name + " · " + e.type);
+    })) : null;
+
+  const ids = [...ev.keys()];
+  const all = ids.length ? h("details", { class: "all-ev" }, h("summary", null, "All evidence (" + ids.length + ")"),
+    h("div", { class: "ev-index" }, ids.map(id => {
+      const btn = h("button", { type: "button" }, h("span", { class: "cite" + (id[0] === "O" ? " o" : "") }, id), h("span", null, (r.index || {})[id] || ev.get(id).item.title || id));
+      btn.addEventListener("click", () => { const chip = btn.querySelector(".cite"); toggle(id, chip); panel.scrollIntoView({ block: "nearest", behavior: "smooth" }); });
+      return btn;
+    }))) : null;
+  const missing = (b.no_data || []).length ? h("div", { class: "note" }, "No data for: " + b.no_data.join(", ") + ".") : null;
+  return h("article", { class: "card answer" }, h("div", { class: "q" }, r.question), text, meta, warnings, panel, peopleRow, missing, all);
+}
+
+function evidenceDetail(id, found, bundle) {
+  if (!found) return h("div", { class: "ev" }, "Not in the evidence.");
+  const { type, item } = found;
+  if (type === "M") {
+    const w = bundle.window || {};
+    return h("div", { class: "ev" },
+      h("div", { class: "ev-head" }, h("span", { class: "id" }, id), h("span", { class: "badge" + (item.origin === "journal" ? "" : " obs") }, item.origin === "journal" ? "journal" : "sensor import"), plural(item.days, "day")),
+      h("div", { class: "ev-title" }, item.label.charAt(0).toUpperCase() + item.label.slice(1) + " — " + (item.per_day_agg === "sum" ? "per-day total" : "per-day average")),
+      h("div", { class: "stats" },
+        h("span", null, "mean ", h("b", null, fmtValue(item.mean, item.unit))),
+        h("span", null, "min ", h("b", null, fmtValue(item.min, item.unit)), " " + fmtDay(item.min_date)),
+        h("span", null, "max ", h("b", null, fmtValue(item.max, item.unit)), " " + fmtDay(item.max_date)),
+        h("span", null, "latest ", h("b", null, fmtValue(item.latest, item.unit)), " " + fmtDay(item.latest_date))),
+      metricChart(item, w.start || item.series[0].date, w.end || item.series[item.series.length - 1].date, { height: 110 }),
+      (item.source_files || []).length ? h("div", { class: "muted small", style: "margin-top:6px" }, "from " + item.source_files.join(", ")) : null);
+  }
+  if (type === "E") {
+    const box = h("div", { class: "ev" },
+      h("div", { class: "ev-head" }, h("span", { class: "id" }, id), kindBadge(item.kind), fmtDay(item.date, { weekday: "short" }), (item.categories || []).join(", ")),
+      h("div", { class: "ev-title" }, item.title),
+      item.snippet && item.snippet !== item.title ? h("div", { class: "ev-body" }, marked(item.snippet)) : null);
+    const more = h("div", null, h("div", { class: "muted small", style: "margin-top:6px" }, "Loading the source…"));
+    box.append(more);
+    api("/api/entry/" + encodeURIComponent(item.uuid)).then(d => fill(more, entryProvenance(d), h("div", { class: "ev-links" },
+      h("a", { href: "#/entry/" + item.uuid }, "Open entry"), h("a", { href: "#/today/" + item.date }, "Open " + fmtDay(item.date))))).catch(e => fill(more, h("div", { class: "muted small" }, e.message)));
+    return box;
+  }
+  if (type === "P") {
+    return h("div", { class: "ev" },
+      h("div", { class: "ev-head" }, h("span", { class: "id" }, id), h("span", { class: "badge" }, SOURCE_TYPES[item.source_type] || item.source_type || "transcript"), fmtDay(item.date, { weekday: "short" })),
+      h("div", { class: "quote" }, marked(item.snippet)),
+      h("div", { class: "ev-links" }, h("a", { href: "#/today/" + item.date }, "Open " + fmtDay(item.date))));
+  }
+  // O#: an observed record. Its shape comes from recall; read defensively.
+  const uuid = item.observation_uuid || item.uuid;
+  const when = item.local_time || item.occurred_at || item.started_at || item.date;
+  const imp = item.import || {};
+  const head = h("div", { class: "ev-head" }, h("span", { class: "id" }, id), observedBadge(), streamLabel(item.stream), when ? tsStamp(when) : null);
+  const who = item.who || (item.participants || []).map(p => p.entity || p.display_name || p.handle || p.value).filter(Boolean).join(", ");
+  const box = h("div", { class: "ev observed" }, head,
+    who ? h("div", { class: "ev-title" }, who) : null,
+    item.title ? h("div", { class: "muted small" }, item.title) : null,
+    h("div", { class: "ev-body" }, marked(item.snippet || item.body_excerpt || item.text || "")),
+    h("div", { class: "muted small", style: "margin-top:6px" }, "imported by " + (imp.connector || item.connector || "an importer") + (imp.uuid || item.import_uuid ? " · import " + String(imp.uuid || item.import_uuid).slice(0, 8) : "") + (imp.source_file ? " · " + imp.source_file : "")));
+  if (uuid) box.append(h("div", { class: "ev-links" }, h("a", { href: "#/obs/" + uuid }, "Open record"), item.date ? h("a", { href: "#/today/" + item.date }, "Open " + fmtDay(item.date)) : null));
+  return box;
+}
+
+function entryProvenance(d) {
+  const out = [];
+  for (const p of d.provenance || []) {
+    if (!p.transcript_excerpt) continue;
+    const when = p.recorded_at ? " · " + tsStamp(p.recorded_at) : "";
+    out.push(h("div", { class: "muted small", style: "margin-top:8px" }, "From your " + (SOURCE_TYPES[p.source_type] || "note") + when));
+    out.push(h("div", { class: "quote" }, p.transcript_excerpt));
+  }
+  for (const o of d.observations || []) out.push(h("div", { class: "list observed", style: "margin-top:8px" }, obsRow(o, { showDate: true })));
+  if (!out.length && d.body) out.push(h("div", { class: "ev-body" }, d.body));
+  return out;
+}
+
+// ---------------------------------------------------------------- today / timeline
+
+async function viewDay(dateArg) {
+  const date = dateArg || today();
+  const input = h("input", { type: "date", value: date, "aria-label": "Pick a day", max: today() });
+  input.addEventListener("change", () => { if (input.value) location.hash = "#/today/" + input.value; });
+  const prevBtn = h("button", { class: "btn", type: "button", "aria-label": "Previous day with data", disabled: true }, icon("left"));
+  const nextBtn = h("button", { class: "btn", type: "button", "aria-label": "Next day with data", disabled: true }, icon("right"));
+  const todayBtn = date !== today() ? h("a", { class: "btn", href: "#/today" }, "Today") : null;
+  const dt = parseISO(date);
+  const head = pageHead(dt.toLocaleDateString(undefined, { weekday: "long" }),
+    dt.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) + (relDay(date) !== fmtDay(date) ? " · " + relDay(date) : ""),
+    h("div", { class: "daynav" }, prevBtn, input, nextBtn, todayBtn));
+  const heatBox = h("div", { class: "section" });
+  const body = h("div", null, skeleton(3));
+  setView(head, heatBox, body);
+
+  // The heat map shows the five weeks that end with the picked day's week.
+  const end = addDays(date, 6 - ((parseISO(date).getDay() + 6) % 7));
+  const start = addDays(end, -34);
+  api("/api/days?start=" + start + "&end=" + end).then(dd => fill(heatBox, heatmap(dd, date))).catch(() => heatBox.replaceChildren());
+
+  let d;
+  try { d = await api("/api/day?date=" + date); }
+  catch (e) { fill(body, errorCard(e)); return; }
+  if (d.prev) { prevBtn.disabled = false; prevBtn.onclick = () => { location.hash = "#/today/" + d.prev; }; prevBtn.title = fmtDay(d.prev); }
+  if (d.next) { nextBtn.disabled = false; nextBtn.onclick = () => { location.hash = "#/today/" + d.next; }; nextBtn.title = fmtDay(d.next); }
+
+  const parts = [];
+  const pills = [];
+  if (d.mood !== null && d.mood !== undefined) pills.push(h("span", { class: "pill" }, "mood ", h("b", null, fmtValue(d.mood, "")), "/10"));
+  if (d.energy !== null && d.energy !== undefined) pills.push(h("span", { class: "pill" }, "energy ", h("b", null, fmtValue(d.energy, "")), "/10"));
+  if (d.sleep_hours !== null && d.sleep_hours !== undefined) pills.push(h("span", { class: "pill" }, "slept ", h("b", null, fmtValue(d.sleep_hours, "")), " h (said)"));
+  if (d.summary || pills.length) {
+    parts.push(h("div", { class: "card summary-card" },
+      d.summary ? h("div", { class: "text" }, d.summary) : h("div", { class: "muted" }, "No summary for this day."),
+      pills.length ? h("div", { class: "pills" }, pills) : null,
+      (d.sources || []).length ? h("div", { class: "muted small", style: "margin-top:10px" }, "From " + d.sources.map(src => (SOURCE_TYPES[src.type] || src.type) + (src.recorded_at ? " " + tsTime(src.recorded_at) : "")).join(", ")) : null));
+  }
+  if ((d.health || []).length) {
+    parts.push(section("Health", null, h("div", { class: "tiles" }, d.health.map(m => h("div", { class: "tile", title: "sensor import · " + plural(m.records, "record") + (m.source_files.length ? " · " + m.source_files.join(", ") : "") },
+      h("div", { class: "label" }, m.label), h("div", { class: "value" }, fmtValue(m.value, "").replace(/ $/, ""), h("span", { class: "unit" }, m.unit)), h("div", { class: "note" }, "sensor · " + plural(m.records, "record")))))));
+  }
+  if (d.entries_count) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Journal", h("span", { class: "count" }, "· " + plural(d.entries_count, "entry", "entries"))),
+      d.by_category.map(g => h("div", { style: "margin-bottom:12px" },
+        h("div", { class: "stream-head" }, g.category, h("span", { class: "muted small" }, g.entries.length)),
+        h("div", { class: "list" }, g.entries.map(e => entryRow(e)))))));
+  }
+  if ((d.observed || []).length) {
+    const total = d.observed.reduce((a, g) => a + g.count, 0);
+    parts.push(h("section", { class: "section" }, h("h3", null, "Observed", h("span", { class: "count" }, "· " + plural(total, "record"))),
+      h("div", { class: "tier-note" }, "Imported in bulk and never reviewed — each row cites its import."),
+      d.observed.map(g => h("div", null,
+        h("div", { class: "stream-head" }, observedBadge(), streamLabel(g.stream), h("span", { class: "muted small" }, g.count + (g.truncated ? " (first " + g.items.length + " shown)" : ""))),
+        h("div", { class: "list observed" }, g.items.map(o => obsRow(o)))))));
+  }
+  if (!parts.length) {
+    parts.push(emptyState("today", "Nothing recorded on this day.",
+      h("div", { class: "row", style: "justify-content:center;margin-top:12px" },
+        d.prev ? h("a", { class: "btn", href: "#/today/" + d.prev }, icon("left"), fmtDay(d.prev)) : null,
+        d.next ? h("a", { class: "btn", href: "#/today/" + d.next }, fmtDay(d.next), icon("right")) : null)));
+  }
+  fill(body, ...parts);
+}
+
+function heatmap(dd, selected) {
+  const grid = h("div", { class: "heat", role: "group", "aria-label": "Activity by day" },
+    ["M", "T", "W", "T", "F", "S", "S"].map(x => h("div", { class: "wd", "aria-hidden": "true" }, x)));
+  const now = today();
+  for (const day of dd.days) {
+    const e = day.entries;
+    const level = e === 0 ? (day.health ? 1 : 0) : e < 3 ? 2 : e < 6 ? 3 : 4;
+    const future = day.date > now;
+    const cls = ["h" + level, day.date === selected ? "sel" : "", day.date === now ? "today" : "", day.observations ? "obs" : "", future ? "future" : ""].filter(Boolean).join(" ");
+    const label = fmtDay(day.date, { weekday: "short" }) + ": " + plural(e, "entry", "entries") + (day.observations ? ", " + plural(day.observations, "observed record") : "") + (day.mood ? ", mood " + day.mood : "");
+    grid.append(h("button", { type: "button", class: cls, title: label, "aria-label": label, disabled: future,
+      onclick: () => { location.hash = "#/today/" + day.date; } }, String(parseISO(day.date).getDate())));
+  }
+  const legend = h("div", { class: "heat-legend" }, "fewer", [0, 1, 2, 3, 4].map(i => h("i", { style: "background:var(--heat-" + i + ")" })), "more entries",
+    h("span", { style: "margin-left:12px;display:inline-flex;align-items:center;gap:4px" }, h("i", { style: "width:6px;height:6px;border-radius:50%;background:var(--observed)" }), "observed"));
+  return h("div", null, grid, legend);
+}
+
+// ---------------------------------------------------------------- people
+
+async function viewPeople() {
+  const search = h("input", { class: "search", type: "search", placeholder: "Search people", "aria-label": "Search people", autocomplete: "off" });
+  const list = h("div", null, skeleton(4));
+  setView(pageHead("People", "Everyone in your journal and your imports — last contact across both."), search, h("div", { class: "section" }, list));
+  let data;
+  try { data = await api("/api/people"); }
+  catch (e) { fill(list, errorCard(e)); return; }
+  const draw = () => {
+    const q = search.value.trim().toLowerCase();
+    const rows = data.people.filter(p => !q || p.name.toLowerCase().includes(q) || p.aliases.some(a => a.toLowerCase().includes(q)));
+    if (!data.people.length) { fill(list, emptyState("people", "No people yet. They appear as your journal mentions them, or when you link an imported handle: python -m lifecrm handles list --suggest")); return; }
+    if (!rows.length) { fill(list, emptyState("people", "Nobody matches “" + search.value + "”.")); return; }
+    fill(list, h("div", { class: "list" }, rows.map(personRow)));
+  };
+  search.addEventListener("input", draw);
+  draw();
+}
+
+function personRow(p) {
+  const last = p.last_contact;
+  const counts = [];
+  if (p.mentions) counts.push(plural(p.mentions, "entry", "entries"));
+  if (p.observations) counts.push(plural(p.observations, "observed record"));
+  return h("a", { class: "person-row", href: "#/person/" + p.id },
+    h("div", { class: "avatar", "aria-hidden": "true" }, initials(p.name)),
+    h("div", { class: "row-main" }, h("div", { class: "row-title" }, p.name),
+      h("div", { class: "row-meta" }, [p.aliases.length ? "aka " + p.aliases.join(", ") : null, counts.join(" · ") || "no records yet"].filter(Boolean).join(" · "))),
+    h("div", { class: "row-side" }, last ? relDay(last.date) : "", last ? h("div", null, last.tier === "observed" ? observedBadge() : h("span", { class: "badge" }, "journal")) : null));
+}
+
+async function viewPerson(id) {
+  setView(skeleton(4));
+  let p;
+  try { p = await api("/api/person/" + id); }
+  catch (e) { setView(errorCard(e)); return; }
+  if (p.status === "merged" && p.merged_into) { location.replace("#/person/" + p.merged_into); return; }
+  const first = p.name.replace(/^dr\.?\s+/i, "").split(/\s+/)[0];
+  const head = h("div", { class: "person-head", style: "margin-bottom:18px" }, h("div", { class: "avatar lg", "aria-hidden": "true" }, initials(p.name)),
+    h("div", null, h("h1", null, p.name), h("div", { class: "muted", style: "margin-top:4px" }, [p.type, p.aliases.length ? "aka " + p.aliases.join(", ") : null].filter(Boolean).join(" · ")),
+      p.notes ? h("div", { class: "small", style: "margin-top:4px" }, p.notes) : null));
+  const parts = [head];
+
+  const lc = p.last_contact;
+  const lastTiles = [];
+  if (lc) lastTiles.push(h("div", { class: "tile" }, h("div", { class: "label" }, "Last contact"), h("div", { class: "value" }, relDay(lc.date)), h("div", { class: "note" }, lc.tier === "observed" ? "observed · " + streamLabel(lc.observation.stream) : "journal entry")));
+  if (p.last_out) lastTiles.push(h("a", { class: "tile", href: "#/obs/" + p.last_out.uuid, style: "color:inherit;text-decoration:none" }, h("div", { class: "label" }, "You → " + first), h("div", { class: "value" }, relDay(p.last_out.date)), h("div", { class: "note" }, streamLabel(p.last_out.stream))));
+  if (p.last_in) lastTiles.push(h("a", { class: "tile", href: "#/obs/" + p.last_in.uuid, style: "color:inherit;text-decoration:none" }, h("div", { class: "label" }, first + " → you"), h("div", { class: "value" }, relDay(p.last_in.date)), h("div", { class: "note" }, streamLabel(p.last_in.stream))));
+  if (lc && lc.entry) lastTiles.push(h("a", { class: "tile", href: "#/entry/" + lc.entry.uuid, style: "color:inherit;text-decoration:none" }, h("div", { class: "label" }, "Last journal mention"), h("div", { class: "value" }, relDay(lc.entry.date)), h("div", { class: "note" }, lc.entry.title)));
+  lastTiles.push(h("div", { class: "tile" }, h("div", { class: "label" }, "In your journal"), h("div", { class: "value" }, String(p.mention_count)), h("div", { class: "note" }, "entries")));
+  parts.push(h("div", { class: "tiles" }, lastTiles));
+  parts.push(h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "chip", href: "#/ask?q=" + encodeURIComponent("when did I last talk to " + first) }, icon("ask"), "Ask: when did I last talk to " + first + "?")));
+
+  for (const card of p.contact_cards || []) {
+    parts.push(section("Contact card", null, h("div", { class: "card", style: "background:var(--observed-soft);border:1px dashed var(--observed-border);box-shadow:none" },
+      h("div", { class: "row", style: "margin-bottom:8px" }, observedBadge(), h("span", { class: "muted small" }, "from " + ((card.import && card.import.connector) || "contacts") + " · import " + String((card.import && card.import.uuid) || "").slice(0, 8))),
+      h("dl", { class: "kv" }, (card.fields || []).map(f => [h("dt", null, f.label), h("dd", null, f.value)])),
+      card.text ? h("div", { class: "small", style: "margin-top:8px" }, card.text) : null)));
+  }
+  if ((p.handles || []).length) {
+    parts.push(section("Linked handles", p.handles.length, h("div", { class: "list" }, p.handles.map(hd => h("div", { class: "link-row" },
+      h("div", { class: "row-main" }, h("div", { class: "handle" }, hd.kind + ":" + hd.value), hd.display_name ? h("div", { class: "row-meta" }, "seen as “" + hd.display_name + "”") : null),
+      h("div", { class: "row-side" }, plural(hd.observation_count, "record"), hd.observation_count ? h("div", null, "last " + relDay(tsDay(hd.last_seen_at))) : null))))));
+  }
+  if ((p.streams || []).length) {
+    parts.push(h("div", { class: "row", style: "margin-top:14px" }, p.streams.map(st => h("span", { class: "badge obs" }, streamLabel(st.stream) + " · " + st.count))));
+  }
+  parts.push(section("Journal mentions", p.mention_count, p.mentions.length ? h("div", { class: "list" }, p.mentions.map(m => entryRow({ ...m, entities: [], measurements: [] }, { showDate: true }))) : h("div", { class: "muted small" }, "Not mentioned in a reviewed entry yet.")));
+  if ((p.observations || []).length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Recent observed records"), h("div", { class: "tier-note" }, "Texts, calls and chats that name one of " + first + "'s handles — imported, not reviewed."),
+      h("div", { class: "list observed" }, p.observations.map(o => obsRow(o, { showDate: true, showStream: true })))));
+  }
+  setView(parts);
+}
+
+// ---------------------------------------------------------------- loops
+
+async function viewLoops() {
+  setView(pageHead("Open loops", "Tasks and plans you said out loud and haven't closed."), skeleton(3));
+  let d;
+  try { d = await api("/api/loops"); }
+  catch (e) { setView(pageHead("Open loops"), errorCard(e)); return; }
+  const rows = d.open.map(e => {
+    const side = [];
+    if (e.overdue) side.push(h("span", { class: "badge bad" }, icon("alert"), "overdue"));
+    if (e.due_at) side.push(h("div", null, "due " + fmtDay(e.due_at)));
+    side.push(h("div", null, "since " + relDay(e.date)));
+    const meta = [e.category, (e.entities || []).map(x => x.name).join(", ")].filter(Boolean).join(" · ");
+    return h("a", { class: "loop-row", href: "#/entry/" + e.uuid }, kindBadge(e.kind),
+      h("div", { class: "row-main" }, h("div", { class: "row-title" }, e.title), meta ? h("div", { class: "row-meta" }, meta) : null),
+      h("div", { class: "row-side" }, side));
+  });
+  const sub = plural(d.open.length, "open loop") + (d.overdue ? " · " + d.overdue + " overdue" : "");
+  setView(pageHead("Open loops", sub),
+    rows.length ? h("div", { class: "list" }, rows) : emptyState("check", "No open loops. Nicely done."),
+    d.recently_closed.length ? section("Recently closed", null, h("div", { class: "list" }, d.recently_closed.map(e =>
+      h("a", { class: "loop-row", href: "#/entry/" + e.uuid }, h("span", { class: "badge " + (e.closure === "done" ? "good" : "") }, icon("check"), e.closure),
+        h("div", { class: "row-main" }, h("div", { class: "row-title" }, e.title), h("div", { class: "row-meta" }, e.kind + " · opened " + fmtDay(e.date))),
+        h("div", { class: "row-side" }, e.closed_at ? relDay(tsDay(e.closed_at)) : ""))))) : null,
+    h("p", { class: "muted small", style: "margin-top:18px" }, "This page is read-only. Close a loop from the terminal: ", h("code", null, "python -m lifecrm entry close <uuid> --closure done"), " — or just say it in tonight's note."));
+}
+
+// ---------------------------------------------------------------- sources
+
+async function viewSources() {
+  setView(pageHead("Sources", "Where the data came from, and how fresh it is."), skeleton(4));
+  let d;
+  try { d = await api("/api/imports"); }
+  catch (e) { setView(pageHead("Sources"), errorCard(e)); return; }
+  const c = (STATUS && STATUS.counts) || {};
+  const tiles = h("div", { class: "tiles" },
+    tile("Journal entries", (d.journal.entries || 0).toLocaleString(), d.journal.last_entry ? "last " + relDay(d.journal.last_entry) : "none yet"),
+    tile("Days logged", (d.journal.days || 0).toLocaleString(), plural(d.journal.open_drafts || 0, "open draft")),
+    tile("Observed records", (c.observations || 0).toLocaleString(), plural(c.imports || 0, "import")),
+    tile("Health records", (c.health_records || 0).toLocaleString(), plural(d.health_files.length, "export file")),
+    tile("Unresolved handles", String(d.unresolved_handles), d.unresolved_handles ? "need a person" : "all linked"));
+  const parts = [pageHead("Sources", "Where the data came from, and how fresh it is."), tiles];
+
+  if (d.unresolved_handles) {
+    parts.push(section("Handles waiting for a person", d.unresolved_handles,
+      h("div", { class: "list" }, d.unresolved.map(u => h("div", { class: "link-row" },
+        h("div", { class: "row-main" }, h("div", { class: "handle" }, u.kind + ":" + u.value), u.display_name ? h("div", { class: "row-meta" }, "seen as “" + u.display_name + "”") : null),
+        h("div", { class: "row-side" }, plural(u.observation_count, "record"))))),
+      h("p", { class: "muted small" }, "Linking one handle attributes every record that ever used it: ", h("code", null, "python -m lifecrm handles list --suggest"))));
+  }
+  if (d.connectors.length || d.connectors_error) {
+    const rows = d.connectors.map(cn => {
+      const state = cn.stale === true ? h("span", { class: "badge bad" }, icon("alert"), "stale")
+        : cn.records ? h("span", { class: "badge good" }, icon("check"), "ok") : h("span", { class: "badge" }, "not used");
+      return h("tr", null,
+        h("td", { "data-label": "Connector" }, h("b", null, cn.connector), h("div", { class: "muted small" }, cn.streams.filter(st => st.count).map(st => streamLabel(st.stream) + " " + st.count.toLocaleString()).join(" · ") || cn.streams.map(st => streamLabel(st.stream)).join(", "))),
+        h("td", { "data-label": "Newest record", class: "num" }, cn.latest ? relDay(tsDay(cn.latest)) : "–"),
+        h("td", { "data-label": "Last import", class: "num" }, cn.last_run ? relDay(tsDay(cn.last_run)) : "never"),
+        h("td", { "data-label": "Status", class: "num" }, state, cn.stale_after_days ? h("div", { class: "muted small" }, "stale after " + cn.stale_after_days + " d") : null));
+    });
+    parts.push(section("Connectors", null, d.connectors_error ? h("div", { class: "card error" }, d.connectors_error) : null,
+      h("div", { class: "list table-wrap" }, h("table", { class: "table stackable" }, h("thead", null, h("tr", null, h("th", null, "Connector"), h("th", { class: "num" }, "Newest record"), h("th", { class: "num" }, "Last import"), h("th", { class: "num" }, "Status"))), h("tbody", null, rows)))));
+  }
+  if (d.imports.length) {
+    parts.push(section("Import runs", d.imports.length, h("div", { class: "list table-wrap" }, h("table", { class: "table stackable" },
+      h("thead", null, h("tr", null, h("th", null, "When"), h("th", null, "Connector"), h("th", { class: "num" }, "Added"), h("th", { class: "num" }, "Live"), h("th", null, "Status"))),
+      h("tbody", null, d.imports.map(i => h("tr", null,
+        h("td", { "data-label": "When" }, fmtDay(tsDay(i.started_at)) + " " + tsTime(i.started_at), h("div", { class: "muted small mono" }, i.uuid.slice(0, 8))),
+        h("td", { "data-label": "Connector" }, i.connector, i.source_file ? h("div", { class: "muted small" }, i.source_file) : null),
+        h("td", { "data-label": "Added", class: "num" }, String((i.counts && i.counts.added) || 0)),
+        h("td", { "data-label": "Live", class: "num" }, String(i.live)),
+        h("td", { "data-label": "Status" }, h("span", { class: "badge " + (i.status === "applied" ? "good" : i.status === "retracted" ? "warn" : i.status === "failed" ? "bad" : "") }, i.status)))))))));
+  }
+  if (d.health_files.length) {
+    parts.push(section("Health exports", d.health_files.length, h("div", { class: "list" }, d.health_files.map(f => h("div", { class: "link-row" },
+      h("div", { class: "row-main" }, h("div", { class: "row-title" }, f.source_file), h("div", { class: "row-meta" }, plural(f.metrics, "metric") + " · " + fmtDay(f.first_date) + " – " + fmtDay(f.last_date))),
+      h("div", { class: "row-side" }, f.records.toLocaleString() + " records"))))));
+  }
+  if (d.journal.sources.length) {
+    parts.push(section("Journal sources", null, h("div", { class: "list" }, d.journal.sources.map(js => h("div", { class: "link-row" },
+      h("div", { class: "row-main" }, h("div", { class: "row-title" }, SOURCE_TYPES[js.type] || js.type), h("div", { class: "row-meta" }, "latest " + fmtDay(js.last_date))),
+      h("div", { class: "row-side" }, js.count.toLocaleString()))))));
+  }
+  if (STATUS && STATUS.snapshot) {
+    parts.push(h("p", { class: "muted small", style: "margin-top:20px" }, icon("lock"), " Read-only snapshot taken " + tsStamp(STATUS.snapshot.taken_at) + " · refreshed automatically when the database changes" + (STATUS.snapshot.error ? " · last refresh problem: " + STATUS.snapshot.error : "")));
+  }
+  setView(parts);
+}
+
+function tile(label, value, note) {
+  return h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), note ? h("div", { class: "note" }, note) : null);
+}
+
+// ---------------------------------------------------------------- health
+
+async function viewHealth(daysArg) {
+  const days = Number(daysArg) || Number(store("healthDays")) || 14;
+  const seg = h("div", { class: "seg", role: "group", "aria-label": "Window" }, [14, 30].map(n =>
+    h("button", { type: "button", "aria-pressed": String(n === days), onclick: () => { store("healthDays", String(n)); location.hash = "#/health/" + n; } }, n + " days")));
+  const dash = STATUS && STATUS.dashboards && STATUS.dashboards.running
+    ? h("a", { class: "btn", href: location.protocol + "//" + location.hostname + ":" + STATUS.dashboards.port + "/-/dashboards/health", target: "_blank", rel: "noopener noreferrer" }, "Full dashboards", icon("ext"))
+    : null;
+  const head = pageHead("Health", "What your phone and watch recorded, beside what you said.", h("div", { class: "row" }, seg, dash));
+  setView(head, skeleton(3));
+  let d;
+  try { d = await api("/api/health?days=" + days); }
+  catch (e) { setView(head, errorCard(e)); return; }
+  const parts = [head];
+  // An export imported weeks ago leaves the window empty; show the same
+  // span ending at the newest data instead of a blank page.
+  const newest = Object.values(d.latest || {}).sort().pop();
+  if (!d.metrics.length && !d.journal.length && newest) {
+    try {
+      const older = await api("/api/health?days=" + days + "&end=" + newest);
+      if (older.metrics.length || older.journal.length) {
+        parts.push(h("div", { class: "card muted small", style: "margin-bottom:12px" }, "Nothing in the last " + days + " days — showing the " + days + " days up to your newest health data, " + fmtDay(newest) + "."));
+        d = older;
+      }
+    } catch (e) { /* keep the empty window */ }
+  }
+  if (d.metrics.length) {
+    parts.push(h("div", { class: "chart-grid" }, d.metrics.map(mt => healthCard(mt, d))));
+  }
+  if (d.journal.length) {
+    const mood = d.journal.filter(j => j.metric === "mood" || j.metric === "energy");
+    const rest = d.journal.filter(j => !(j.metric === "mood" || j.metric === "energy"));
+    const cards = [];
+    if (mood.length) {
+      cards.push(h("div", { class: "card chart-card" }, h("h2", null, mood.map(j => j.label).join(" & ")),
+        h("div", { class: "headline" }, mood.map(j => h("span", null, h("span", { class: "big" }, fmtValue(j.latest, "")), h("span", { class: "unit" }, "/10 " + j.label + "  "))), h("span", { class: "sub" }, "from your journal")),
+        chart({ start: d.start, end: d.end, kind: "line", unit: "/10", domain: [0, 10], height: 150, label: "mood and energy",
+          lines: mood.map((j, i) => ({ name: j.label, short: j.label.slice(0, 1).toUpperCase(), color: i ? "var(--series-2)" : "var(--series-1)", points: j.series })) })));
+    }
+    for (const j of rest) cards.push(healthCard(j, d, "from your journal"));
+    parts.push(section("From your journal", null, h("div", { class: "chart-grid" }, cards)));
+  }
+  if (!d.metrics.length && !d.journal.length) {
+    const latest = Object.entries(d.latest || {}).sort((a, b) => b[1] < a[1] ? -1 : 1)[0];
+    parts.push(emptyState("health", latest
+      ? "No health data in the last " + days + " days — the newest is " + fmtDay(latest[1]) + "."
+      : "No health data yet. Import an export: Health Connect on Android (python -m lifecrm health import <zip>), Apple Health on iPhone — see docs."));
+  }
+  if (d.missing.length) {
+    parts.push(h("p", { class: "muted small", style: "margin-top:16px" }, "Nothing in this window for " + d.missing.map(mm => mm.label + " (latest " + fmtDay(mm.latest) + ")").join(", ") + "."));
+  }
+  setView(parts);
+}
+
+function healthCard(mt, d, note) {
+  const agg = mt.per_day_agg === "sum" ? "total" : "average";
+  return h("div", { class: "card chart-card" },
+    h("h2", null, mt.label.charAt(0).toUpperCase() + mt.label.slice(1)),
+    h("div", { class: "headline" }, h("span", { class: "big" }, fmtValue(mt.latest, "")), h("span", { class: "unit" }, mt.unit),
+      h("span", { class: "sub" }, "latest " + fmtDay(mt.latest_date), h("br"), "avg " + fmtValue(mt.mean, mt.unit) + " per day")),
+    metricChart(mt, d.start, d.end, { height: 140 }),
+    h("div", { class: "muted small", style: "margin-top:4px" }, (note || (mt.origin === "journal" ? "from your journal" : "sensor import")) + " · daily " + agg + " · " + plural(mt.days, "day")));
+}
+
+// ---------------------------------------------------------------- entry & observation
+
+async function viewEntry(uuid) {
+  setView(skeleton(3));
+  let e;
+  try { e = await api("/api/entry/" + encodeURIComponent(uuid)); }
+  catch (err) { setView(errorCard(err)); return; }
+  const cats = [e.categories.primary].concat(e.categories.secondary || []).filter(Boolean);
+  const facts = [];
+  const add = (k, v) => { if (v !== null && v !== undefined && v !== "") facts.push(h("dt", null, k), h("dd", null, v)); };
+  add("Date", h("a", { href: "#/today/" + e.journal_date }, fmtDay(e.journal_date, { weekday: "long", month: "long" })));
+  add("Kind", e.kind);
+  add("Category", cats.join(", "));
+  add("When", [e.time_of_day, e.occurred_at ? tsStamp(e.occurred_at) : null].filter(Boolean).join(" · "));
+  add("Due", e.due_at ? fmtDay(e.due_at) : null);
+  add("Closed", e.closure ? e.closure + (e.closed_at ? " · " + fmtDay(tsDay(e.closed_at)) : "") : null);
+  add("Confidence", e.confidence !== "high" ? e.confidence : null);
+  add("Status", e.status !== "active" ? e.status : null);
+  const parts = [
+    h("div", { class: "row", style: "margin-bottom:8px" }, kindBadge(e.kind), h("span", { class: "badge good" }, icon("check"), "confirmed")),
+    h("h1", null, e.title),
+    e.body ? h("p", { style: "font-size:16px;color:var(--text-2)" }, e.body) : null,
+    h("div", { class: "card", style: "margin-top:14px" }, h("dl", { class: "kv" }, facts)),
+  ];
+  const prov = entryProvenance(Object.assign({}, e, { body: null }));
+  if (prov.length) parts.push(section("Where it came from", null, h("div", { class: "card" }, prov)));
+  if (e.entities.length) parts.push(section("People & things", null, h("div", { class: "row" }, e.entities.map(x => x.type === "person" ? h("a", { class: "chip", href: "#/person/" + x.id }, x.name, h("span", { class: "muted" }, x.role)) : h("span", { class: "chip" }, x.name, h("span", { class: "muted" }, x.type + " · " + x.role))))));
+  if (e.measurements.length) parts.push(section("Measurements", null, h("div", { class: "tiles" }, e.measurements.map(m => tile(m.metric.replace(/_/g, " "), fmtValue(m.numeric_value !== null ? m.numeric_value : m.text_value, m.unit || ""), m.status !== "active" ? m.status : null)))));
+  const links = [...(e.links.outgoing || []).map(l => ({ ...l, uuid: l.to_uuid, dir: "→" })), ...(e.links.incoming || []).map(l => ({ ...l, uuid: l.from_uuid, dir: "←" }))];
+  if (links.length) parts.push(section("Linked entries", links.length, h("div", { class: "list" }, links.map(l => h("a", { class: "link-row", href: "#/entry/" + l.uuid },
+    h("span", { class: "badge" }, l.dir + " " + l.type.replace("_", " ")), h("div", { class: "row-main" }, h("div", { class: "row-title" }, l.other_title), h("div", { class: "row-meta" }, fmtDay(l.other_date))))))));
+  if (e.revisions.length > 1) parts.push(section("History", e.revisions.length, h("div", { class: "list" }, e.revisions.map(r => h("div", { class: "link-row" }, h("div", { class: "row-main" }, h("div", { class: "row-title" }, r.change_kind.replace(/_/g, " ")), r.note ? h("div", { class: "row-meta" }, r.note) : null), h("div", { class: "row-side" }, r.actor + " · " + fmtDay(tsDay(r.revised_at))))))));
+  setView(parts);
+}
+
+async function viewObservation(uuid) {
+  setView(skeleton(3));
+  let o;
+  try { o = await api("/api/observation/" + encodeURIComponent(uuid)); }
+  catch (err) { setView(errorCard(err)); return; }
+  const facts = [];
+  const add = (k, v) => { if (v !== null && v !== undefined && v !== "") facts.push(h("dt", null, k), h("dd", null, v)); };
+  add("When", (o.local_time || tsStamp(o.started_at)) + (o.ended_at ? " – " + (o.local_end ? o.local_end.slice(11) : tsTime(o.ended_at)) : ""));
+  add("Day", h("a", { href: "#/today/" + o.date }, fmtDay(o.date, { weekday: "long", month: "long" })));
+  add("Stream", streamLabel(o.stream) + " (" + o.stream + ")");
+  add("Who", o.who);
+  add("Thread", o.title);
+  add("Value", o.value !== null && o.value !== undefined ? fmtValue(o.value, o.unit || "") : null);
+  add("App", o.origin_app);
+  add("Media", o.media_path);
+  add("Status", o.status !== "active" ? o.status : null);
+  const people = (o.participants || []).map(p => {
+    const label = (p.entity || p.display_name || p.kind + ":" + p.value) + " · " + p.role;
+    return p.entity_id ? h("a", { class: "chip", href: "#/person/" + p.entity_id }, label) : h("span", { class: "chip", title: p.kind + ":" + p.value }, label);
+  });
+  const imp = o.import || {};
+  const parts = [
+    h("div", { class: "row", style: "margin-bottom:8px" }, observedBadge(), h("span", { class: "badge" }, streamLabel(o.stream))),
+    h("h1", { style: "font-size:22px" }, o.who || streamLabel(o.stream)),
+    o.text ? h("div", { class: "card", style: "margin-top:14px;font-size:16px;white-space:pre-wrap;overflow-wrap:anywhere" }, o.text) : null,
+    h("div", { class: "card", style: "margin-top:10px" }, h("dl", { class: "kv" }, facts)),
+    people.length ? section("Participants", people.length, h("div", { class: "row" }, people)) : null,
+    section("Provenance", null, h("div", { class: "card", style: "background:var(--observed-soft);border:1px dashed var(--observed-border);box-shadow:none" },
+      h("p", { class: "small", style: "margin:0 0 8px" }, "Imported in bulk and never reviewed. Cite it; don't take it as a confirmed fact."),
+      h("dl", { class: "kv" }, h("dt", null, "Import"), h("dd", { class: "mono" }, imp.uuid || "–"), h("dt", null, "Connector"), h("dd", null, imp.connector || "–"),
+        imp.account ? [h("dt", null, "Account"), h("dd", null, imp.account)] : null, imp.source_file ? [h("dt", null, "File"), h("dd", null, imp.source_file)] : null,
+        h("dt", null, "Imported"), h("dd", null, tsStamp(imp.started_at)), h("dt", null, "Source id"), h("dd", { class: "mono" }, o.external_id)))),
+  ];
+  if ((o.cited_by || []).length) parts.push(section("Cited by journal entries", o.cited_by.length, h("div", { class: "list" }, o.cited_by.map(c => h("a", { class: "link-row", href: "#/entry/" + c.uuid }, h("div", { class: "row-main" }, h("div", { class: "row-title" }, c.title), h("div", { class: "row-meta" }, fmtDay(c.date))))))));
+  if ((o.context || []).length > 1) parts.push(section("In the same thread", null, h("div", { class: "list observed" }, o.context.map(c => obsRow(c, { showDate: c.date !== o.date })))));
+  setView(parts);
+}
+
+// ---------------------------------------------------------------- router
+
+const ROUTES = [
+  [/^#?\/?$/, () => viewAsk(), "ask"],
+  [/^#\/ask(?:\?q=(.*))?$/, q => viewAsk(q ? decodeURIComponent(q) : null), "ask"],
+  [/^#\/today(?:\/(\d{4}-\d{2}-\d{2}))?$/, d => viewDay(d), "today"],
+  [/^#\/people$/, () => viewPeople(), "people"],
+  [/^#\/person\/(\d+)$/, id => viewPerson(id), "people"],
+  [/^#\/loops$/, () => viewLoops(), "loops"],
+  [/^#\/sources$/, () => viewSources(), "sources"],
+  [/^#\/health(?:\/(\d+))?$/, n => viewHealth(n), "health"],
+  [/^#\/entry\/([\w-]+)$/, u => viewEntry(u), "today"],
+  [/^#\/obs\/([\w-]+)$/, u => viewObservation(u), "today"],
+];
+
+function route() {
+  hideTip();
+  const hash = location.hash || "#/";
+  for (const [re, fn, nav] of ROUTES) {
+    const m = hash.match(re);
+    if (!m) continue;
+    document.querySelectorAll(".nav a").forEach(a => { if (a.dataset.route === nav) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+    fn(m[1]);
+    return;
+  }
+  setView(emptyState("alert", "No such page.", h("div", { style: "margin-top:10px" }, h("a", { href: "#/ask" }, "Go to Ask"))));
+}
+
+function navFoot() {
+  const foot = document.getElementById("nav-foot");
+  if (!STATUS) return;
+  const c = STATUS.counts || {};
+  const taken = STATUS.snapshot && STATUS.snapshot.taken_at ? new Date(STATUS.snapshot.taken_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "";
+  fill(foot, 
+    h("div", null, h("span", { class: "dot" }), "read-only · snapshot " + taken),
+    h("div", null, (c.entries || 0).toLocaleString() + " entries · " + (c.observations || 0).toLocaleString() + " observed"),
+    STATUS.demo ? h("div", { style: "color:var(--warn);margin-top:4px" }, "demo data") : null);
+}
+
+async function boot() {
+  hydrateIcons(document);
+  try { STATUS = await api("/api/status"); }
+  catch (e) { setView(errorCard(e)); return; }
+  navFoot();
+  window.addEventListener("hashchange", route);
+  route();
+  setInterval(() => api("/api/status").then(st => { STATUS = st; navFoot(); }).catch(() => {}), 60000);
+}
+
+boot();
+})();
+</script>
+</body>
+</html>
