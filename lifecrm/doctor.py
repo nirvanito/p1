@@ -24,6 +24,12 @@ BACKUP_MAX_AGE_DAYS = 7
 STUCK_DRAFT_DAYS = 2
 HEALTH_STALE_DAYS = 14
 INBOX_STUCK_DAYS = 2
+# `lifecrm review` writes its evidence packs (review-<lens>-<period>.json and
+# .md) into staging beside the drafts. A pack is something to read, never
+# something to ingest or apply, so an old one is not a stuck draft — and the
+# weekly review job leaves a new one every Monday. (The brief a skill drafts
+# from it is draft-review-*.json: a real draft, still swept.)
+REVIEW_PACK_PREFIX = "review-"
 # System litter the phone, OneDrive or Finder leaves beside real files
 # ('Icon\r' is a folder's custom-icon file; the CR is part of its name).
 _INBOX_LITTER = {"desktop.ini", "thumbs.db", ".ds_store", "icon\r"}
@@ -291,7 +297,8 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
         if cfg.staging_dir.exists():
             cutoff = time.time() - STUCK_DRAFT_DAYS * 86400
             stale = [p.name for p in cfg.staging_dir.glob("*.json")
-                     if p.stat().st_mtime < cutoff]
+                     if not p.name.startswith(REVIEW_PACK_PREFIX)
+                     and p.stat().st_mtime < cutoff]
         if stale:
             _add("warn", "staging_drafts",
                  f"{len(stale)} file(s) older than {STUCK_DRAFT_DAYS} days in "

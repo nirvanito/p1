@@ -232,7 +232,9 @@ def test_install_tasks_writes_five_valid_launch_agents(tmp_path):
         "local.lifecrm.doctor": ("doctor.sh", {"Hour": 8, "Minute": 0}),
         "local.lifecrm.verify-restore": ("verify-restore.sh",
                                          {"Weekday": 0, "Hour": 12, "Minute": 0}),
-        "local.lifecrm.review": ("review.sh", {"Weekday": 0, "Hour": 19, "Minute": 0}),
+        # Monday after the rollover: the default period is then the week
+        # that has just ended (test_fix_ops.py pins the reasoning).
+        "local.lifecrm.review": ("review.sh", {"Weekday": 1, "Hour": 7, "Minute": 30}),
     }
     for label, (script, when) in expected.items():
         job = jobs[label]
@@ -240,7 +242,9 @@ def test_install_tasks_writes_five_valid_launch_agents(tmp_path):
         assert job["ProgramArguments"][0] == "/bin/bash"
         assert job["ProgramArguments"][1].endswith(f"scripts/{script}")
         assert job["StartCalendarInterval"] == when
-        assert job["EnvironmentVariables"] == {"PYTHONUTF8": "1"}
+        # _env sets LIFECRM_PYTHON, and launchd would not pass it on itself
+        assert job["EnvironmentVariables"] == {
+            "PYTHONUTF8": "1", "LIFECRM_PYTHON": Path(sys.executable).as_posix()}
         short = label.removeprefix("local.lifecrm.")
         assert job["StandardOutPath"].endswith(f"data/launchd-{short}.log")
         assert job["StandardErrorPath"] == job["StandardOutPath"]

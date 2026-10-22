@@ -14,6 +14,29 @@
 /demo/
 *.zip
 
+# --- personal exports saved into the project folder: the guides run every
+# import from the project root, often with a relative path (`observe finance
+# statements/`, `observe location Timeline.json`, `review --check brief.md
+# --out brief-sourced.txt`), and only some sources arrive as zips. Anchored
+# to the root on purpose: the synthetic exports under tests/fixtures/ and the
+# demo generators in lifecrm/demo/ are source, and stay visible. The letter
+# classes are for case-sensitive checkouts: banks name files .CSV and .OFX.
+/*.[vV][cC][fF]
+/*.[iI][cC][sS]
+/*.[cC][sS][vV]
+/*.[oO][fF][xX]
+/*.[qQ][fF][xX]
+/*.[qQ][bB][oO]
+/*.[xX][mM][lL]
+/*.[jJ][sS][oO][nN]
+/WhatsApp Chat*
+/[tT]akeout*/
+/apple_health_export/
+/statements/
+/vault/
+/brief*
+/kept*.txt
+
 # --- environment ---
 /.venv/
 __pycache__/

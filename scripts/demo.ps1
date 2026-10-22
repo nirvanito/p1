@@ -15,6 +15,9 @@ param(
 $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 $Root = Split-Path -Parent $PSScriptRoot
+# Explorer's "Run with PowerShell" starts in scripts\, where `python -m
+# lifecrm` finds no package: the venv does not install it.
+Set-Location $Root
 $Py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $Py)) {
     Write-Error "no venv yet - run: powershell -ExecutionPolicy Bypass -File scripts\setup.ps1"
@@ -33,6 +36,7 @@ if ($Rebuild -or -not (Test-Path (Join-Path $Demo ".lifecrm-demo"))) {
 if ($NoServe) { exit 0 }
 Write-Host ""
 Write-Host "opening the web UI at http://127.0.0.1:$Port/ (Ctrl+C stops it)"
-Start-Process "http://127.0.0.1:$Port/"
-& $Py -m lifecrm --root $Demo serve --port $Port
+# --open: serve opens the browser once it is listening. Opening it first
+# shows a refused connection while the snapshot is still being taken.
+& $Py -m lifecrm --root $Demo serve --port $Port --open
 exit $LASTEXITCODE

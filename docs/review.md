@@ -168,7 +168,7 @@ longer want goes the usual way: `entry retract <uuid>`.
 The pack is cheap and read-only, so it can be waiting before you sit down
 for the review. `scripts/install-tasks.ps1` (task "LifeCRM review") and
 `scripts/install-tasks.sh` (`local.lifecrm.review`) register a weekly job,
-Sundays at 19:00. It runs `scripts/review.ps1` / `review.sh`, which logs to
+Mondays at 07:30. It runs `scripts/review.ps1` / `review.sh`, which logs to
 `data/review.log`:
 
 ```bash
@@ -176,8 +176,17 @@ python -m lifecrm review --lens all --write-only
 ```
 
 That leaves `data\staging\review-all-<week>.md` (and `.json`) for the
-default period, the last full Monday-to-Sunday week. The job never writes the database and never runs a model; turning
-the pack into a brief stays an interactive `/review-week` session.
+default period, the last full Monday-to-Sunday week. Monday morning is when
+that period is the week that has just ended: Sunday's journal day runs until
+the 05:00 rollover, so a Sunday-evening run would still get the week before
+and miss Sunday itself. 07:30 is after the rollover and after the 07:00
+intake, and the pack matches what `/review-week` builds by default all week.
+The job never writes the database and never runs a model; turning the pack
+into a brief stays an interactive `/review-week` session. `doctor`'s
+`staging_drafts` warning skips these packs (`review-*.json`): they are for
+reading, never for `ingest`, so an old one is not a stuck draft. The brief a
+skill drafts from one (`draft-review-*.json`) is a real draft and is still
+checked.
 
 ## Settings
 

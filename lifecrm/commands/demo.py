@@ -25,7 +25,9 @@ def register(app: typer.Typer) -> None:
         directory: str = typer.Option(
             None, "--dir", help="Where to build it (default: demo/<combo>/ in the project)"),
         anchor: str = typer.Option(
-            None, "--anchor", help="The demo's 'today', YYYY-MM-DD (default: today)"),
+            None, "--anchor",
+            help="The demo's 'today', YYYY-MM-DD (default: today's journal date "
+                 "in the demo's timezone — before 05:00 that is still yesterday)"),
         force: bool = typer.Option(False, "--force", help="Rebuild an existing demo"),
         with_audio: bool = typer.Option(
             False, "--with-audio",
@@ -37,7 +39,7 @@ def register(app: typer.Typer) -> None:
         """Build a demo instance from synthetic data, through the real pipeline."""
         from ..cli import _fail
         from ..demo import persona
-        from ..demo.build import DemoBuilder, DemoError, default_dir
+        from ..demo.build import DemoBuilder, DemoError, default_anchor, default_dir
 
         combos = list(persona.COMBOS) if combo == "both" else [combo]
         if any(c not in persona.COMBOS for c in combos):
@@ -45,7 +47,10 @@ def register(app: typer.Typer) -> None:
         if directory and len(combos) > 1:
             _fail("--dir builds one demo; use it with --combo android or --combo iphone")
         try:
-            day = date.fromisoformat(anchor) if anchor else date.today()
+            # The rollover-aware journal date, not the calendar's: built at
+            # 01:00, the demo would otherwise hold records its own `ask`
+            # places tomorrow.
+            day = date.fromisoformat(anchor) if anchor else default_anchor()
         except ValueError:
             _fail(f"--anchor must be YYYY-MM-DD (got {anchor})")
 

@@ -8,6 +8,9 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# From the repo root, wherever this was started: the venv does not install
+# lifecrm as a package, so `python -m lifecrm` only finds it from here.
+cd "$ROOT" || exit 1
 export PYTHONUTF8=1
 
 COMBO="iphone"
@@ -42,10 +45,8 @@ else
 fi
 
 [ "$SERVE" = 1 ] || exit 0
-URL="http://127.0.0.1:$PORT/"
 echo ""
-echo "opening the web UI at $URL (Ctrl+C stops it)"
-if command -v open >/dev/null 2>&1; then (sleep 2; open "$URL") &
-elif command -v xdg-open >/dev/null 2>&1; then (sleep 2; xdg-open "$URL") &
-fi
-exec "$PY" -m lifecrm --root "$DEMO" serve --port "$PORT"
+echo "opening the web UI at http://127.0.0.1:$PORT/ (Ctrl+C stops it)"
+# --open: serve opens the browser once it is listening; a fixed sleep first
+# loses the race whenever the snapshot takes longer than the sleep.
+exec "$PY" -m lifecrm --root "$DEMO" serve --port "$PORT" --open

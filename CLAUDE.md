@@ -52,7 +52,7 @@ asserted.
   transcribe-inbox, doctor, backup, verify-restore, restore, review, demo,
   install-tasks (+ uninstall-tasks.sh). install-tasks registers intake (07:00
   + logon), doctor (08:00), backup (21:30), verify-restore (Sun 12:00),
-  review (Sun 19:00) as Task Scheduler `LifeCRM *` / launchd
+  review (Mon 07:30) as Task Scheduler `LifeCRM *` / launchd
   `local.lifecrm.*`; logs in `data\*.log`.
 - Tests: `.venv\Scripts\python.exe -m pytest tests -q` (pass
   `--basetemp=<scratch dir>` if the default temp root is blocked). Every

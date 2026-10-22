@@ -324,7 +324,7 @@ logging. *Built 2026-10-22 (24a93c4), ahead of the gate, at the owner's
 request. `lifecrm review` builds a read-only, model-free evidence pack (D/E/M/H/O
 ids, prior-period deltas). The /review-week skill writes the cited brief,
 and a kept brief is a `reflection` entry through the normal gate. The
-weekly job (scripts/review.ps1 / review.sh, registered Sundays 19:00 by
+weekly job (scripts/review.ps1 / review.sh, registered Mondays 07:30 by
 install-tasks, log data/review.log) runs `review --lens all --write-only`.
 See docs/review.md.*
 

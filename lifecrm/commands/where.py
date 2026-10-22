@@ -38,9 +38,18 @@ EXPORTS = (
     ("whatsapp", "WhatsApp chat export", ("whatsapp chat*.zip", "whatsapp chat*.txt")),
     ("calendar", "calendar export", ("*.ics",)),
 )
-# Subfolders the Android backup apps write into, inside a cloud drive.
-_APP_SUBFOLDERS = ("SMSBackupRestore", "SMS Backup & Restore")
 MAX_LISTED = 8
+
+
+def _app_subfolders() -> tuple[Path, ...]:
+    """Where the Android backup app uploads inside a cloud drive — the very
+    list `observe android_sms` searches (Apps\\SMS Backup & Restore first),
+    so `where` never reports 'none' for a backup that command would read."""
+    try:
+        from ..connectors.android_sms import ONEDRIVE_FOLDERS
+    except Exception:   # one broken connector module must not hide the report
+        return (Path("SMSBackupRestore"), Path("SMS Backup & Restore"))
+    return ONEDRIVE_FOLDERS
 
 
 # ---------------------------------------------------------------- probing
@@ -180,7 +189,7 @@ def drop_folders(journal_root: Path | None) -> list[Path]:
     clouds += platforms.onedrive_candidates()
     for cloud in clouds:
         out.append(cloud)
-        out += [cloud / sub for sub in _APP_SUBFOLDERS]
+        out += [cloud / sub for sub in _app_subfolders()]
     if journal_root is not None:
         out.append(journal_root)
     seen, uniq = set(), []
@@ -196,9 +205,11 @@ def _export_commands(kind: str, arg: str) -> list[str]:
     return {
         "health": [f"python -m lifecrm health import {arg}"],
         "sms": [f"python -m lifecrm observe android_sms {arg}"],
-        # one Takeout zip feeds several connectors, each reading its own part
+        # one Takeout zip feeds several connectors, each reading its own part.
+        # Not browser: it reads a browser's own SQLite History, and Takeout's
+        # Chrome history is a JSON file it refuses.
         "takeout": [f"python -m lifecrm observe {c} {arg}"
-                    for c in ("calendar", "location", "browser", "notes", "photos")],
+                    for c in ("calendar", "location", "notes", "photos")],
         "whatsapp": [f"python -m lifecrm observe whatsapp {arg}"],
         "calendar": [f"python -m lifecrm observe calendar {arg}"],
     }[kind]

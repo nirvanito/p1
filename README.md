@@ -92,7 +92,7 @@ for your user, with no admin rights needed:
 | doctor | daily 08:00 | doctor against the live database | `data/doctor.log` (WARN/FAIL lines) |
 | backup | daily 21:30 | snapshot with tiered retention (14 daily, 12 weekly, 24 monthly, yearly kept forever), local and the cloud copy (`cloud_backups_dir`: OneDrive or iCloud Drive) | — |
 | verify-restore | Sundays 12:00 | `lifecrm verify-backup`: restores the newest snapshot into a scratch folder, runs doctor on it, and checks every table holds at least the rows live had when the snapshot was taken | `data/verify-restore.log` (Windows) |
-| review | Sundays 19:00 | `lifecrm review --lens all --write-only`: the review pack for the last full week, waiting in `data/staging/` | `data/review.log` |
+| review | Mondays 07:30 | `lifecrm review --lens all --write-only`: the review pack for the week that just ended, waiting in `data/staging/` | `data/review.log` |
 
 The Windows tasks also run on battery. A failed run exits non-zero, so Task
 Scheduler's *Last Run Result* shows `0x1` and launchd's `last exit code`

@@ -169,9 +169,9 @@ the checklist at the end of iphone.md.
 ## 5. Full Disk Access
 
 macOS's privacy protection (TCC) blocks every program from your Messages,
-Contacts, Photos and Notes databases and from iPhone backups until you allow
-it. Python inherits the permission of the app that launched it — so grant it
-to **your terminal**:
+Contacts, Photos, Notes and call-history databases and from iPhone backups
+until you allow it. Python inherits the permission of the app that launched
+it — so grant it to **your terminal**:
 
 System Settings › Privacy & Security › **Full Disk Access** › **+** › choose
 Terminal (Applications › Utilities) — or iTerm, or the app Claude Code runs
@@ -186,6 +186,7 @@ What needs it:
 | `~/Library/Application Support/AddressBook` (Contacts) | same |
 | `~/Pictures/Photos Library.photoslibrary` (Photos) | same |
 | `~/Library/Group Containers/group.com.apple.notes` (Notes) | same |
+| `~/Library/Application Support/CallHistoryDB` (Calls — the iPhone's, with *Calls from iPhone* on) | same |
 | iCloud Drive, `~/Downloads` | a one-time "would like to access" prompt instead — allow it |
 
 **Scheduled jobs (launchd) cannot show that prompt.** If a scheduled run's
@@ -221,7 +222,7 @@ no sudo):
 | `local.lifecrm.doctor` | daily 08:00 | `scripts/doctor.sh` — invariants on the live database |
 | `local.lifecrm.backup` | daily 21:30 | `scripts/backup.sh` — snapshot, local + iCloud Drive, tiered retention |
 | `local.lifecrm.verify-restore` | Sunday 12:00 | `scripts/verify-restore.sh` — `lifecrm verify-backup`: restores the newest snapshot into a scratch folder and checks it |
-| `local.lifecrm.review` | Sunday 19:00 | `scripts/review.sh` — the review pack for the last full week, waiting in `data/staging/` for `/review-week` |
+| `local.lifecrm.review` | Monday 07:30 | `scripts/review.sh` — the review pack for the week that just ended, waiting in `data/staging/` for `/review-week` |
 
 When a run fails, it says so — exactly as on Windows:
 
@@ -238,6 +239,10 @@ When a run fails, it says so — exactly as on Windows:
 Run a job now: `launchctl kickstart gui/$(id -u)/local.lifecrm.backup`.
 `--print` shows the plists without installing; re-running the script
 replaces the jobs; `/bin/bash scripts/uninstall-tasks.sh` removes them.
+The jobs run `.venv/bin/python`. To use another interpreter, export
+`LIFECRM_PYTHON=<its full path>` before installing: launchd never sees your
+shell's environment, so the installer writes it into each plist (and warns
+if that path is not an executable).
 
 launchd differs from Task Scheduler in two ways worth knowing: a job missed
 while the Mac **slept** runs when it wakes, but one missed while it was
@@ -255,7 +260,7 @@ with `.venv/bin/python -m lifecrm ...`.
 | source | where it lives | command |
 |---|---|---|
 | Messages (iMessage, SMS, RCS) | the Mac's own `~/Library/Messages/chat.db` (with *Messages in iCloud* on, the full history) | `observe mac_messages` |
-| Texts from the phone (instead of `chat.db`) | an unencrypted **Finder** backup: Finder › your iPhone › General › *Back up all of the data on your iPhone to this Mac*, untick *Encrypt local backup*, **Back Up Now** | `observe ios_messages` — see [texts.md](texts.md) (an unencrypted backup is expected to lack call history) |
+| Texts from the phone (instead of `chat.db`) | an unencrypted **Finder** backup: Finder › your iPhone › General › *Back up all of the data on your iPhone to this Mac*, untick *Encrypt local backup*, **Back Up Now** | `observe ios_messages` — see [texts.md](texts.md). Texts only: Apple keeps call history (`CallHistory.storedata`) for **encrypted** backups, which cannot be read, so `observe ios_calls` refuses an unencrypted one — calls come from the Mac (*Calls* below) |
 | Contacts | the Mac's Contacts stores (iCloud contacts included) | `observe contacts` |
 | Photos (metadata only — time, place, camera; never the pixels) | `~/Pictures/Photos Library.photoslibrary` | `observe photos` |
 | Apple Notes | `~/Library/Group Containers/group.com.apple.notes` | `observe notes` |

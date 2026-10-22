@@ -13,9 +13,10 @@ played by the demo itself are the ones a person plays in real use:
 - the person who says "this phone number is Jake": handle links come from
   the persona, printed one by one.
 
-It refuses to build into the project root or anywhere holding the real
-database, and only ever deletes a directory it created itself (marked with
-a `.lifecrm-demo` file).
+It refuses to build into the project root, into or around the real data,
+backups and journal folders, or anywhere holding the real database, and only
+ever deletes a directory it created itself (marked with a `.lifecrm-demo`
+file) — checked again right before the delete.
 """
 
 from __future__ import annotations
@@ -28,13 +29,18 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from ..config import PROJECT_ROOT
+from ..config import PROJECT_ROOT, ConfigError, load_config
+from ..domain.days import journal_date_for
 from . import journal, persona
 
 MARKER = ".lifecrm-demo"
+# The demo's [time] day_rollover_hour. Its default "today" uses the same
+# hour, so a build at 01:00 is anchored on the journal day the demo's own
+# ask and status call today — not on a calendar date they see as tomorrow.
+ROLLOVER_HOUR = 5
 
 # Import order matters a little: the address book first, so handles get the
 # contact-card names before texts/calls/calendar reference them.
@@ -52,12 +58,49 @@ def default_dir(combo: str) -> Path:
     return PROJECT_ROOT / "demo" / combo
 
 
+def default_anchor(now: datetime | None = None) -> date:
+    """The demo's 'today': the journal date in the persona's timezone with
+    the demo's rollover, which is what its ask, status and review use."""
+    now = now or datetime.now(timezone.utc)
+    return date.fromisoformat(journal_date_for(now, persona.TIMEZONE, ROLLOVER_HOUR))
+
+
+def _protected() -> list[Path]:
+    """The real project's own folders, resolved (so a symlink or junction to
+    one is caught too): data/ and backups/, and — when there is a real
+    config.toml — every folder it names, the journal inboxes included."""
+    paths = [PROJECT_ROOT / "data", PROJECT_ROOT / "backups"]
+    if (PROJECT_ROOT / "config.toml").exists():
+        try:
+            cfg = load_config(PROJECT_ROOT)
+        except ConfigError:
+            cfg = None
+        if cfg is not None:
+            paths += [p for p in (cfg.data_dir, cfg.backups_dir, cfg.inbox_dir,
+                                  cfg.inbox_text_dir, cfg.archive_dir,
+                                  cfg.cloud_backups_dir) if p is not None]
+    out = []
+    for p in paths:
+        try:
+            out.append(p.expanduser().resolve())
+        except OSError:
+            continue
+    return out
+
+
 def check_target(root: Path) -> Path:
     root = root.expanduser().resolve()
     real_db = (PROJECT_ROOT / "data" / "lifecrm.db").resolve()
     if root == PROJECT_ROOT.resolve() or (root / "data" / "lifecrm.db").resolve() == real_db:
         raise DemoError(f"refusing to build a demo in {root}: that is the project's "
                         f"own data root")
+    for p in _protected():
+        # Inside one (a demo in data\staging would drop its files among real
+        # drafts, and a later --force would delete them all), the folder
+        # itself, or a folder that holds one.
+        if root == p or p in root.parents or root in p.parents:
+            raise DemoError(f"refusing to build a demo in {root}: it is or holds "
+                            f"the project's own {p} — pick a folder outside it")
     if root.exists() and any(root.iterdir()) and not (root / MARKER).exists():
         raise DemoError(f"{root} exists and is not a demo directory (no {MARKER}); "
                         f"pick an empty or new folder")
@@ -87,7 +130,7 @@ def _config_text(root: Path, combo: str) -> str:
         "",
         "[time]",
         f'timezone = "{persona.TIMEZONE}"',
-        "day_rollover_hour = 5",
+        f"day_rollover_hour = {ROLLOVER_HOUR}",
         "",
         "[whisper]",
         'model = "small"',
@@ -122,7 +165,7 @@ class DemoBuilder:
             raise DemoError(f"combo must be one of {', '.join(persona.COMBOS)}")
         self.root = check_target(root)
         self.combo = combo
-        self.anchor = anchor or date.today()
+        self.anchor = anchor or default_anchor()
         self.echo = echo
         self.python = python or sys.executable
         self.with_audio = with_audio
@@ -168,6 +211,7 @@ class DemoBuilder:
         if self.root.exists() and (self.root / MARKER).exists():
             if not self.force:
                 raise DemoError(f"{self.root} already holds a demo; pass --force to rebuild it")
+            check_target(self.root)          # again, at the moment it matters
             shutil.rmtree(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / MARKER).write_text(

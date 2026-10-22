@@ -1,7 +1,8 @@
 # Weekly: build last week's review pack (every lens) so it is waiting in
 # data\staging\ when you ask Claude for /review-week or /advise. Reads only -
 # the pack is a file; nothing reaches the database without the review gate.
-# Registered Sundays 19:00 by scripts\install-tasks.ps1.
+# Registered Mondays 07:30 by scripts\install-tasks.ps1 - after the rollover,
+# so "last week" is the week that has just ended.
 #   powershell -ExecutionPolicy Bypass -File scripts\review.ps1
 
 $ErrorActionPreference = "Continue"

@@ -5,6 +5,8 @@
 $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 $Root = Split-Path -Parent $PSScriptRoot
+# Task Scheduler starts in System32, where `python -m lifecrm` finds no package.
+Set-Location $Root
 & "$Root\.venv\Scripts\python.exe" -m lifecrm backup
 # "Stop" does not catch a native command's exit code; without this the task
 # reports success even when the backup failed (measured in 1.5).

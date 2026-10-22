@@ -842,14 +842,24 @@ def dashboard(
     if not metadata.exists():
         _fail(f"dashboard config not found: {metadata}")
     conn = _conn(cfg)   # write-capable connection: enforces the migration gate
+    snap = cfg.data_dir / "dashboard" / "lifecrm.db"
+    # Taken beside the old snapshot, then swapped in: a dashboard still
+    # serving the old one holds it open, and on Windows the swap then fails —
+    # said in one line, with the old snapshot left whole for it.
+    fresh = snap.with_name(f"{snap.name}.next-{os.getpid()}")
     try:
-        snap = cfg.data_dir / "dashboard" / "lifecrm.db"
-        for stale in (snap, snap.with_name(snap.name + "-wal"),
-                      snap.with_name(snap.name + "-shm")):
-            stale.unlink(missing_ok=True)
-        db_mod.snapshot(conn, snap)
+        fresh.unlink(missing_ok=True)
+        db_mod.snapshot(conn, fresh)
     finally:
         conn.close()
+    try:
+        for side in ("-wal", "-shm"):
+            snap.with_name(snap.name + side).unlink(missing_ok=True)
+        os.replace(fresh, snap)
+    except OSError as e:
+        fresh.unlink(missing_ok=True)
+        _fail(f"{snap} is in use ({e.strerror or e}) — is another `lifecrm "
+              f"dashboard` serving this root? Stop it (Ctrl+C), then rerun")
     typer.echo("serving a snapshot taken just now — rerun to refresh the data")
     wildcard = host in ("0.0.0.0", "::", "")
     typer.echo(f"dashboards: http://{'127.0.0.1' if wildcard else host}:{port}"

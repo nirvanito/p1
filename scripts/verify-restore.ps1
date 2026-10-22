@@ -13,6 +13,13 @@
 $ErrorActionPreference = "Continue"
 $env:PYTHONUTF8 = "1"
 $Root = Split-Path -Parent $PSScriptRoot
+# A relative snapshot path means the folder this was started from: make it
+# absolute before leaving that folder.
+$Passed = @($args | ForEach-Object {
+    $a = [string]$_
+    if ($a.StartsWith("-") -or [IO.Path]::IsPathRooted($a)) { $a }
+    else { [IO.Path]::GetFullPath((Join-Path $PWD.ProviderPath $a)) }
+})
 # Task Scheduler starts in System32, where `python -m lifecrm` finds no package.
 Set-Location $Root
 # LIFECRM_ROOT (a restore target, a test run) wins, so its log stays with it.
@@ -24,7 +31,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 "$stamp starting verify-backup" | Add-Content -Encoding utf8 $Log
-$verify = @("-m", "lifecrm", "verify-backup") + $args
+$verify = @("-m", "lifecrm", "verify-backup") + $Passed
 & "$Root\.venv\Scripts\python.exe" @verify 2>&1 |
     ForEach-Object { "$stamp $_" } | Tee-Object -Variable lines |
     Add-Content -Encoding utf8 $Log

@@ -9,6 +9,8 @@
 $ErrorActionPreference = "Continue"
 $env:PYTHONUTF8 = "1"
 $Root = Split-Path -Parent $PSScriptRoot
+# Task Scheduler starts in System32, where `python -m lifecrm` finds no package.
+Set-Location $Root
 # LIFECRM_ROOT (a restore target, a test run) wins, so its log stays with it.
 $ProjectRoot = if ($env:LIFECRM_ROOT) { $env:LIFECRM_ROOT } else { $Root }
 $LogDir = Join-Path $ProjectRoot "data"

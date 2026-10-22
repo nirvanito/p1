@@ -138,8 +138,8 @@ Mac:
 That schedules daily intake (07:00 and at logon, so transcripts are ready
 before you sit down), a daily `doctor` against the live database (08:00),
 daily tiered backups (21:30, local + cloud folder), a weekly
-restore-verification (Sundays 12:00) and a weekly review pack (Sundays
-19:00), on both systems.
+restore-verification (Sundays 12:00) and a weekly review pack for the week
+just ended (Mondays 07:30), on both systems.
 
 If a job fails it says so. On Windows, Task Scheduler's *Last Run Result*
 shows `0x1`; on a Mac, `launchctl print gui/$(id -u)/local.lifecrm.intake`

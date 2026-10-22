@@ -5,7 +5,7 @@
 #   local.lifecrm.backup          daily 21:30 (tiered retention)
 #   local.lifecrm.doctor          daily 08:00 (invariants on the live database)
 #   local.lifecrm.verify-restore  Sunday 12:00 (an untested backup is not a backup)
-#   local.lifecrm.review          Sunday 19:00 (last week's review pack, waiting for /review-week)
+#   local.lifecrm.review          Monday 07:30 (the week that just ended, waiting for /review-week)
 # Run once, as yourself (no sudo); re-running replaces the jobs:
 #   /bin/bash scripts/install-tasks.sh             write + load the jobs
 #   /bin/bash scripts/install-tasks.sh --print     show the plists, change nothing
@@ -45,9 +45,18 @@ xml() {    # XML-escape $1 into REPLY
 }
 xml "$LIFECRM_REPO"; ROOT_XML=$REPLY
 xml "$LOGDIR"; LOGDIR_XML=$REPLY
+# launchd starts a job with its own minimal environment, never the shell's:
+# an interpreter override given here has to travel in the plist, or every
+# job falls back to .venv/bin/python (and fails 127 where there is none).
+PY_XML=""
+if [ -n "${LIFECRM_PYTHON:-}" ]; then
+    xml "$LIFECRM_PYTHON"; PY_XML=$REPLY
+fi
 
 # One job's plist. StartCalendarInterval is in the Mac's local time;
-# Weekday 0 is Sunday.
+# Weekday 0 is Sunday, 1 Monday. The review job runs Monday morning, not
+# Sunday evening: its pack is the last full Mon-Sun week, which until the
+# 05:00 rollover on Monday is still the week before.
 plist_for() {
     local job=$1 script hour minute weekday=""
     case $job in
@@ -55,7 +64,7 @@ plist_for() {
         backup) script=backup.sh; hour=21; minute=30 ;;
         doctor) script=doctor.sh; hour=8; minute=0 ;;
         verify-restore) script=verify-restore.sh; hour=12; minute=0; weekday=0 ;;
-        review) script=review.sh; hour=19; minute=0; weekday=0 ;;
+        review) script=review.sh; hour=7; minute=30; weekday=1 ;;
     esac
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -67,7 +76,11 @@ plist_for() {
     printf '\t</array>\n'
     printf '\t<key>WorkingDirectory</key>\n\t<string>%s</string>\n' "$ROOT_XML"
     printf '\t<key>EnvironmentVariables</key>\n\t<dict>\n'
-    printf '\t\t<key>PYTHONUTF8</key>\n\t\t<string>1</string>\n\t</dict>\n'
+    printf '\t\t<key>PYTHONUTF8</key>\n\t\t<string>1</string>\n'
+    if [ -n "$PY_XML" ]; then
+        printf '\t\t<key>LIFECRM_PYTHON</key>\n\t\t<string>%s</string>\n' "$PY_XML"
+    fi
+    printf '\t</dict>\n'
     printf '\t<key>StandardOutPath</key>\n\t<string>%s/launchd-%s.log</string>\n' \
         "$LOGDIR_XML" "$job"
     printf '\t<key>StandardErrorPath</key>\n\t<string>%s/launchd-%s.log</string>\n' \
@@ -97,7 +110,14 @@ if [ "$mode" = install ] && ! command -v launchctl >/dev/null 2>&1; then
          "scripts/install-tasks.ps1 (or pass --no-load to only write the plists)" >&2
     exit 1
 fi
-if [ -z "${LIFECRM_PYTHON:-}" ] && [ ! -x "$LIFECRM_REPO/.venv/bin/python" ]; then
+if [ -n "${LIFECRM_PYTHON:-}" ]; then
+    # It goes into every plist, but launchd has none of your PATH: a bare
+    # command name or a typo fails every job all the same.
+    if [ ! -x "$LIFECRM_PYTHON" ]; then
+        echo "warning: LIFECRM_PYTHON=$LIFECRM_PYTHON is not an executable file —" \
+             "every job fails (exit 127) until it is; give the interpreter's full path" >&2
+    fi
+elif [ ! -x "$LIFECRM_REPO/.venv/bin/python" ]; then
     echo "warning: no .venv/bin/python yet — run scripts/setup.sh first, or every" \
          "job fails (exit 127) until you do" >&2
 fi
@@ -146,7 +166,7 @@ if [ "$mode" = install ]; then
     echo "  ('last exit code' is the last run's result; 1 means look at the log)"
     echo "  run a job now:  launchctl kickstart gui/$uid/local.lifecrm.backup"
 fi
-echo "logs: data/transcribe.log, data/doctor.log, data/launchd-<job>.log"
+echo "logs: data/transcribe.log, data/doctor.log, data/review.log, data/launchd-<job>.log"
 echo "a log saying 'Operation not permitted' means macOS privacy settings are" \
      "blocking the job - see Full Disk Access in docs/mac.md"
 exit $status

@@ -154,7 +154,7 @@ This registers, for your user (no admin):
 | LifeCRM doctor | daily 08:00 | doctor against the live database | `data\doctor.log` (WARN/FAIL lines) |
 | LifeCRM backup | daily 21:30 | tiered snapshots, local + OneDrive | — |
 | LifeCRM verify-restore | Sundays 12:00 | `lifecrm verify-backup`: restores the newest snapshot into a scratch folder, runs doctor on it, checks every table against live | `data\verify-restore.log` |
-| LifeCRM review | Sundays 19:00 | last full week's review pack in `data\staging\`, for `/review-week` | `data\review.log` |
+| LifeCRM review | Mondays 07:30 | the review pack for the week that just ended, in `data\staging\`, for `/review-week` | `data\review.log` |
 
 On a laptop:
 
@@ -269,12 +269,25 @@ lifecrm dashboard --host 0.0.0.0              # the charts, port 8001
 4. Samsung Internet or Chrome › menu › **Add page to › Home screen** makes it
    one tap next time.
 
-Missed or refused the firewall prompt? In an **administrator** PowerShell,
-allow the ports on Private networks only:
+**Missed the firewall prompt?** In an **administrator** PowerShell, allow
+the ports on Private networks only:
 
 ```
 New-NetFirewallRule -DisplayName "Life CRM (LAN)" -Direction Inbound -Protocol TCP -LocalPort 8765,8001 -Profile Private -Action Allow
 Remove-NetFirewallRule -DisplayName "Life CRM (LAN)"     # to take it away again
+```
+
+**Refused it (clicked Cancel or "don't allow")?** Then Windows made inbound
+**Block** rules for Python, and a Block rule wins over any Allow rule, so
+the port rule above changes nothing until they are gone. The rules name the
+base interpreter the venv was made from
+(`...\Python\pythoncore-3.12-64\python.exe`, say), not
+`.venv\Scripts\python.exe`. See them, then remove them, in an administrator
+PowerShell, and add the port rule above:
+
+```
+Get-NetFirewallApplicationFilter | Where-Object Program -like '*\python*.exe' | Get-NetFirewallRule | Where-Object { $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' } | Format-Table DisplayName, Profile, Enabled
+Get-NetFirewallApplicationFilter | Where-Object Program -like '*\python*.exe' | Get-NetFirewallRule | Where-Object { $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' } | Remove-NetFirewallRule
 ```
 
 The dashboard has **no login**, and the web page has only the `--token` key.
@@ -322,7 +335,7 @@ and [new-machine.md](new-machine.md).
 | A note is on the wrong day | `lifecrm filedate "<file>"`; android.md "The time in the filename"; `transcribe --file … --date …` |
 | Task Scheduler shows `0x1` | `data\transcribe.log` — the failing file is named; it stays in the inbox |
 | `doctor` says a file type is never read | the phone saved a format intake does not take; the warning lists the ones it does |
-| The phone cannot open the dashboard | Wi-Fi profile is Private; firewall rule exists; same network; the laptop's IP changed (`ipconfig`) |
+| The phone cannot open the dashboard | Wi-Fi profile is Private; the Allow rule exists and no inbound Block rule for python.exe does (section 9); same network; the laptop's IP changed (`ipconfig`) |
 | Transcription is slow | `[whisper] model = "small"` |
 
 ## Verification checklist (once, on the real devices)

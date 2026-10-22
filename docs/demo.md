@@ -39,7 +39,9 @@ powershell -ExecutionPolicy Bypass -File scripts/demo.ps1
 ```
 
 Each script builds `demo/<combo>/` the first time (about two minutes), then
-opens the web UI at `http://127.0.0.1:8765/`. `demo.ps1` builds the android
+opens the web UI at `http://127.0.0.1:8765/` (`serve --open`: the browser
+opens once the server is listening). Either runs from any folder, Explorer's
+*Run with PowerShell* included. `demo.ps1` builds the android
 combo by default and `demo.sh` the iphone one. Pass `-Combo iphone` /
 `--combo android` to build the other setup on the same machine. Both work on
 either OS, because every input is a file. To rebuild from scratch, use
@@ -54,10 +56,15 @@ Mac):
 python -m lifecrm demo --combo android          # or iphone, or both
 python -m lifecrm demo --combo iphone --force   # rebuild
 python -m lifecrm demo --dir ~/lifecrm-demo     # build somewhere else (one combo)
-python -m lifecrm demo --anchor 2026-10-22      # pin the demo's "today"
+python -m lifecrm demo --anchor 2026-10-22      # pin the demo's "today" (default: today's journal date)
 python -m lifecrm demo --with-audio             # also speak + transcribe one note
 python -m lifecrm demo --no-ask --json          # skip the sample questions; print the summary as JSON
 ```
+
+The default "today" is the journal date in the persona's timezone
+(America/Chicago) with the demo's 05:00 rollover — the same day the demo's
+`ask`, `status` and `review` call today. A build at 01:00 is anchored on the
+day before, so nothing in it is dated tomorrow.
 
 `--with-audio` uses the OS voice (Windows System.Speech or macOS `say`) to
 record one evening note into the inbox. Local whisper (`small`) then
@@ -159,6 +166,12 @@ prints each one:
 - The demo refuses to build into the project root or into any folder that
   already holds something it didn't create. It marks its own folders with
   `.lifecrm-demo`, and `--force` only deletes a folder carrying that marker.
+- It also refuses the project's own `data/` and `backups/` and every folder
+  the real `config.toml` names (the journal inboxes, the archive, the cloud
+  backups), anything inside them, and anything that holds one — after
+  following symlinks and junctions. `--dir data/staging` would otherwise put
+  the demo among real drafts, and a later `--force` would delete them all.
+  The check runs again right before `--force` deletes.
 - `demo/` is gitignored.
 - No network is needed. A local model (Ollama) is used only if one is
   running, and only to phrase answers. Without one, answers are
