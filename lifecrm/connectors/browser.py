@@ -144,7 +144,7 @@ def default_target(cfg: Config) -> Path:
     browser found (`browser = "edge"` in the same table picks one)."""
     settings = cfg.connector_settings(name)
     if settings.get("path"):
-        p = Path(str(settings["path"])).expanduser()
+        p = cfg.resolve(settings["path"])
         if not _present(p) and not p.is_dir():
             raise DomainError(f"[connectors.browser] path does not exist: {p}")
         return p

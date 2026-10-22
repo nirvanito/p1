@@ -2,11 +2,9 @@
 # Easiest: `python -m lifecrm configure` writes config.toml from this file with
 # this machine's journal folders and timezone filled in (and creates the
 # folders). Or copy this file to config.toml and adjust by hand.
-# data_dir and backups_dir (and the contacts, notes and finance `path` and
-# whatsapp `exports_dir` keys) resolve a relative path against the project
-# root; give every other path (the VoiceJournal folders, the other connector
-# paths) in full or starting with '~', which is your home folder on Windows
-# and macOS alike.
+# Every path here, in [paths] and in [connectors.*], follows one rule: '~' is
+# your home folder on Windows and macOS alike, and a relative path is relative
+# to the project root (never to the folder a command was started from).
 
 [paths]
 data_dir = "data"                  # canonical private data (SQLite DB, transcripts, staging)

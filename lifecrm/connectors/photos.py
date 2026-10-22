@@ -169,7 +169,7 @@ def default_target(cfg: Config) -> Path:
     guess between two."""
     configured = cfg.connector_settings(name).get("path")
     if configured:
-        return Path(str(configured)).expanduser()
+        return cfg.resolve(configured)
     if platforms.is_mac():
         db = platforms.mac_photos_db()
         try:

@@ -187,7 +187,7 @@ def _settings(cfg: Config) -> dict:
         if not isinstance(folder, str):
             raise DomainError(f"[connectors.android_sms] folder = {folder!r} must be "
                               f"a path in quotes")
-        out["folder"] = Path(folder).expanduser()
+        out["folder"] = cfg.resolve(folder)
     mirror = s.get("mirror")
     if mirror is not None and not isinstance(mirror, bool):
         raise DomainError(f"[connectors.android_sms] mirror = {mirror!r} must be "

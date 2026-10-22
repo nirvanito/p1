@@ -474,7 +474,7 @@ def default_target(cfg: Config) -> Path:
     each is the whole timeline as of its own day, and guessing is worse."""
     settings = cfg.connector_settings(name)
     if settings.get("path"):
-        p = Path(str(settings["path"])).expanduser()
+        p = cfg.resolve(settings["path"])
         if not p.exists():
             raise DomainError(f"[connectors.location] path does not exist: {p}")
         return p

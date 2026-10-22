@@ -59,3 +59,20 @@ def test_value_less_sleep_rows_are_not_a_second_recorder(conn, cfg):
     seen = []
     _health_multi_origin(conn, lambda status, check, detail=None: seen.append(status))
     assert seen == ["ok"]
+
+
+def test_every_config_path_is_relative_to_the_project_root(tmp_path, monkeypatch):
+    """One rule for config.toml paths, whichever folder a command starts in:
+    [paths] and [connectors.*] alike resolve a relative path under the root."""
+    from lifecrm.config import load_config
+    (tmp_path / "config.toml").write_text(
+        "[paths]\ninbox_dir = 'VoiceJournal/inbox'\narchive_dir = 'VoiceJournal/archive'\n"
+        "[connectors.photos]\npath = 'Pictures/Camera Roll'\n", encoding="utf-8")
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    cfg = load_config(tmp_path)
+    assert cfg.inbox_dir == tmp_path / "VoiceJournal" / "inbox"
+    assert cfg.archive_dir == tmp_path / "VoiceJournal" / "archive"
+    from lifecrm.connectors import photos
+    assert photos.default_target(cfg) == tmp_path / "Pictures" / "Camera Roll"

@@ -58,6 +58,12 @@ class Config:
     # [voice], [web] and any other front-end sections, kept verbatim.
     extra: dict = field(default_factory=dict)
 
+    def resolve(self, value) -> Path:
+        """A path from config.toml: `~` expands, relative means relative to
+        the project root — the rule every [paths] and [connectors.*] path
+        follows."""
+        return _resolve(self.root, str(value))
+
     def connector_settings(self, name: str) -> dict:
         value = self.connectors.get(name) or {}
         return value if isinstance(value, dict) else {}
@@ -86,11 +92,14 @@ def _resolve(root: Path, value: str) -> Path:
     return p if p.is_absolute() else root / p
 
 
-def _optional_path(value: str | None) -> Path | None:
+def _optional_path(root: Path, value: str | None) -> Path | None:
     """Unset or empty paths become None — Path('') is '.', which exists and
-    would silently point inbox scans at the current directory. `~` expands,
-    so a Mac config can say '~/Library/Mobile Documents/...'."""
-    return Path(value).expanduser() if value else None
+    would silently point inbox scans at the current directory. Otherwise the
+    one rule every path in config.toml follows: `~` expands (so a Mac config
+    can say '~/Library/Mobile Documents/...'), and a relative path is
+    relative to the project root, never to whatever directory a command
+    happened to start in."""
+    return _resolve(root, value) if value else None
 
 
 def load_config(root: Path | None = None) -> Config:
@@ -133,7 +142,7 @@ def load_config(root: Path | None = None) -> Config:
     # values would leave one folder silently unused — refuse instead.
     cloud = paths.get("cloud_backups_dir")
     legacy = paths.get("onedrive_backups_dir")
-    if cloud and legacy and _optional_path(cloud) != _optional_path(legacy):
+    if cloud and legacy and _optional_path(root, cloud) != _optional_path(root, legacy):
         raise ConfigError(
             f"{cfg_file}: [paths] sets both cloud_backups_dir ('{cloud}') and "
             f"onedrive_backups_dir ('{legacy}') — keep cloud_backups_dir only")
@@ -145,10 +154,10 @@ def load_config(root: Path | None = None) -> Config:
         root=root,
         data_dir=_resolve(root, paths.get("data_dir", "data")),
         backups_dir=_resolve(root, paths.get("backups_dir", "backups")),
-        inbox_dir=_optional_path(paths.get("inbox_dir")),
-        inbox_text_dir=_optional_path(paths.get("inbox_text_dir")),
-        archive_dir=_optional_path(paths.get("archive_dir")),
-        onedrive_backups_dir=_optional_path(cloud or legacy),
+        inbox_dir=_optional_path(root, paths.get("inbox_dir")),
+        inbox_text_dir=_optional_path(root, paths.get("inbox_text_dir")),
+        archive_dir=_optional_path(root, paths.get("archive_dir")),
+        onedrive_backups_dir=_optional_path(root, cloud or legacy),
         timezone=str(tz),
         day_rollover_hour=rollover,
         filename_date=filename_date,
