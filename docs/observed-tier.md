@@ -30,7 +30,7 @@ So: **two tiers, one rule.**
 | written by | `apply`, after review | importers, deterministically |
 | volume | ~20/day | ~1000s/day, plus years of backfill |
 | may be asserted as fact | yes | **only with the row cited** |
-| corrections | revisions, retraction, merge | re-import a newer export (newer-wins updates, conflicts surfaced); `imports retract` hides an import and only `imports restore` undoes it — re-importing does not bring retracted rows back |
+| corrections | revisions, retraction, merge | re-import a newer export (newer-wins updates, conflicts surfaced; an older reader's spelling is upgraded in place); `imports retract` hides an import and only `imports restore` undoes it — re-importing does not bring retracted rows back |
 
 The rule: **observed records never become confirmed records without passing the
 existing gate.** An importer may not write `entries`, `measurements`, `mentions`,
@@ -66,7 +66,7 @@ CREATE TABLE imports (
   finished_at TEXT,
   status      TEXT NOT NULL DEFAULT 'running'
     CHECK (status IN ('running','applied','failed','retracted')),
-  counts_json TEXT,                   -- {added, updated, refreshed, identical, conflicts[, reappeared, removed, retracted_cited, snapshot]}
+  counts_json TEXT,                   -- {added, updated, refreshed, identical, conflicts[, format_upgraded, reappeared, removed, retracted_cited, snapshot]}
   created_at  TEXT NOT NULL
 );
 
@@ -204,6 +204,8 @@ class Connector(Protocol):
     streams: tuple[str, ...]
     def scan(self, target: Path, cfg: Config) -> Scan: ...
     def report_lines(self, scan: Scan, plan: dict) -> list[str]: ...
+    # optional: a stored row's parsed value_json as this reader writes it today
+    def upgrade_stored(self, stream: str, value: dict) -> dict: ...
 ```
 
 A connector is a **pure reader**: it opens a file or calls an API and returns
@@ -214,7 +216,9 @@ records. It never touches the database. Everything else is shared:
 validate(rec)                    -> str | None      # single-line error
 existing_by_key(conn, streams)   -> dict[(stream, external_id), Row]
 classify(row, rec)               -> 'identical'|'refreshed'|'update'|'conflict'
+declared_upgrade(connector)      -> upgrade_stored | None
 build_plan(conn, scan)           -> plan            # newer-wins, conflicts surfaced;
+                                                    # format_upgrades;
                                                     # mirroring: removed, reappeared
 mass_removal(plan)               -> str | None      # the refusal, if it removes too much
 apply_plan(conn, scan, plan)     -> counts          # one transaction, one imports row
@@ -226,6 +230,32 @@ restore_import(conn, import_uuid)                   # puts back exactly what ret
 changed-but-not-newer is a conflict surfaced rather than an overwrite. That logic
 is already correct and already tested; the observed tier inherits it instead of
 reinventing it.
+
+**Stored-format upgrades.** Newer-wins has one blind spot: a reader that changes
+how it *spells* a record, not what the record says. A text's `last_modified_at`
+is its sent time and never moves, so every message an older reader stored would
+be a conflict on every import, forever — which is what happened when attachment
+paths became relative to the Messages folder (2026-10-22, docs/texts.md). A
+connector declares such a change once, as an optional module-level
+`upgrade_stored(stream, value) -> value` (pure, spelling only; `ios_messages`
+and `mac_messages` declare one). `build_plan` looks it up for the scanning
+connector (`declared_upgrade`), applies it to the stored row's parsed
+`value_json`, and accepts the result only when it is exactly the incoming
+`value_json` — so an upgrade can never invent content, and one that gets a
+record wrong leaves it comparing as stored. An accepted upgrade:
+
+- classifies the row with its upgraded value, so the old spelling is never a
+  conflict and never shown as changed content;
+- lands in `plan["format_upgrades"]`, and `apply_plan` rewrites the stored
+  `value_json` in place: counted as `format_upgraded` (not as identical — the
+  row is written), logged as **one** `format_upgrade` audit row per run with
+  the connector, import and external ids (never content);
+- is written whatever else the row is: identical, refreshed, or a conflict
+  over another field (the media_path a Mac knows and a phone's backup does
+  not is such a field — two devices knowing different things, not a format
+  change, so it stays a folded conflict and the first recorded stays). A row
+  that *updates* is not listed: the update rewrites it anyway, and its audit
+  records the value the row really held.
 
 CLI, mirroring `health import` (dry-run by default, `--apply` to write):
 

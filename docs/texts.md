@@ -155,7 +155,10 @@ like:
   source recorded the message first keeps its `media_path`; the report folds
   those into one line (`N message(s) already archived from another device
   differ only in where the attachment file is`) rather than a conflict per
-  photo. Import from the Mac first and the files are linked.
+  photo. Import from the Mac first and the files are linked. This is not a
+  format upgrade (below): the phone's copy never knew the file, so nothing
+  stored can be rewritten into the Mac's path — two devices know different
+  things, and the first recorded stays.
 - **Neither can delete the other's history.** Each connector mirrors only
   rows *it* first brought in, so an iPhone backup missing this morning's
   texts cannot remove what the Mac imported, and a Mac whose iCloud history
@@ -190,11 +193,22 @@ to, not everyone in the room. An event type not yet mapped is counted under
   relative to the Messages folder. The file stays where it is — in the
   backup, or on the Mac, where `media_path` points at it; media never enters
   the database. Texts imported by a build before 2026-10-22 kept the path
-  as the phone wrote it (`Library/SMS/Attachments/…`); re-importing those
-  messages reports one `CONFLICT … (value_json)` per message with an
-  attachment, kept existing: nothing is lost, those rows simply keep the old
-  form, and the newer form is never forced over them. (The owner's archive
-  held no texts then, so none of this applies to it.)
+  as the database wrote it (`Library/SMS/Attachments/…` from a phone,
+  `/var/mobile/Library/SMS/…` from an old one, `Library/Messages/…` from a
+  Mac's `chat.db`). The next import that meets such a message — from
+  either connector — rewrites the stored path to the current form in place:
+  a **format upgrade**, not a conflict and not an update, since nothing the
+  message says changed. The report says `N archived with the old full
+  attachment path, rewritten to the current form (content unchanged)`, the
+  import's counts carry `format_upgraded`, and the audit log gets one
+  `format_upgrade` row per run naming the message ids (never content). A
+  stored message is rewritten only when its upgraded `value_json` is exactly
+  what the reader sends today; one whose `value_json` also differs in
+  anything else stays as stored and is reported as a conflict, as before. A
+  Mac's `media_path` beside an upgraded path is still the one folded line
+  above. (Until 2026-10-22's fix those messages reported one
+  `CONFLICT … (value_json)` each, on every import.) The mechanism is shared
+  by every connector — docs/observed-tier.md, "Stored-format upgrades".
 - **Participants are handles**: phone numbers (normalized — see below), email
   addresses, and, for Business Chat and alphanumeric senders like `AMAZON`, an
   `app_account` handle so they can be linked or ignored.

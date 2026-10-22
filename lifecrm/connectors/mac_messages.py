@@ -25,7 +25,9 @@ only what is Mac-specific:
   the Messages folder, exactly as the phone's import does, so the same
   message from both compares identical. The one honest difference left is
   media_path itself — the phone's copy has none — and the report folds those
-  into a single line instead of a conflict per photo.
+  into a single line instead of a conflict per photo. A row an older reader
+  stored with the full path is upgraded in place (`upgrade_stored`, shared
+  with ios_messages).
 - **Names come from the Mac's Contacts** — every store, one per account
   under AddressBook/Sources plus the local one — snapshotted like the
   database, read by `_abcddb`, and joined by the same rule as the phone's
@@ -64,6 +66,10 @@ from . import ios_messages as im
 
 name = "mac_messages"
 streams = im.streams
+# The same records as the phone's, so the same stored-format upgrade: a row
+# kept with a full Library/Messages/ (or Library/SMS/) attachment path by a
+# reader from before 2026-10-22 is rewritten, not reported as a conflict.
+upgrade_stored = im.upgrade_stored
 
 ADDRESS_BOOK = "AddressBook-v22.abcddb"
 # The same handles as the phone's (its number, its Apple ID), and display

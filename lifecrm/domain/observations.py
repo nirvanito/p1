@@ -26,6 +26,14 @@ re-importing an export is always safe.
 Mirroring (see MASS_REMOVAL_MIN) adds two more: removed, for what a
 mirroring source no longer holds, and reappeared, for a row it hid that the
 source holds again.
+
+A reader that changes how it *spells* a record — not what the record says —
+would otherwise leave every row the old reader stored as a conflict on every
+import, forever: its last_modified_at never moves, so it can never win as
+newer. A connector declares that change once (`upgrade_stored`, see
+`declared_upgrade`), and a stored row whose upgraded value_json is exactly
+what the source sends today is a format upgrade: rewritten in place, counted,
+audited once per run — not a conflict, and not an update of its content.
 """
 
 from __future__ import annotations
@@ -41,6 +49,7 @@ __all__ = [
     "classify", "start_import", "finish_import", "build_plan", "apply_plan",
     "retract_import", "restore_import", "refresh_handle_stats", "unresolved_handles",
     "link_handle", "ignore_handle", "import_by_uuid", "mass_removal",
+    "declared_upgrade",
 ]
 
 # Fields that constitute the record's data (identity and bookkeeping excluded).
@@ -127,6 +136,53 @@ def classify(row: sqlite3.Row, rec: dict) -> tuple[str, dict]:
     if incoming is not None and (current is None or incoming > current):
         return "update", changes
     return "conflict", changes
+
+
+# ---------------------------------------------------------------- stored format
+
+def declared_upgrade(connector: str | None):
+    """The stored-format upgrade a connector declares, or None.
+
+    A connector whose reader changed how it spells a record's value_json —
+    a path written relative to another folder, say, with nothing it says
+    changed — declares a module-level
+
+        upgrade_stored(stream: str, value: dict) -> dict
+
+    taking a stored row's parsed value_json and returning it as the reader
+    emits it today. It must be pure and change spelling only: build_plan
+    accepts its answer only when it equals, exactly, what the source sends now
+    (`_upgraded`), so an upgrade can never invent content, and one that gets a
+    record wrong just leaves it comparing as stored. The connector stays a
+    pure reader; it never sees the database.
+    """
+    if not connector:
+        return None
+    from ..connectors import base as connectors   # lazy: connectors import the domain
+    module = connectors.registry().get(connector)
+    return getattr(module, "upgrade_stored", None)
+
+
+def _upgraded(upgrade, row, rec: dict) -> str | None:
+    """The stored row's value_json in the current format, when that is the
+    whole difference between it and the incoming record's; else None.
+
+    None as well when there is nothing to upgrade, or when the upgraded value
+    still differs from the incoming one: then the row compares as stored, and
+    whatever really differs is reported as it always was."""
+    stored, incoming = row["value_json"], rec.get("value_json")
+    if upgrade is None or not stored or stored == incoming:
+        return None
+    try:
+        value = json.loads(stored)
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    current = canonical_json(upgrade(row["stream"], value))
+    if current == stored or current != incoming:
+        return None
+    return current
 
 
 # ---------------------------------------------------------------- import runs
@@ -219,6 +275,32 @@ def _refresh_modified(conn: sqlite3.Connection, row: sqlite3.Row,
     conn.execute("UPDATE observations SET last_modified_at=?, updated_at=? "
                  "WHERE uuid=?",
                  (rec.get("last_modified_at"), now_utc(), row["uuid"]))
+
+
+def _upgrade_format(conn: sqlite3.Connection, pairs: list, connector: str,
+                    import_uuid: str, actor: str) -> int:
+    """Rows stored in an older spelling of what the source sends today: the
+    current spelling, written in place.
+
+    Not an update — nothing the record says changed, and the source did not
+    send anything newer — so not one audit row per record with its old and
+    new values. One row for the run says which records were rewritten, the
+    way a mirror removal is logged: ids, never content (value_json can carry
+    a message's edit history)."""
+    if not pairs:
+        return 0
+    now = now_utc()
+    per_stream: dict[str, int] = {}
+    for row, value_json in pairs:
+        conn.execute("UPDATE observations SET value_json=?, updated_at=? "
+                     "WHERE id=?", (value_json, now, row["id"]))
+        per_stream[row["stream"]] = per_stream.get(row["stream"], 0) + 1
+    audit.log(conn, actor, "format_upgrade", "observations", None,
+              {"connector": connector, "import": import_uuid,
+               "field": "value_json", "upgraded": len(pairs),
+               "streams": per_stream,
+               "external_ids": sorted({row["external_id"] for row, _ in pairs})})
+    return len(pairs)
 
 
 # ---------------------------------------------------------------- handles
@@ -343,14 +425,24 @@ def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     deleted) that the source holds again; they also go through classify, so
     one that changed meanwhile updates or conflicts as usual. Without this a
     cited record could never come back: classify ignores status, so it read
-    as identical and stayed hidden for good."""
+    as identical and stayed hidden for good.
+
+    `format_upgrades` lists (row, value_json) for stored rows the scanning
+    connector's `upgrade_stored` brings to exactly the incoming value_json
+    (see declared_upgrade). Such a row is classified with its upgraded value,
+    so an old spelling is never a conflict; it is otherwise identical
+    (counted here instead of as identical, since it is written), refreshed,
+    or a conflict over something else (media_path, say) — the upgrade is
+    written either way. A row that updates is not listed: the update
+    rewrites it anyway, and its audit keeps the value the row really held."""
     streams = tuple(sorted({r.get("stream") for r in scan["records"]
                             if r.get("stream")}))
     existing = existing_by_key(conn, streams)
     back_scope = _reappear_scope(conn, scan)
+    upgrade = declared_upgrade(scan.get("connector"))
     seen: set[tuple[str, str]] = set()
     new, updates, refreshed, conflicts, invalid = [], [], [], [], []
-    reappeared = []
+    reappeared, format_upgrades = [], []
     identical = dup_incoming = 0
     for rec in scan["records"]:
         err = validate(rec)
@@ -369,9 +461,17 @@ def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
         back = _reappears(row, rec, back_scope)
         if back:
             reappeared.append((row, rec))
-        kind, changes = classify(row, rec)
+        current = _upgraded(upgrade, row, rec)
+        if current is None:
+            kind, changes = classify(row, rec)
+        else:
+            kind, changes = classify({**dict(row), "value_json": current}, rec)
+            if kind == "update":        # the audit records what the row held
+                changes = classify(row, rec)[1]
+            else:
+                format_upgrades.append((row, current))
         if kind == "identical":
-            if not back:            # coming back is a change, not a skip
+            if not back and current is None:   # coming back, or rewritten: not a skip
                 identical += 1
         elif kind == "refreshed":
             refreshed.append((row, rec))
@@ -385,7 +485,7 @@ def build_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     return {"new": new, "updates": updates, "refreshed": refreshed,
             "conflicts": conflicts, "identical": identical,
             "dup_incoming": dup_incoming, "invalid": invalid,
-            "reappeared": reappeared,
+            "reappeared": reappeared, "format_upgrades": format_upgrades,
             "streams": list(streams), **_mirror_plan(conn, scan)}
 
 
@@ -558,6 +658,8 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
         _link_participants(conn, row["id"], rec.get("participants", []))
     for row, rec in plan["refreshed"]:
         _refresh_modified(conn, row, rec)
+    upgraded = _upgrade_format(conn, plan.get("format_upgrades", []),
+                               scan["connector"], import_uuid, actor)
     reappeared = _reappear(conn, plan.get("reappeared", []), actor)
     deleted, retracted = _remove(conn, plan.get("removed", []), actor)
     refresh_handle_stats(conn)
@@ -565,6 +667,8 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
               "refreshed": len(plan["refreshed"]),
               "identical": plan["identical"],
               "conflicts": len(plan["conflicts"])}
+    if upgraded:
+        counts["format_upgraded"] = upgraded
     if reappeared:
         counts["reappeared"] = reappeared
     if deleted or retracted:

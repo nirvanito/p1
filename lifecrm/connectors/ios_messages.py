@@ -75,7 +75,9 @@ Known limitations, by design
   to the Messages folder ('Attachments/ab/11/<guid>/IMG_0001.HEIC'): the phone
   says Library/SMS/, a Mac Library/Messages/, and one message seen by both
   must compare identical. The files stay where they are — media never enters
-  the database.
+  the database. A message stored by a reader from before that rule keeps
+  the full path until it is next imported; `upgrade_stored` then brings it
+  to the current form in place (a format upgrade, not a conflict).
 - A folder macOS guards (Messages, MobileSync, AddressBook) is unreadable
   without Full Disk Access; that is reported as the missing permission it is,
   not as a broken file.
@@ -645,6 +647,36 @@ def attachment_path(filename: str | None) -> str | None:
     return s[2:] if s.startswith("~/") else s
 
 
+_MESSAGE_STREAMS = ("imessage", "sms", "rcs")
+
+
+def upgrade_stored(stream: str, value: dict) -> dict:
+    """A stored message's value_json as this reader writes it today — the
+    stored-format upgrade domain/observations.py applies before comparing.
+
+    Readers before 2026-10-22 kept an attachment path as the database wrote
+    it, minus a leading '~/': 'Library/SMS/Attachments/ab/11/<guid>/x.HEIC'
+    from a phone, 'Library/Messages/Attachments/...' from a Mac's chat.db,
+    '/var/mobile/Library/SMS/...' from an old iPhone. The same attachment_path
+    rule that reads a database turns each of those into today's
+    'Attachments/ab/11/<guid>/x.HEIC'. Nothing else in a message's
+    value_json has changed spelling, so nothing else is touched; the shared
+    layer accepts the result only when it equals what the source sends now.
+    """
+    files = value.get("attachments")
+    if stream not in _MESSAGE_STREAMS or not isinstance(files, list):
+        return value
+    upgraded = []
+    for item in files:
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            path = attachment_path(item["path"])
+            item = {k: v for k, v in item.items() if k != "path"}
+            if path is not None:           # the reader leaves out an empty path
+                item["path"] = path
+        upgraded.append(item)
+    return {**value, "attachments": upgraded}
+
+
 def _recoverable(conn: sqlite3.Connection, tables: set[str]) -> set[int]:
     """Message ROWIDs in Recently Deleted (iOS 16+ / macOS 13+).
 
@@ -1109,6 +1141,10 @@ def plan_lines(scan: base.Scan, plan: dict, *, gone: str = "on the phone",
         tail.append(f"{plan['identical']} identical (skipped)")
     if plan["refreshed"]:
         tail.append(f"{len(plan['refreshed'])} modified-time refresh(es)")
+    if plan.get("format_upgrades"):
+        tail.append(f"{len(plan['format_upgrades'])} archived with the old full "
+                    f"attachment path, rewritten to the current form (content "
+                    f"unchanged)")
     if plan["dup_incoming"]:
         tail.append(f"{plan['dup_incoming']} duplicate GUID(s) inside the database")
     if tail:
@@ -1123,7 +1159,10 @@ def plan_lines(scan: base.Scan, plan: dict, *, gone: str = "on the phone",
                      f"with 'lifecrm handles list --suggest'")
     # One message read from both the phone and a Mac is one record; the only
     # thing the two can honestly disagree on is where its attachment file is.
-    # That is not worth a line per photo.
+    # That is not worth a line per photo. Nor is it a format upgrade: the
+    # phone's copy does not know the file at all, so no rewrite of what is
+    # stored yields the Mac's media_path (or the other way round) — it is
+    # two devices knowing different things, and the first recorded stays.
     located = sum(1 for c in plan["conflicts"] if set(c["changes"]) == {"media_path"})
     if located:
         lines.append(f"  {located} message(s) already archived from another "
