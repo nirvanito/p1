@@ -96,8 +96,10 @@ for your user, with no admin rights needed:
 
 The Windows tasks also run on battery. A failed run exits non-zero, so Task
 Scheduler's *Last Run Result* shows `0x1` and launchd's `last exit code`
-shows 1. On a Mac, anything that never reached Python lands in
-`data/launchd-<job>.log`. A file that intake fails on is named in the log
+shows 1. On a Mac, a missing venv shows up in the job's log as
+`FAILED (exit 127)`; whatever a script prints outside its log (all of
+backup's and verify-restore's output) lands in `data/launchd-<job>.log`.
+A file that intake fails on is named in the log
 and stays in the inbox for the next run. `install-tasks.sh --print` shows the
 plists without installing anything, and `uninstall-tasks.sh` removes them.
 
@@ -342,7 +344,7 @@ old file is kept under `data/`. Every setting is in
   supports it. Every observation names the import that brought it in and the
   export file it came from. Every `ask` fact carries an id you can check.
 - **Mirroring, per connector.** Texts (`ios_messages`, `mac_messages`,
-  `android_sms` from a full backup), iPhone calls, AI chats, calendars (a
+  `android_sms` from a full backup), AI chats, calendars (a
   one-calendar export once its name is listed in `mirror_calendars`, since
   two calendars can share a name), contacts, notes and a Mac Photos library
   *mirror* their source when it names an account: what the source no longer
@@ -350,9 +352,9 @@ old file is kept under `data/`. Every setting is in
   preceded by a snapshot, and refused when it would remove a large share of
   the archive at once (`--allow-mass-removal` overrides). A record that a
   journal entry or a relationship cites is hidden instead of deleted.
-  WhatsApp exports, Android calls (the phone's call log ages old calls out),
-  bank statements, location, browser history, photo folders and Takeouts
-  *remember*, because a missing record there is not evidence of deletion.
+  WhatsApp exports, calls (iPhone and Android: each phone's call log ages old
+  calls out), bank statements, location, browser history, photo folders and
+  Takeouts *remember*, because a missing record there is not evidence of deletion.
 - **Health** comes from Health Connect or Apple Health into
   `health_records`, keyed on the source's own record ids (or a stable hash
   for Apple). It updates only from newer records and surfaces conflicts

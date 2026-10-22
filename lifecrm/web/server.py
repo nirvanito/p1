@@ -21,8 +21,9 @@ Three rules shape this file:
 - **The only write is the question log.** With [web] log_questions (default
   on, --no-log to stop), each question asked lands in recall_log through
   domain/recall.log_question on a short-lived live connection — the same row
-  `lifecrm ask` writes. There is no capture endpoint: logging a day stays the
-  reviewed /log path (standing decision).
+  `lifecrm ask` writes, `answered` included (domain/recall.answered).
+  There is no capture endpoint: logging a day stays the reviewed /log path
+  (standing decision).
 
 Requests are refused when they come from another site (Sec-Fetch-Site:
 cross-site) or name a Host that is not this machine (a DNS-rebinding page
@@ -383,7 +384,7 @@ class WebApp:
             conn = db_mod.connect(self.cfg.db_path)
             try:
                 recall_domain.log_question(
-                    conn, question, answered=bool(result["evidence"]["has_evidence"]),
+                    conn, question, answered=recall_domain.answered(result["evidence"]),
                     answer_summary=result["answer"])
                 conn.commit()
             finally:

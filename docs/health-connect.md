@@ -45,7 +45,7 @@ Always dry-run first — that IS the review step for this pipeline:
 ```
 
 The report shows, per metric: how many records are new/changed, the date
-span, and a sample value (e.g. `weight: 1 new | 2026-07-27..2026-07-27 |
+span, and a sample value (e.g. `weight: 1 new, 0 changed | 2026-07-27..2026-07-27 |
 e.g. 2026-07-27 84.5 kg`). **Read the samples.** A unit surprise (a weight
 of 84500, a distance of 5000) or a wrong-looking date means stop and report
 it — nothing has been written. When the numbers look right:
@@ -117,9 +117,9 @@ update, reported as `re-dated: N stored record(s) …`, never a CONFLICT. A
 record whose own data differs and is not newer is still a conflict.
 
 What does NOT come in: gym set/rep/load detail (Health Connect doesn't carry
-it — that's a future Strong-CSV/Hevy importer), and iPhone data (Apple
-Health is a different pipeline; the friend's instance will use an
-auto-export app POSTing to a small receiver, or the manual export.zip).
+it — that's a future Strong-CSV/Hevy importer). iPhone data comes in through
+the same `health import`, from Apple Health's export.zip (or the unzipped
+apple_health_export folder, or export.xml) — see [apple-health.md](apple-health.md).
 
 ## First-real-import checklist (unproven until a real phone run)
 

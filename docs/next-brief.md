@@ -14,7 +14,7 @@ implementation; assume this one does too.
 
 **Status 2026-10-22.** Phases 1, 3 and 5 are built, and so is Phase 4
 apart from ActivityWatch. The code-side parts of Phases 0 and 2 are done
-too; what is left of those belongs to the owner. Schema v5, 2090 tests. The
+too; what is left of those belongs to the owner. Schema v5, 2331 tests. The
 owner asked to finish the whole Second Brain, ahead of the data gates, for
 two setups end to end: Windows laptop + Samsung
 ([windows-android.md](windows-android.md)) and MacBook + iPhone

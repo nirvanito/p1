@@ -775,7 +775,7 @@ def ask(
                 return
             recall_domain.log_question(
                 wconn, question,
-                answered=bundle.get("answered", bundle["has_evidence"]),
+                answered=recall_domain.answered(bundle),
                 answer_summary=answer_text)
             wconn.commit()
         except (sqlite3.Error, DomainError) as e:

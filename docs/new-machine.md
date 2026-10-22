@@ -161,7 +161,9 @@ Contacts, Photos, Notes or an iPhone backup — see mac.md, section 5.
    .venv\Scripts\python.exe -m lifecrm intake
    .venv\Scripts\python.exe -m lifecrm status
    ```
-   Status should show one pending note with today's date.
+   Status should list one source under "sources awaiting extraction" with
+   today's journal date (type `phone_transcript`); `pending text notes` reads
+   0 because intake has already taken the file out of the inbox.
 3. Open Claude Code in the repo folder and type `/log`. It drafts the
    extraction, you review the diff, confirm, and it applies.
 4. Prove the database is intact:

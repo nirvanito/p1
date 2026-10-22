@@ -176,8 +176,9 @@ vault root, not a subfolder of it one day and the root the next.
 Imported folder notes before 2026-10-22? Their ids had no fingerprint
 (`file:Notes/Inbox.md`). The next import of the same folder adds every note
 under its new id and removes the old-id rows as "no longer in the source" —
-for a vault of more than 100 notes that is refused as a mass removal: check
-the dry run (every removed note reappears as new) and re-run with
+for any vault of two or more notes that is refused as a mass removal (every
+old-id row goes at once): check the dry run (every removed note reappears as
+new) and re-run with
 `--allow-mass-removal`. A note a journal entry cites is hidden, not deleted.
 
 A Keep or folder note is identified by its file name, which follows its

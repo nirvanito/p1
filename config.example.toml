@@ -2,8 +2,11 @@
 # Easiest: `python -m lifecrm configure` writes config.toml from this file with
 # this machine's journal folders and timezone filled in (and creates the
 # folders). Or copy this file to config.toml and adjust by hand.
-# Relative paths resolve against the project root; '~' is your home folder on
-# Windows and macOS alike.
+# data_dir and backups_dir (and the contacts, notes and finance `path` and
+# whatsapp `exports_dir` keys) resolve a relative path against the project
+# root; give every other path (the VoiceJournal folders, the other connector
+# paths) in full or starting with '~', which is your home folder on Windows
+# and macOS alike.
 
 [paths]
 data_dir = "data"                  # canonical private data (SQLite DB, transcripts, staging)
@@ -117,7 +120,9 @@ max_loops = 10                     # open tasks/plans listed
 # exclude_domains = ["mybank.example"]
 
 # ---------------------------------------------------------------- front ends
-# Optional. The values shown are the defaults.
+# Optional. The values shown are the defaults, except [voice] voice and
+# piper_model, which are examples (by default the OS's own voice is used and
+# Piper is off).
 
 # [web]                             # `lifecrm serve` (docs/web.md)
 # host = "127.0.0.1"                # 0.0.0.0 for the phone on the same Wi-Fi

@@ -124,13 +124,12 @@ folder as a vault in Obsidian). Running
 `export --format obsidian --out <demo>/vault` again rewrites only the notes
 that changed.
 
-`doctor` reports 0 failures. The warnings are expected. `unresolved_handles`
-is the review queue the demo leaves on purpose. On the iPhone combo,
-`health_multi_origin` also appears, because the Watch and the iPhone both
-write sleep records, as a real pair does. The iPhone's nights are in-bed
-time only and carry no value, so no night is counted twice
-([apple-health.md](apple-health.md), "iPhone + Apple Watch: two
-recorders").
+`doctor` reports 0 failures and one warning, `unresolved_handles`: the
+review queue the demo leaves on purpose. On the iPhone combo the Watch and
+the iPhone both write sleep records, as a real pair does. The iPhone's nights
+are in-bed time only and carry no value, so `health_multi_origin` stays quiet
+and no night is counted twice ([apple-health.md](apple-health.md), "iPhone +
+Apple Watch: two recorders").
 
 Every answer cites its evidence. `[E3]` is a journal entry you confirmed,
 `[M1]` is a metric series, `[P2]` is a transcript passage, and `[O4]` is an

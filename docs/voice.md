@@ -116,11 +116,14 @@ ids (`[M1]`) and snippet markers (`« »`) are dropped, ISO dates become
 is on screen."
 
 With a local model running, `[voice] use_llm = true` (the default) lets it
-phrase the evidence, exactly as in `ask`. One difference: when the model
-cites evidence that does not exist, or cites nothing at all, the voice loop
-uses the deterministic answer instead and says so in the printed window line
-(`answer: deterministic (model answer rejected)`). `ask` prints such an
-answer with a warning on stderr, but nobody hears stderr.
+phrase the evidence, exactly as in `ask`. One difference: a model answer
+that cites nothing at all is kept by `ask` (with a warning on stderr), but
+the voice loop uses the deterministic answer instead. Whenever the model's
+answer is set aside — that case, or one citing evidence that does not exist
+or stating numbers or dates its citations do not contain, which `ask` sets
+aside too — the voice loop says so in the printed window line
+(`answer: deterministic (model answer rejected)`), because nobody hears
+stderr.
 
 The words reach the speech engine only as data: on stdin (System.Speech,
 `say -f -`, espeak, Piper) or as a single argument after `--` (spd-say),

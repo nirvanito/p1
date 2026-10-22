@@ -143,8 +143,10 @@ Shortcuts saving into iCloud Drive or the OneDrive file provider. Please run:
    folder — Finder's iCloud Drive on a Mac, the OneDrive folder on Windows
    (note roughly how long sync took). On a Mac, `lifecrm where` shows the
    count of notes waiting.
-3. Run `python -m lifecrm intake` there, then `python -m lifecrm status --json`
-   — confirm the note's journal date and the recorded time match reality.
+3. Run `python -m lifecrm intake` there, then `python -m lifecrm status --json`,
+   and confirm the note's journal date matches reality. For the recorded time,
+   run `python -m lifecrm sql "SELECT journal_date, recorded_at FROM sources ORDER BY id DESC LIMIT 1" --json`
+   (recorded_at is UTC), or `python -m lifecrm filedate "<the note's file name>"`.
 4. Build "Log My Day". Record a ~3 minute note; confirm the `.m4a` lands in
    `inbox`.
 5. Run `python -m lifecrm intake` and note the whisper wall-clock time for

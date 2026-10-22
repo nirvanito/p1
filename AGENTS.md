@@ -137,7 +137,9 @@ asserted.
   the owner chose "mirror the source" over "remember", 2026-09-24).
   Importers emit *handles*, never names — linking one handle attributes
   every observation that referenced it, with no backfill pass. See
-  `docs/observed-tier.md`. Connectors (each has a `docs/<name>.md`):
+  `docs/observed-tier.md`. Connectors (each has a doc: `docs/<name>.md`, except
+  ai_chat -> `docs/ai-chat.md`, ios_messages/mac_messages -> `docs/texts.md`,
+  ios_calls -> `docs/calls.md`, android_sms -> `docs/android-texts.md`):
   - `ai_chat` — Claude/ChatGPT exports; mirrors per vendor + account.
   - `ios_messages` — iPhone backup -> iMessage/SMS/RCS; mirrors.
     `connectors/typedstream.py` decodes `attributedBody` (written from the

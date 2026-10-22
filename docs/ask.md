@@ -12,7 +12,7 @@ sources:
   [M1] sleep: mean 7.09 h over 5 day(s), sensor import
   [E1] 2026-07-27 entry: Gym: push day
 
-window: last week (2026-07-22 to 2026-07-28) · answer: deterministic
+window: last week (2026-07-22 to 2026-07-28) · answer: deterministic · no local model at http://localhost:11434 — evidence answers only (see docs/ask.md to add one)
 ```
 
 Every claim ends in an evidence id you can check. The window it decided to
@@ -66,7 +66,7 @@ on an entity that was later merged still resolves to the survivor.
 An observed item in the evidence looks like this:
 
 ```
-[O3] 2026-10-12 21:00 call (ios_call) you → Linda Rivera 12 min (observed, not confirmed)
+[O3] 2026-10-12 21:00 call (ios_call) you → Linda Rivera "phone call" 12 min (observed, not confirmed)
 ```
 
 Streams are grouped so the answer can say what a record is:
@@ -267,7 +267,7 @@ years" is capped at 100 years.
 
 ## What it knows about
 
-**Sensor data** (`health_records`, from Health Connect): sleep, steps, weight,
+**Sensor data** (`health_records`, from Health Connect or an Apple Health export): sleep, steps, weight,
 heart rate, resting heart rate, workouts, distance, calories burned, food
 energy, body fat, hydration. When two apps record the same thing on the same
 day (Samsung Health and Google Fit can both count one walk), a daily total

@@ -112,8 +112,11 @@ lifecrm where
 lifecrm doctor
 ```
 
-`where` prints the config file, the database, each inbox, the archive and
-backup folders, and where each connector looks by default. `doctor` warns
+`where` prints the config file, each inbox (with how many notes are waiting),
+the archive and cloud backups folders, the iPhone backup folders, and any
+Apple Health, Health Connect, SMS Backup & Restore, Takeout, WhatsApp or .ics
+export sitting in Downloads, OneDrive or the journal folder, each with the
+command that reads it. `doctor` warns
 about a folder that does not exist — the classic typo that otherwise looks
 like a quiet day.
 
@@ -212,7 +215,9 @@ counts, date spans and sample lines; then run the same command with
 | AI chats | Claude / ChatGPT data export | a `.zip` | `lifecrm observe ai_chat "<zip>"` ([ai-chat.md](ai-chat.md)) |
 
 A path in brackets is optional: with none, the connector looks where that
-export usually lands (`lifecrm where` shows what it finds).
+export usually lands. For health, texts and WhatsApp, `lifecrm where` shows
+what it finds. Contacts takes the newest `.vcf` in Downloads, and location
+takes a `Timeline.json` (or `location-history.json`) in Downloads or OneDrive.
 `lifecrm connectors` lists the connectors this install has, with each one's
 last run. Health has its own walkthrough: [health-connect.md](health-connect.md).
 

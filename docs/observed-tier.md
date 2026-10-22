@@ -26,15 +26,15 @@ So: **two tiers, one rule.**
 
 | | confirmed | observed |
 |---|---|---|
-| tables | `entries`, `measurements`, `mentions` | `observations`, `health_records` |
+| tables | `entries`, `measurements`, `mentions`, `entity_links` | `observations`, `health_records` |
 | written by | `apply`, after review | importers, deterministically |
 | volume | ~20/day | ~1000s/day, plus years of backfill |
 | may be asserted as fact | yes | **only with the row cited** |
-| corrections | revisions, retraction, merge | retract the import and re-run |
+| corrections | revisions, retraction, merge | re-import a newer export (newer-wins updates, conflicts surfaced); `imports retract` hides an import and only `imports restore` undoes it — re-importing does not bring retracted rows back |
 
 The rule: **observed records never become confirmed records without passing the
-existing gate.** An importer may not write `entries`, `measurements`, `mentions`
-or `entity_aliases`. Ever.
+existing gate.** An importer may not write `entries`, `measurements`, `mentions`,
+`entity_aliases` or `entity_links`. Ever.
 
 This is not a new idea in this codebase — `measurements` (what the journal said)
 versus `health_records` (what the sensor recorded) is exactly this split, decided
@@ -58,7 +58,7 @@ the one importer that already runs.
 CREATE TABLE imports (
   id          INTEGER PRIMARY KEY,
   uuid        TEXT NOT NULL UNIQUE,
-  connector   TEXT NOT NULL,          -- 'imessage','gcal','claude_export','photos'
+  connector   TEXT NOT NULL,          -- 'ai_chat','ios_messages','calendar','photos', ...
   account     TEXT,                   -- which mailbox/phone/calendar, when relevant
   source_file TEXT,                   -- export file or backup path, when file-based
   source_hash TEXT,                   -- content hash: re-importing the same export is a no-op
@@ -66,7 +66,7 @@ CREATE TABLE imports (
   finished_at TEXT,
   status      TEXT NOT NULL DEFAULT 'running'
     CHECK (status IN ('running','applied','failed','retracted')),
-  counts_json TEXT,                   -- {new, updated, refreshed, identical, conflicts}
+  counts_json TEXT,                   -- {added, updated, refreshed, identical, conflicts[, reappeared, removed, retracted_cited, snapshot]}
   created_at  TEXT NOT NULL
 );
 
@@ -74,7 +74,7 @@ CREATE TABLE imports (
 CREATE TABLE observations (
   id               INTEGER PRIMARY KEY,
   uuid             TEXT NOT NULL UNIQUE,
-  stream           TEXT NOT NULL,     -- 'imessage','email','gcal','claude_chat','txn','photo'
+  stream           TEXT NOT NULL,     -- 'imessage','calendar_event','claude_chat','txn','photo', ...
   import_id        INTEGER NOT NULL REFERENCES imports(id),
   journal_date     TEXT NOT NULL REFERENCES days(journal_date),
   started_at       TEXT NOT NULL,     -- UTC ISO-8601
@@ -114,11 +114,13 @@ CREATE TABLE entity_handles (
   entity_id         INTEGER REFERENCES entities(id) ON DELETE CASCADE,
   display_name      TEXT,             -- what the source system called it, for review
   confirmed_at      TEXT,             -- NULL until the owner confirms the mapping
+  ignored           INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0,1)),  -- handles ignore
   observation_count INTEGER NOT NULL DEFAULT 0,
   first_seen_at     TEXT NOT NULL,
   last_seen_at      TEXT NOT NULL,
   created_at        TEXT NOT NULL,
-  PRIMARY KEY (kind, value)
+  PRIMARY KEY (kind, value),
+  CHECK (NOT (ignored = 1 AND entity_id IS NOT NULL))
 );
 -- Deliberate contrast with entity_aliases, whose PK (alias, entity_id) makes
 -- ambiguity a supported state. A phone number is not ambiguous; that is the
@@ -166,9 +168,9 @@ O(messages): a few hundred decisions covering a decade, presented
 noisiest-first.
 
 ```
-lifecrm handles list --unresolved --top 50      # ranked by observation_count
+lifecrm handles list --limit 50                 # unresolved by default, ranked by observation_count
 lifecrm handles link phone:+15125551234 --entity 12
-lifecrm handles link email:jake@acme.com --new person "Jake Reilly"
+lifecrm handles link email:jake@acme.com --new "Jake Reilly"   # --type person is the default
 lifecrm handles ignore phone:+18005550100       # spam, delivery notifications
 ```
 
@@ -185,20 +187,22 @@ connector would copy them.
 
 ```python
 # lifecrm/connectors/base.py
-class Scan(TypedDict):
+class Scan(dict):             # a plain dict with a fixed shape (empty_scan builds one)
     connector:   str
     account:     str | None
     source_file: str | None
     source_hash: str | None
     records:     list[dict]   # observation dicts, normalized units, UTC times
     handles:     list[dict]   # {kind, value, display_name}
-    unmapped:    dict         # what the connector saw and did not understand
-    skipped:     dict         # what it deliberately dropped, with counts
+    unmapped:    list[dict]   # what the connector saw and did not understand, e.g. {what, count}
+    skipped:     list[str]    # what it deliberately dropped, as 'N × reason'
+    present_ids:    set|list  # mirroring connectors only: ids the source still holds
+    mirror_streams: list[str] # mirroring connectors only: the streams mirroring may remove from
 
 class Connector(Protocol):
     name:    str
     streams: tuple[str, ...]
-    def scan(self, target: Path | str, cfg: Config) -> Scan: ...
+    def scan(self, target: Path, cfg: Config) -> Scan: ...
     def report_lines(self, scan: Scan, plan: dict) -> list[str]: ...
 ```
 
@@ -238,8 +242,10 @@ lifecrm imports restore <import-uuid>          # puts back exactly what retract 
 
 Note the naming collision: `lifecrm import` already means "import a text
 transcript as a journal source." Hence `observe` for the new group. `health
-import` should eventually move under it as `observe health <zip>`, but not until
-the observed tier is real.
+import` stays its own command (decided 2026-10-22, docs/next-brief.md open
+decision #4): Health Connect and Apple Health are two readers behind it, picked
+from the file by `health_import.reader_for`, and neither enters the observe
+registry.
 
 ## Mirroring: removal, and what keeps it safe
 
@@ -286,11 +292,19 @@ connector gets the same guards:
 - **`doctor`** — `entries_have_provenance` becomes "has `entry_sources` **or**
   `entry_observations`". New checks: observations whose `import_id` is retracted,
   handles pointing at a merged entity, `imports` stuck in `running`. New warning:
-  connector last-run age — the observed-tier equivalent of the capture-liveness
-  gap already on the roadmap.
-- **`export`** — three new tables in JSONL. Markdown export should *not* dump raw
-  observations; a real day has hundreds. Day pages get a counts line
-  (`42 messages · 3 events · 2 transactions`) and nothing more.
+  `<connector>_data_age`, the observed-tier equivalent of the capture-liveness
+  gap. For a connector that declares `stale_after_days` (ios_messages, ios_calls
+  and android_sms at 14 days, finance at 45) and has active records, doctor
+  warns when its newest active record is older than that limit. It measures the
+  newest record, not the newest run, so re-importing an old backup does not
+  make the data fresh.
+- **`export`** — five new tables in JSONL (`imports`, `observations`,
+  `entity_handles`, `observation_participants`, `entry_observations`). The
+  markdown archive leaves observations out completely, since a real day has
+  hundreds. Only the Obsidian vault's day notes have an **Observed** section:
+  per-stream counts (`android_sms 42 · calendar_event 3 · txn 2`), then up to
+  ten notable items, each citing its `observations` row. See
+  [obsidian.md](obsidian.md).
 - **`status`** — per-connector last-run and unresolved-handle count. *(Not
   done: `lifecrm connectors` covers the last-run half, and `doctor` warns on
   unresolved handles, but `status` itself is unchanged.)*

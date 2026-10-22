@@ -68,7 +68,9 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
 ## Field rules
 
 - **contract_version** — must be `2`.
-- **journal_date** — `YYYY-MM-DD`, never in the future. The journal date is
+- **journal_date** — `YYYY-MM-DD`, not in the future: validation refuses a
+  date later than tomorrow's UTC date (one day of slack, so no time zone's
+  own today is refused). The journal date is
   *when it was journaled about*; future events live in `due_at`/`occurred_at`
   of `plan`/`task` entries.
 - **sources** — non-empty array. A day made of several notes (evening note

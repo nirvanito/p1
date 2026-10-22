@@ -14,7 +14,7 @@ Nothing in the vault is ever read back into `lifecrm.db`. An edit made in
 Obsidian flowing back into the database would be a second write path around
 the review gate, and the architecture has exactly one (everything goes
 through `python -m lifecrm ...`). To change a record, change it with the CLI
-(`lifecrm entry edit`, `entry close`, `entities rename`, ...) or `/log`, then
+(`lifecrm entry edit`, `entry close`, `entities merge`, `entities alias-add`, ...) or `/log`, then
 re-export.
 
 That makes the vault safe to point at a folder that also holds your own

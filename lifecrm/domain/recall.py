@@ -14,6 +14,13 @@ from .util import DomainError, now_utc
 MAX_SUMMARY = 500
 
 
+def answered(bundle: dict) -> bool:
+    """The one rule `lifecrm ask` and `lifecrm serve` both log: retrieval's
+    own verdict (a question that asked for numbers is answered only when it
+    got some), else whether any evidence came back at all."""
+    return bool(bundle.get("answered", bundle.get("has_evidence")))
+
+
 def log_question(conn: sqlite3.Connection, question: str, *, answered: bool,
                  answer_summary: str | None = None) -> int:
     question = (question or "").strip()

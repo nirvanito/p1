@@ -233,8 +233,12 @@ When a run fails, it says so — exactly as on Windows:
 - `launchctl print gui/$(id -u)/local.lifecrm.intake` shows
   **last exit code** — the Mac's version of Task Scheduler's *Last Run
   Result*; `1` means look at the log.
-- Anything that never reached Python (a missing venv) lands in
-  `data/launchd-<job>.log`.
+- A missing venv is logged like any other failure: the job's log shows the
+  shell's `No such file or directory` line, then
+  `FAILED (exit 127) - see the lines above`. Anything a script prints
+  outside those logs lands in `data/launchd-<job>.log`: all output of the
+  backup and verify-restore jobs, which keep no log of their own, and any
+  error from a script that fails before it starts logging.
 
 Run a job now: `launchctl kickstart gui/$(id -u)/local.lifecrm.backup`.
 `--print` shows the plists without installing; re-running the script

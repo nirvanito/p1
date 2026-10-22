@@ -72,8 +72,12 @@ a network you trust (home Wi-Fi, not a café), and stop it (Ctrl+C) when done.
 
 The git repository holds code only. `.gitignore` excludes `data\` (database,
 dashboard/web snapshots, staging, transcripts), `backups\`, `archive\`,
-`archive-data\`, `exports\`, `demo\`, `*.db*`, `*.jsonl`, `*.zip`,
-`config.toml` and `.claude/settings.local.json`. A test
+`archive-data\`, `exports\`, `demo\`, `*.db`, `*.db-wal`, `*.db-shm`,
+`*.jsonl`, `*.zip`, personal exports saved in the project root (`*.vcf`,
+`*.ics`, `*.csv`, `*.ofx`/`*.qfx`/`*.qbo`, `*.xml`, `*.json` in any letter
+case, `WhatsApp Chat*`, `Takeout*/`, `apple_health_export/`, `statements/`,
+`vault/`, `brief*`, `kept*.txt`), `config.toml` and
+`.claude/settings.local.json`. A test
 (`tests/test_integrity_privacy.py`) asks `git check-ignore` about every one of
 those paths — without creating any file — and fails the suite if one ever
 becomes visible; it also checks that source files (`lifecrm/demo/`,
@@ -96,10 +100,13 @@ Nothing is deleted automatically except old snapshots. If you want limits:
   `pre-removal-*` snapshots (taken by `observe` before it removes anything)
   are pruned by `backup` on their own rule: every one from the 14 most recent
   days that have one is kept.
-- Texts and AI chats mirror their source (decision #2): a message or
-  conversation deleted on the phone or in the app is removed from the
-  database on the next import (snapshot first) — so a removed message's text
-  lives on in that `pre-removal-*` snapshot until it is pruned.
+- Mirroring connectors follow their source: texts (iPhone backup, Mac
+  Messages, a full SMS Backup & Restore file) and AI chats (decision #2),
+  and in the same way contacts, calendars, notes and the Mac Photos library.
+  A record deleted on the phone, in the app or in the address book is
+  removed from the database on the next import (snapshot first), so its text
+  lives on in that `pre-removal-*` snapshot until it is pruned. WhatsApp,
+  iPhone calls, finance, location and browser history remember.
 
 ## Moving everything to another machine
 

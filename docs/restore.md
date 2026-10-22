@@ -74,8 +74,11 @@ python -m lifecrm restore <snapshot.db>  # verify + restore
 `restore` refuses corrupt or non-lifecrm files, snapshots the current database
 to `backups/pre-restore-*.db` first (nothing is ever lost by restoring), swaps
 the file in, and applies any pending schema migrations. Close anything that
-has the database open first (a DB browser, the dashboard, a running
-`observe`).
+has the live database open first (a DB browser, a running `observe` or
+import). `lifecrm dashboard` and `lifecrm serve` read their own snapshots
+(data/dashboard/, data/web/), so they can stay running: `serve` picks up the
+restored database on its own, and a dashboard shows the old data until you
+rerun it.
 
 ## A machine that has never run this project
 

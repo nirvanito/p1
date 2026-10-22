@@ -30,7 +30,7 @@ gate is never bypassed from a phone.
 | **Ask** | A question box. The answer is exactly `lifecrm ask --json`'s (`recall.answer()`): every claim carries a citation chip — `M1` a metric series, `E2` a journal entry, `P3` a transcript passage, `O4` an observed record. Tap a chip to expand the evidence: the series as a small chart with mean/min/max, the entry with the transcript passage it came from, the observed row with its stream, time, who, text and the import that brought it in. Under each answer: the time window it used, and *answered deterministically* or the local model that phrased it (its citations are checked). Example questions come from the demo persona on the demo database, generic ones otherwise. |
 | **Today** | Pick a day (date picker, prev/next, or tap a square on the five-week heat map). The day's summary, mood / energy / slept, health numbers from sensor imports (the same per-day numbers `ask` and the Health page give — see below), journal entries grouped by category with kind badges, and observed records (texts, calls, chats, ...) grouped by stream — styled as *observed*, each citing its import. |
 | **People** | Everyone of type person, most recent contact first — across both tiers (the latest journal mention vs. the latest text, connected call or calendar event naming one of their handles: the rule `ask` uses for "when did I last talk to X", so a missed call, a tapback, a contact card or next week's meeting is never "last contact"). You are not on the list: the person linked to your own number or account (a handle that sends your outgoing texts, that an import names as its account, or that the source calls "you (this phone)") opens as *you*, with no last contact. A person page adds aliases, linked handles, journal mentions, recent observed records, upcoming calendar events apart from them, contact-card fields, and *you → them* / *them → you* — a message or call they sent you (a group text someone else sent does not count) and one you sent them. |
-| **Loops** | Open tasks and plans, overdue first, then by due date; the last few closed. Closing one is `lifecrm entry close <uuid>` — or say it in tonight's note. |
+| **Loops** | Open tasks and plans, overdue first, then by due date; the last few closed. Closing one is `lifecrm entry close <uuid> --closure done` (or `dropped` / `obsolete`) — or say it in tonight's note. |
 | **Health** | The key sensor metrics (sleep, steps, heart rate, weight, workouts, ...) and the journal's mood / energy / sleep over the last 14 or 30 days. The series are the same ones `ask` cites. When `lifecrm dashboard` is running and answers at the address the page was opened on, a link opens the full Datasette dashboards; on a phone, with the dashboards started the default way (this computer only), the page says so instead — start them with `lifecrm dashboard --host 0.0.0.0` to open them from the phone (no key, so trusted networks only). |
 
 **Two apps, one walk.** Samsung Health and Google Fit can both write the same
@@ -110,7 +110,9 @@ stable.
   server runs, and the page catches up a few seconds after an apply.
 - **Every request reads the snapshot** through its own read-only connection.
 - **The only write** is the question log: each question asked is recorded in
-  `recall_log`, the same row `lifecrm ask` writes. `--no-log` (or
+  `recall_log`, the same row `lifecrm ask` writes. Both apply one rule for
+  `answered`: a question counts as answered when evidence came back, and a
+  question that asked for numbers only when it got some. `--no-log` (or
   `[web] log_questions = false`) turns it off.
 
 `data\web\` is inside `data\`, so it is private and gitignored like the rest.
