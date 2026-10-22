@@ -1,18 +1,25 @@
-# Register the three scheduled tasks so nothing depends on remembering:
+# Register the scheduled tasks so nothing depends on remembering:
 #   LifeCRM intake         - daily 07:00 + at logon (text + audio inboxes)
+#   LifeCRM doctor         - daily 08:00 (the live database, after intake)
 #   LifeCRM backup         - daily 21:30 (tiered retention)
 #   LifeCRM verify-restore - weekly Sunday 12:00 (an untested backup is not a backup)
-# Run once, as your own user (no admin needed):
+# Run once, as your own user (no admin needed); re-running replaces them:
 #   powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 
 function Register-LifeCrmTask($Name, $Script, $Triggers) {
+    # -WorkingDirectory: without it Task Scheduler starts in System32, and
+    # `python -m lifecrm` there fails with "No module named lifecrm".
     $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Root\scripts\$Script`""
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Root\scripts\$Script`"" `
+        -WorkingDirectory $Root
+    # A laptop: the defaults skip a task that comes due on battery and kill
+    # one when the charger is pulled - intake and backup would silently not run.
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
-        -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+        -DontStopOnIdleEnd -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 2)
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $Triggers `
         -Settings $settings -Force | Out-Null
     Write-Host "registered: $Name"
@@ -22,6 +29,9 @@ Register-LifeCrmTask "LifeCRM intake" "transcribe-inbox.ps1" @(
     (New-ScheduledTaskTrigger -Daily -At 07:00),
     (New-ScheduledTaskTrigger -AtLogOn)
 )
+Register-LifeCrmTask "LifeCRM doctor" "doctor.ps1" @(
+    (New-ScheduledTaskTrigger -Daily -At 08:00)
+)
 Register-LifeCrmTask "LifeCRM backup" "backup.ps1" @(
     (New-ScheduledTaskTrigger -Daily -At 21:30)
 )
@@ -29,3 +39,4 @@ Register-LifeCrmTask "LifeCRM verify-restore" "verify-restore.ps1" @(
     (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 12:00)
 )
 Write-Host "done - inspect with: Get-ScheduledTask -TaskName 'LifeCRM*'"
+Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log"

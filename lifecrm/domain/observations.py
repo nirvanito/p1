@@ -26,6 +26,7 @@ re-importing an export is always safe.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from . import audit, days
@@ -34,7 +35,7 @@ from .util import DomainError, canonical_json, new_uuid, now_utc
 __all__ = [
     "COMPARE_FIELDS", "HANDLE_KINDS", "ROLES", "validate", "existing_by_key",
     "classify", "start_import", "finish_import", "build_plan", "apply_plan",
-    "retract_import", "refresh_handle_stats", "unresolved_handles",
+    "retract_import", "restore_import", "refresh_handle_stats", "unresolved_handles",
     "link_handle", "ignore_handle", "import_by_uuid", "mass_removal",
 ]
 
@@ -472,6 +473,19 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
     return {**counts, "import_uuid": import_uuid}
 
 
+def _id_ranges(ids: list[int]) -> list[list[int]]:
+    """[3, 4, 5, 9] -> [[3, 5], [9, 9]]. Exact (every integer in a range was
+    listed), and compact for what retraction records: one import's rows are
+    inserted together, so a 50,000-message import is usually a single range."""
+    ranges: list[list[int]] = []
+    for i in sorted(ids):
+        if ranges and i == ranges[-1][1] + 1:
+            ranges[-1][1] = i
+        else:
+            ranges.append([i, i])
+    return ranges
+
+
 def retract_import(conn: sqlite3.Connection, import_uuid: str,
                    actor: str = "user") -> dict:
     """Undo an import: its observations go to status='retracted'.
@@ -479,6 +493,11 @@ def retract_import(conn: sqlite3.Connection, import_uuid: str,
     Coarse by design. Rows this import only *refreshed* or *updated* stay —
     `import_id` names the import that created the row, so retracting a later
     snapshot cannot delete records an earlier one contributed.
+
+    The audit row records exactly which observations this hid, because
+    status alone cannot say: mirroring also retracts rows of an applied import
+    (a cited message deleted at the source). `restore_import` puts back these
+    rows and only these.
     """
     row = import_by_uuid(conn, import_uuid)
     if row["status"] == "retracted":
@@ -486,6 +505,9 @@ def retract_import(conn: sqlite3.Connection, import_uuid: str,
     if row["status"] != "applied":
         raise DomainError(f"import {import_uuid} is '{row['status']}' — "
                           f"only an applied import can be retracted")
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM observations WHERE import_id=? AND status='active'",
+        (row["id"],))]
     n = conn.execute("UPDATE observations SET status='retracted', updated_at=? "
                      "WHERE import_id=? AND status='active'",
                      (now_utc(), row["id"])).rowcount
@@ -493,6 +515,81 @@ def retract_import(conn: sqlite3.Connection, import_uuid: str,
     refresh_handle_stats(conn)
     audit.log(conn, actor, "retract", "imports", import_uuid,
               {"connector": row["connector"], "source_file": row["source_file"],
-               "observations_retracted": n})
+               "observations_retracted": n,
+               "observation_id_ranges": _id_ranges(ids)})
     return {"retracted": n, "connector": row["connector"],
             "source_file": row["source_file"]}
+
+
+def _retracted_by(conn: sqlite3.Connection, imp: sqlite3.Row
+                  ) -> tuple[list[list[int]], str | None]:
+    """The id ranges the import's latest retraction hid, and when it ran.
+
+    A retraction recorded before the ranges were (the one-way retract) is
+    reconstructed: every retracted row of the import except any external id a
+    mirror_remove audit names. That errs toward leaving a row hidden — never
+    toward resurrecting one deleted at the source."""
+    found = conn.execute(
+        "SELECT ts, details FROM audit_log WHERE action='retract' "
+        "AND table_name='imports' AND row_uuid=? ORDER BY id DESC LIMIT 1",
+        (imp["uuid"],)).fetchone()
+    when = found["ts"] if found else None
+    details = json.loads(found["details"] or "{}") if found else {}
+    if "observation_id_ranges" in details:
+        return details["observation_id_ranges"], when
+    mirrored: set[str] = set()
+    for r in conn.execute("SELECT details FROM audit_log WHERE "
+                          "action='mirror_remove' AND table_name='observations'"):
+        mirrored.update(json.loads(r["details"] or "{}").get("external_ids", ()))
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id, external_id FROM observations WHERE import_id=? "
+        "AND status='retracted'", (imp["id"],)) if r["external_id"] not in mirrored]
+    return _id_ranges(ids), when
+
+
+def restore_import(conn: sqlite3.Connection, import_uuid: str,
+                   actor: str = "user") -> dict:
+    """Put back what retract_import hid — exactly that, nothing more.
+
+    Not "every retracted row of this import": a row mirroring retracted (a
+    cited message deleted at the source) belongs to an applied import too,
+    and bringing it back would resurrect what the owner deleted on the phone.
+
+    One gap is reported rather than papered over: mirroring only ever looks at
+    active rows, so a mirroring import of the same account that ran while
+    this one was retracted could not remove anything from it. The note says
+    so; re-running observe on the current source settles it.
+    """
+    imp = import_by_uuid(conn, import_uuid)
+    if imp["status"] != "retracted":
+        raise DomainError(f"import {import_uuid} is '{imp['status']}' — only a "
+                          f"retracted import can be restored")
+    ranges, retracted_at = _retracted_by(conn, imp)
+    now, n = now_utc(), 0
+    for lo, hi in ranges:
+        n += conn.execute(
+            "UPDATE observations SET status='active', updated_at=? "
+            "WHERE import_id=? AND status='retracted' AND id BETWEEN ? AND ?",
+            (now, imp["id"], lo, hi)).rowcount
+    conn.execute("UPDATE imports SET status='applied' WHERE id=?", (imp["id"],))
+    refresh_handle_stats(conn)
+
+    later = None
+    if retracted_at is not None:
+        later = conn.execute(
+            "SELECT uuid, started_at FROM imports WHERE connector=? AND account IS ? "
+            "AND id<>? AND status IN ('applied','retracted') AND started_at>=? "
+            "ORDER BY id DESC LIMIT 1",
+            (imp["connector"], imp["account"], imp["id"], retracted_at)).fetchone()
+    note = None
+    if later is not None:
+        note = (f"{imp['connector']} import {later['uuid'][:8]} ran on "
+                f"{later['started_at'][:10]} while this one was retracted, so "
+                f"anything deleted at the source since was not removed from it — "
+                f"if that source mirrors deletions (texts, AI chats), re-run "
+                f"observe on it")
+    audit.log(conn, actor, "restore", "imports", import_uuid,
+              {"connector": imp["connector"], "source_file": imp["source_file"],
+               "observations_restored": n, "observation_id_ranges": ranges})
+    return {"restored": n, "connector": imp["connector"],
+            "source_file": imp["source_file"], "note": note}

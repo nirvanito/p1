@@ -109,6 +109,50 @@ def _health_multi_origin(conn: sqlite3.Connection, _add) -> None:
         _add("ok", "health_multi_origin")
 
 
+def _snapshot_age_days(folder: Path | None) -> float | None:
+    """Age of the newest lifecrm-*.db in folder, or None when there is none."""
+    if folder is None or not folder.is_dir():
+        return None
+    times = []
+    for f in folder.glob("lifecrm-*.db"):
+        try:
+            times.append(f.stat().st_mtime)
+        except OSError:
+            continue        # a cloud placeholder mid-sync; the others still count
+    return (time.time() - max(times)) / 86400 if times else None
+
+
+def _backup_checks(cfg: Config, _add) -> None:
+    """Local and cloud snapshot age, checked separately. Taking the newest
+    across both folders let a dead cloud copy hide behind a fresh local one —
+    and the cloud copy is the one that survives losing the laptop."""
+    age = _snapshot_age_days(cfg.backups_dir)
+    if age is None:
+        _add("warn", "backup_age", f"no snapshots in {cfg.backups_dir} — run: "
+             f"python -m lifecrm backup")
+    elif age > BACKUP_MAX_AGE_DAYS:
+        _add("warn", "backup_age", f"newest local snapshot is {age:.0f} days "
+             f"old — is the scheduled backup running?")
+    else:
+        _add("ok", "backup_age")
+
+    cloud = cfg.cloud_backups_dir
+    if cloud is None:
+        return                       # local-only by choice: nothing to check
+    age = _snapshot_age_days(cloud)
+    if age is None:
+        _add("warn", "backup_age_cloud",
+             f"no snapshots in the cloud copy folder {cloud} — backup copies "
+             f"every snapshot there; check backup's WARNING line and that the "
+             f"folder exists and syncs")
+    elif age > BACKUP_MAX_AGE_DAYS:
+        _add("warn", "backup_age_cloud",
+             f"newest cloud copy is {age:.0f} days old — the copy step is "
+             f"failing or the folder moved; see backup's WARNING line")
+    else:
+        _add("ok", "backup_age_cloud")
+
+
 def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     checks: list[dict] = []
 
@@ -159,7 +203,13 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
 
     # --- FTS actually in sync: the index verified against the content
     # tables, not the triggers trusted ---
-    for fts in ("entries_fts", "transcripts_fts"):
+    fts_tables = ["entries_fts", "transcripts_fts"]
+    # observations_fts arrived with v4. A pre-v4 database has no index to
+    # check, and already fails pending_migrations above.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='observations_fts'").fetchone():
+        fts_tables.append("observations_fts")
+    for fts in fts_tables:
         try:
             conn.execute(f"INSERT INTO {fts}({fts}, rank) "
                          f"VALUES('integrity-check', 1)")
@@ -219,23 +269,7 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
 
     # --- warnings: operational drift, not corruption ---
     if cfg is not None:
-        newest_backup = None
-        for d in (cfg.backups_dir, cfg.onedrive_backups_dir):
-            if d and d.exists():
-                for f in d.glob("lifecrm-*.db"):
-                    ts = f.stat().st_mtime
-                    if newest_backup is None or ts > newest_backup:
-                        newest_backup = ts
-        if newest_backup is None:
-            _add("warn", "backup_age", "no snapshots found — run: "
-                 "python -m lifecrm backup")
-        else:
-            age_days = (time.time() - newest_backup) / 86400
-            if age_days > BACKUP_MAX_AGE_DAYS:
-                _add("warn", "backup_age", f"newest snapshot is {age_days:.0f} "
-                     f"days old")
-            else:
-                _add("ok", "backup_age")
+        _backup_checks(cfg, _add)
 
         stale = []
         if cfg.staging_dir.exists():

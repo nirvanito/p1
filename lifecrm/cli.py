@@ -1167,10 +1167,9 @@ def imports_retract(
     import_id names the run that CREATED a row, so retracting a later snapshot
     cannot delete what an earlier one contributed.
 
-    One-way for now: the rows keep their data, but re-importing does NOT bring
-    them back (an unchanged record classifies as identical and is skipped),
-    and there is no `imports restore` yet. `health restore` is the equivalent
-    on the health side.
+    Reversible with `imports restore`: the rows keep their data. Re-importing
+    does NOT bring them back (an unchanged record classifies as identical and
+    is skipped).
     """
     from .domain import observations as obs
     cfg = _cfg()
@@ -1179,6 +1178,28 @@ def imports_retract(
     typer.echo(f"retracted {result['retracted']} observation(s) from "
                f"{result['connector']} import {import_uuid[:8]} "
                f"({result['source_file'] or 'no file'})")
+    typer.echo(f"put them back with: python -m lifecrm imports restore {import_uuid}")
+
+
+@imports_app.command("restore")
+def imports_restore(
+    import_uuid: str = typer.Argument(..., help="Import uuid — see: lifecrm imports list"),
+) -> None:
+    """Put back what `imports retract` hid — exactly those observations.
+
+    A record mirroring removed because it was deleted at the source (and kept
+    hidden because a journal entry cites it) stays hidden: restoring an import
+    never resurrects what was deleted on the phone.
+    """
+    from .domain import observations as obs
+    cfg = _cfg()
+    conn = _conn(cfg)
+    result = _commit_or_rollback(conn, lambda: obs.restore_import(conn, import_uuid))
+    typer.echo(f"restored {result['restored']} observation(s) from "
+               f"{result['connector']} import {import_uuid[:8]} "
+               f"({result['source_file'] or 'no file'})")
+    if result["note"]:
+        typer.echo(f"note: {result['note']}")
 
 
 @handles_app.command("list")
@@ -1318,7 +1339,8 @@ def handles_ignore(
 
 @app.command()
 def backup() -> None:
-    """Snapshot the DB (backup API) locally and to the OneDrive backups folder.
+    """Snapshot the DB (backup API) locally, and copy it to the cloud backups
+    folder (OneDrive, iCloud Drive) when cloud_backups_dir is set.
     Tiered retention: 14 daily, 12 weekly, 24 monthly, yearly indefinitely."""
     from .retention import prune_dir
     cfg = _cfg()
@@ -1330,17 +1352,18 @@ def backup() -> None:
     finally:
         conn.close()
     typer.echo(f"snapshot: {dest}")
-    if cfg.onedrive_backups_dir is not None:
+    if cfg.cloud_backups_dir is not None:
         try:
-            cfg.onedrive_backups_dir.mkdir(parents=True, exist_ok=True)
-            cloud = cfg.onedrive_backups_dir / dest.name
+            cfg.cloud_backups_dir.mkdir(parents=True, exist_ok=True)
+            cloud = cfg.cloud_backups_dir / dest.name
             shutil.copy2(dest, cloud)
-            typer.echo(f"copied to: {cloud} (OneDrive is cloud storage — see docs/privacy.md)")
-            removed = prune_dir(cfg.onedrive_backups_dir)
+            typer.echo(f"cloud copy: {cloud} (a synced folder is cloud storage — "
+                       f"see docs/privacy.md)")
+            removed = prune_dir(cfg.cloud_backups_dir)
             if removed:
                 typer.echo(f"retention pruned {len(removed)} cloud snapshot(s)")
         except OSError as e:
-            typer.echo(f"WARNING: OneDrive copy failed: {e}", err=True)
+            typer.echo(f"WARNING: cloud copy failed: {e}", err=True)
     removed = prune_dir(cfg.backups_dir)
     if removed:
         typer.echo(f"retention pruned {len(removed)} local snapshot(s)")
@@ -1349,19 +1372,22 @@ def backup() -> None:
 @app.command()
 def restore(snapshot_file: str = typer.Argument(
         None, help="Snapshot .db to restore; omit to list snapshots")) -> None:
-    """Restore the DB from a snapshot (verifies integrity, backs up current first)."""
+    """Restore the DB from a snapshot (verifies integrity, backs up current first).
+    Prove a snapshot restores without touching the live DB: verify-backup."""
     cfg = _cfg()
     if snapshot_file is None:
         found = []
-        for d in (cfg.backups_dir, cfg.onedrive_backups_dir):
+        for label, d in (("local", cfg.backups_dir),
+                         ("cloud copy", cfg.cloud_backups_dir)):
             if d and d.exists():
-                found += sorted(d.glob("lifecrm-*.db"), reverse=True)
+                found += [(f, label)
+                          for f in sorted(d.glob("lifecrm-*.db"), reverse=True)]
         if not found:
             typer.echo("no snapshots found")
             return
         typer.echo("available snapshots (newest first):")
-        for f in found:
-            typer.echo(f"  {f}")
+        for f, label in found:
+            typer.echo(f"  {f}  ({label})")
         typer.echo("restore with: python -m lifecrm restore <path>")
         return
 

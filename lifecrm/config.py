@@ -39,6 +39,9 @@ class Config:
     inbox_dir: Path | None
     inbox_text_dir: Path | None
     archive_dir: Path | None
+    # The cloud copy of every snapshot. Read from `cloud_backups_dir` (or the
+    # older `onedrive_backups_dir`); the attribute keeps its first name so
+    # every existing caller and test fixture works unchanged.
     onedrive_backups_dir: Path | None
     timezone: str = "America/Chicago"
     day_rollover_hour: int = 5
@@ -54,6 +57,12 @@ class Config:
     def connector_settings(self, name: str) -> dict:
         value = self.connectors.get(name) or {}
         return value if isinstance(value, dict) else {}
+
+    @property
+    def cloud_backups_dir(self) -> Path | None:
+        """Where `backup` copies each snapshot: a synced folder — OneDrive on
+        Windows, iCloud Drive on a Mac — or None for local-only."""
+        return self.onedrive_backups_dir
 
     @property
     def db_path(self) -> Path:
@@ -115,6 +124,15 @@ def load_config(root: Path | None = None) -> Config:
             or not 0 <= rollover <= 23:
         raise ConfigError(f"{cfg_file}: [time] day_rollover_hour must be a whole "
                           f"hour 0-23, got {rollover!r}")
+    # `cloud_backups_dir` is the name that is true on a Mac too; the OneDrive
+    # name stays accepted so no existing config.toml breaks. Two different
+    # values would leave one folder silently unused — refuse instead.
+    cloud = paths.get("cloud_backups_dir")
+    legacy = paths.get("onedrive_backups_dir")
+    if cloud and legacy and _optional_path(cloud) != _optional_path(legacy):
+        raise ConfigError(
+            f"{cfg_file}: [paths] sets both cloud_backups_dir ('{cloud}') and "
+            f"onedrive_backups_dir ('{legacy}') — keep cloud_backups_dir only")
     return Config(
         root=root,
         data_dir=_resolve(root, paths.get("data_dir", "data")),
@@ -122,7 +140,7 @@ def load_config(root: Path | None = None) -> Config:
         inbox_dir=_optional_path(paths.get("inbox_dir")),
         inbox_text_dir=_optional_path(paths.get("inbox_text_dir")),
         archive_dir=_optional_path(paths.get("archive_dir")),
-        onedrive_backups_dir=_optional_path(paths.get("onedrive_backups_dir")),
+        onedrive_backups_dir=_optional_path(cloud or legacy),
         timezone=str(tz),
         day_rollover_hour=rollover,
         whisper=raw.get("whisper", {}),
