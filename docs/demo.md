@@ -97,6 +97,18 @@ six weeks:
 People, places, phone numbers and emails are all fictional (`example.com`,
 `555-01xx`).
 
+The demo writes its own `config.toml` in the demo root: the persona's
+timezone and the 05:00 rollover, the synthetic sync folders, each
+connector's account, and an `[owner]` table that says who the owner is:
+
+```toml
+[owner]
+name = "Alex Rivera"
+handles = ["email:alex.rivera@example.com", "phone:+15125550100"]
+```
+
+`handles` uses the `kind:value` shape that `handles link` takes.
+
 ## Things to try
 
 Replace `<demo>` with the path the build printed, for example `demo/android`.
@@ -170,7 +182,14 @@ prints each one:
   backups), anything inside them, and anything that holds one — after
   following symlinks and junctions. `--dir data/staging` would otherwise put
   the demo among real drafts, and a later `--force` would delete them all.
-  The check runs again right before `--force` deletes.
+  Folders are compared by file identity, not by how the path is spelled, so
+  every other name for one is refused too: `\\?\C:\...`,
+  `\\?\Volume{...}\...`, `\\localhost\C$\...`, a junction. A folder whose
+  `data` is the real data folder (a junction named `data`) is refused as
+  well. The check runs again right before `--force` deletes.
+- `--dir` itself refuses a `\\?\` device path or a `\\server\share` path,
+  with a one-line error, before anything else happens. Use a drive-letter,
+  `~` or relative path (a mapped network drive's letter is fine).
 - `demo/` is gitignored.
 - No network is needed. A local model (Ollama) is used only if one is
   running, and only to phrase answers. Without one, answers are

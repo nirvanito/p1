@@ -39,13 +39,19 @@ def register(app: typer.Typer) -> None:
         """Build a demo instance from synthetic data, through the real pipeline."""
         from ..cli import _fail
         from ..demo import persona
-        from ..demo.build import DemoBuilder, DemoError, default_anchor, default_dir
+        from ..demo.build import (DemoBuilder, DemoError, check_dir_option, default_anchor,
+                                  default_dir)
 
         combos = list(persona.COMBOS) if combo == "both" else [combo]
         if any(c not in persona.COMBOS for c in combos):
             _fail(f"--combo must be android, iphone or both (got {combo})")
         if directory and len(combos) > 1:
             _fail("--dir builds one demo; use it with --combo android or --combo iphone")
+        if directory:
+            try:
+                check_dir_option(directory)
+            except DemoError as e:
+                _fail(str(e))
         try:
             # The rollover-aware journal date, not the calendar's: built at
             # 01:00, the demo would otherwise hold records its own `ask`

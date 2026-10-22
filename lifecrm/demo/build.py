@@ -14,7 +14,8 @@ played by the demo itself are the ones a person plays in real use:
   the persona, printed one by one.
 
 It refuses to build into the project root, into or around the real data,
-backups and journal folders, or anywhere holding the real database, and only
+backups and journal folders, or anywhere holding the real database — under
+any spelling of them, since folders are compared by file identity — and only
 ever deletes a directory it created itself (marked with a `.lifecrm-demo`
 file) — checked again right before the delete.
 """
@@ -65,40 +66,126 @@ def default_anchor(now: datetime | None = None) -> date:
     return date.fromisoformat(journal_date_for(now, persona.TIMEZONE, ROLLOVER_HOUR))
 
 
-def _protected() -> list[Path]:
-    """The real project's own folders, resolved (so a symlink or junction to
-    one is caught too): data/ and backups/, and — when there is a real
-    config.toml — every folder it names, the journal inboxes included."""
-    paths = [PROJECT_ROOT / "data", PROJECT_ROOT / "backups"]
+def _resolved(p: Path) -> Path | None:
+    try:
+        return p.expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def _protected() -> tuple[list[Path], list[Path]]:
+    """The real project's own folders and database files, resolved (so a
+    symlink or junction to one is caught too): data/ (which holds the real
+    lifecrm.db) and backups/, and — when there is a real config.toml — every
+    folder it names, the journal inboxes included, and the database in its
+    data folder."""
+    folders = [PROJECT_ROOT / "data", PROJECT_ROOT / "backups"]
+    dbs = [PROJECT_ROOT / "data" / "lifecrm.db"]
     if (PROJECT_ROOT / "config.toml").exists():
         try:
             cfg = load_config(PROJECT_ROOT)
         except ConfigError:
             cfg = None
         if cfg is not None:
-            paths += [p for p in (cfg.data_dir, cfg.backups_dir, cfg.inbox_dir,
-                                  cfg.inbox_text_dir, cfg.archive_dir,
-                                  cfg.cloud_backups_dir) if p is not None]
+            folders += [p for p in (cfg.data_dir, cfg.backups_dir, cfg.inbox_dir,
+                                    cfg.inbox_text_dir, cfg.archive_dir,
+                                    cfg.cloud_backups_dir) if p is not None]
+            dbs.append(cfg.db_path)
+    return ([p for p in map(_resolved, folders) if p is not None],
+            [p for p in map(_resolved, dbs) if p is not None])
+
+
+def _fold(name: str) -> str:
+    """One path name the way the file system compares it: Windows (and a
+    default macOS volume) ignore case, and Windows drops trailing dots and
+    spaces."""
+    if os.name == "nt":
+        return name.rstrip(" .").casefold()
+    return name.casefold() if sys.platform == "darwin" else name
+
+
+def _anchors(path: Path) -> list[tuple[tuple[int, int], tuple[str, ...]]]:
+    r"""Each existing folder on the way to `path` (itself included) as its
+    file identity, plus the names below it that lead on to `path`. Every
+    spelling of one folder — C:\..., \\?\C:\..., \\?\Volume{...}\...,
+    \\localhost\C$\..., a junction — has the one identity, even where no two
+    of their texts compare equal (Path.resolve() keeps those prefixes)."""
     out = []
-    for p in paths:
+    for p in (path, *path.parents):
         try:
-            out.append(p.expanduser().resolve())
-        except OSError:
+            st = os.stat(p)
+        except (OSError, ValueError):
             continue
+        if st.st_ino == 0:               # a file system with no file ids
+            continue
+        out.append(((st.st_dev, st.st_ino),
+                    tuple(_fold(n) for n in path.parts[len(p.parts):])))
     return out
 
 
+def _relation(target: list, guarded: list) -> str | None:
+    """How `target` stands to `guarded` (both from _anchors): 'is',
+    'inside' or 'holds' — decided below the deepest folder they share by
+    identity, not by comparing their text."""
+    for ident, below_t in target:
+        for gident, below_g in guarded:
+            if ident != gident:
+                continue
+            if below_t == below_g:
+                return "is"
+            if below_t[:len(below_g)] == below_g:
+                return "inside"
+            if below_g[:len(below_t)] == below_t:
+                return "holds"
+    return None
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return False
+
+
+def check_dir_option(text: str) -> None:
+    r"""--dir as typed. A \\?\ device path or a \\server\share path is
+    refused outright: those are the spellings that reach a folder under some
+    other name (\\?\C:\..., \\?\Volume{...}\..., \\localhost\C$\...), and a
+    demo folder never needs one. (check_target compares by file identity
+    regardless; this only says so before anything else happens.)"""
+    typed = text.replace("/", "\\") if os.name == "nt" else text
+    if typed.startswith("\\\\"):
+        raise DemoError(r"--dir must be a plain folder path (a drive letter, ~ or "
+                        r"relative), not a \\?\ device or \\server\share path: " + text)
+
+
 def check_target(root: Path) -> Path:
+    """Refuse a demo root that is the project root or a folder above it;
+    that is, is inside or holds one of the real project's folders; or whose
+    data/ is the real database's folder. Paths are compared by file
+    identity as well as by resolved text, so no other spelling of a
+    protected folder gets past."""
     root = root.expanduser().resolve()
-    real_db = (PROJECT_ROOT / "data" / "lifecrm.db").resolve()
-    if root == PROJECT_ROOT.resolve() or (root / "data" / "lifecrm.db").resolve() == real_db:
+    folders, dbs = _protected()
+    target = _anchors(root)
+    project = _resolved(PROJECT_ROOT) or PROJECT_ROOT
+    # The project root (a folder inside it, demo/<combo>/, is the default),
+    # or a root whose data/ is the real one — a junction named data
+    # included: the demo's init and apply would write the real database.
+    own_db = root / "data" / "lifecrm.db"
+    own_data = _anchors(own_db.parent)
+    if root == project or _relation(target, _anchors(project)) == "is" \
+            or any(_resolved(own_db) == db or _same_file(own_db, db)
+                   or _relation(own_data, _anchors(db.parent)) == "is" for db in dbs):
         raise DemoError(f"refusing to build a demo in {root}: that is the project's "
                         f"own data root")
-    for p in _protected():
+    for p in folders:
         # Inside one (a demo in data\staging would drop its files among real
         # drafts, and a later --force would delete them all), the folder
-        # itself, or a folder that holds one.
-        if root == p or p in root.parents or root in p.parents:
+        # itself, or a folder that holds one — the project root and every
+        # folder above it hold data/.
+        if root == p or p in root.parents or root in p.parents \
+                or _relation(target, _anchors(p)) is not None:
             raise DemoError(f"refusing to build a demo in {root}: it is or holds "
                             f"the project's own {p} — pick a folder outside it")
     if root.exists() and any(root.iterdir()) and not (root / MARKER).exists():
@@ -131,6 +218,12 @@ def _config_text(root: Path, combo: str) -> str:
         "[time]",
         f'timezone = "{persona.TIMEZONE}"',
         f"day_rollover_hour = {ROLLOVER_HOUR}",
+        "",
+        # Who the owner is: the persona's own name and identifiers, in the
+        # kind:value shape `handles link` takes.
+        "[owner]",
+        f'name = "{me.name}"',
+        f'handles = ["email:{me.email}", "phone:{me.phone}"]',
         "",
         "[whisper]",
         'model = "small"',
