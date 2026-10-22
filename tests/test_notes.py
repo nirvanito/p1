@@ -78,13 +78,21 @@ def _active_ids(conn):
         "SELECT external_id FROM observations WHERE stream='note' AND status='active'"))
 
 
+def fid(folder, rel):
+    """A folder note's id: the folder's key — its name and a fingerprint of
+    where it is — and the note's path inside it."""
+    return f"file:{notes.folder_key(folder.resolve())}/{rel}"
+
+
 # ---------------------------------------------------------------- folder: shape
 
 def test_a_vault_scan_reads_notes_and_skips_settings_trash_and_dotfiles(tmp_path, cfg):
-    scan = notes.scan(make_vault(tmp_path / "Vault"), cfg)
+    vault = tmp_path / "Vault"
+    scan = notes.scan(make_vault(vault), cfg)
     assert scan["connector"] == "notes"
-    assert set(_by_id(scan)) == {"file:Vault/Inbox.md", "file:Vault/Trips/Bled.md",
-                                 "file:Vault/Daily/2026-10-01.md", "file:Vault/Plain.txt"}
+    assert set(_by_id(scan)) == {fid(vault, "Inbox.md"), fid(vault, "Trips/Bled.md"),
+                                 fid(vault, "Daily/2026-10-01.md"), fid(vault, "Plain.txt")}
+    assert all(i.startswith("file:Vault~") for i in _by_id(scan))
     assert all(r["stream"] == "note" for r in scan["records"])
     assert {r["origin_app"] for r in scan["records"]} == {"obsidian"}
     assert scan["source_kind"] == "obsidian"
@@ -95,15 +103,16 @@ def test_a_plain_folder_is_a_notes_folder_not_a_vault(tmp_path, cfg):
     write_note(tmp_path / "Samsung Notes", "Shopping.txt", "milk, eggs")
     scan = notes.scan(tmp_path / "Samsung Notes", cfg)
     assert scan["records"][0]["origin_app"] == "notes_folder"
-    assert scan["records"][0]["external_id"] == "file:Samsung Notes/Shopping.txt"
+    assert scan["records"][0]["external_id"] == fid(tmp_path / "Samsung Notes", "Shopping.txt")
 
 
 def test_title_comes_from_front_matter_then_a_leading_heading_then_the_file_name(tmp_path, cfg):
-    recs = _by_id(notes.scan(make_vault(tmp_path / "Vault"), cfg))
-    assert recs["file:Vault/Trips/Bled.md"]["title"] == "Lake Bled trip"
-    assert recs["file:Vault/Inbox.md"]["title"] == "Weekend plans"
-    assert recs["file:Vault/Plain.txt"]["title"] == "Plain"
-    assert recs["file:Vault/Daily/2026-10-01.md"]["title"] == "2026-10-01"
+    vault = tmp_path / "Vault"
+    recs = _by_id(notes.scan(make_vault(vault), cfg))
+    assert recs[fid(vault, "Trips/Bled.md")]["title"] == "Lake Bled trip"
+    assert recs[fid(vault, "Inbox.md")]["title"] == "Weekend plans"
+    assert recs[fid(vault, "Plain.txt")]["title"] == "Plain"
+    assert recs[fid(vault, "Daily/2026-10-01.md")]["title"] == "2026-10-01"
 
 
 def test_a_heading_further_down_is_a_section_not_the_title(tmp_path, cfg):
@@ -113,7 +122,8 @@ def test_a_heading_further_down_is_a_section_not_the_title(tmp_path, cfg):
 
 
 def test_front_matter_is_stripped_from_the_body_into_value_json(tmp_path, cfg):
-    rec = _by_id(notes.scan(make_vault(tmp_path / "Vault"), cfg))["file:Vault/Trips/Bled.md"]
+    vault = tmp_path / "Vault"
+    rec = _by_id(notes.scan(make_vault(vault), cfg))[fid(vault, "Trips/Bled.md")]
     assert rec["body"] == "# Packing\nrain jacket, hiking boots"
     detail = json.loads(rec["value_json"])
     assert detail["front_matter"] == {"title": "Lake Bled trip", "created": "2022-09-26",
@@ -144,13 +154,15 @@ def test_an_unclosed_rule_is_not_front_matter(tmp_path, cfg):
 def test_a_bare_front_matter_date_stays_on_its_own_journal_day(tmp_path, cfg):
     """Local midnight would fall before the 05:00 rollover and file the note
     on the day before; a bare date is read as local noon instead."""
-    rec = _by_id(notes.scan(make_vault(tmp_path / "Vault"), cfg))["file:Vault/Trips/Bled.md"]
+    vault = tmp_path / "Vault"
+    rec = _by_id(notes.scan(make_vault(vault), cfg))[fid(vault, "Trips/Bled.md")]
     assert rec["started_at"] == "2022-09-26T17:00:00Z"        # noon CDT
     assert rec["journal_date"] == "2022-09-26"
 
 
 def test_a_front_matter_time_without_a_zone_is_local_time(tmp_path, cfg):
-    rec = _by_id(notes.scan(make_vault(tmp_path / "Vault"), cfg))["file:Vault/Daily/2026-10-01.md"]
+    vault = tmp_path / "Vault"
+    rec = _by_id(notes.scan(make_vault(vault), cfg))[fid(vault, "Daily/2026-10-01.md")]
     assert rec["started_at"] == "2026-10-01T12:45:00Z"        # 07:45 CDT
     assert rec["journal_date"] == "2026-10-01"
 
@@ -161,7 +173,8 @@ def test_a_front_matter_time_with_an_offset_is_honoured(tmp_path, cfg):
 
 
 def test_without_a_created_date_the_modified_time_dates_the_note(tmp_path, cfg):
-    rec = _by_id(notes.scan(make_vault(tmp_path / "Vault"), cfg))["file:Vault/Inbox.md"]
+    vault = tmp_path / "Vault"
+    rec = _by_id(notes.scan(make_vault(vault), cfg))[fid(vault, "Inbox.md")]
     assert rec["started_at"] == "2026-10-01T17:30:15Z"        # sub-second dropped
     assert rec["last_modified_at"] == "2026-10-01T17:30:15Z"
     assert rec["journal_date"] == "2026-10-01"
@@ -210,10 +223,11 @@ def test_skips_are_counted_not_hidden(tmp_path, cfg):
 
 
 def test_a_note_it_cannot_read_still_counts_as_present(tmp_path, cfg):
-    scan = notes.scan(make_vault(tmp_path / "Vault"), cfg)
-    assert "file:Vault/Latin1.md" in scan["present_ids"]
-    assert "file:Vault/Empty.md" in scan["present_ids"]
-    assert "file:Vault/Latin1.md" not in _by_id(scan)
+    vault = tmp_path / "Vault"
+    scan = notes.scan(make_vault(vault), cfg)
+    assert fid(vault, "Latin1.md") in scan["present_ids"]
+    assert fid(vault, "Empty.md") in scan["present_ids"]
+    assert fid(vault, "Latin1.md") not in _by_id(scan)
 
 
 def test_an_icloud_placeholder_is_present_but_not_imported(tmp_path, cfg):
@@ -222,8 +236,8 @@ def test_an_icloud_placeholder_is_present_but_not_imported(tmp_path, cfg):
     write_note(tmp_path / "v", "Here.md", "downloaded")
     write_note(tmp_path / "v", "Trips/.Bled.md.icloud", "", raw=b"bplist00")
     scan = notes.scan(tmp_path / "v", cfg)
-    assert "file:v/Trips/Bled.md" in scan["present_ids"]
-    assert set(_by_id(scan)) == {"file:v/Here.md"}
+    assert fid(tmp_path / "v", "Trips/Bled.md") in scan["present_ids"]
+    assert set(_by_id(scan)) == {fid(tmp_path / "v", "Here.md")}
     assert any("not downloaded from iCloud" in s for s in scan["skipped"])
 
 
@@ -296,7 +310,7 @@ def test_an_edited_note_updates_through_newer_wins(tmp_path, cfg, conn):
     plan, result = _apply(conn, notes.scan(vault, cfg))
     assert result["updated"] == 1
     row = conn.execute("SELECT body, started_at, last_modified_at FROM observations "
-                       "WHERE external_id='file:Vault/Trips/Bled.md'").fetchone()
+                       "WHERE external_id=?", (fid(vault, "Trips/Bled.md"),)).fetchone()
     assert row["body"] == "# Packing\nrain jacket"
     assert row["started_at"] == "2022-09-26T17:00:00Z"        # still when it was written
     assert row["last_modified_at"] == "2026-10-01T18:30:15Z"
@@ -308,7 +322,7 @@ def test_an_older_copy_of_a_note_is_a_conflict_not_an_overwrite(tmp_path, cfg, c
     write_note(vault, "Plain.txt", "restored from an old backup", mtime=MTIME - 86400)
     plan = obs.build_plan(conn, notes.scan(vault, cfg))
     # Without a created date the mtime also dates it, so started_at differs too.
-    assert [c["external_id"] for c in plan["conflicts"]] == ["file:Vault/Plain.txt"]
+    assert [c["external_id"] for c in plan["conflicts"]] == [fid(vault, "Plain.txt")]
 
 
 def test_two_folders_holding_the_same_file_name_stay_apart(tmp_path, cfg, conn):
@@ -317,7 +331,8 @@ def test_two_folders_holding_the_same_file_name_stay_apart(tmp_path, cfg, conn):
     _apply(conn, notes.scan(tmp_path / "Work", cfg))
     plan, result = _apply(conn, notes.scan(tmp_path / "Home", cfg))
     assert result["added"] == 1 and plan["conflicts"] == [] and plan["updates"] == []
-    assert _active_ids(conn) == ["file:Home/Inbox.md", "file:Work/Inbox.md"]
+    assert _active_ids(conn) == [fid(tmp_path / "Home", "Inbox.md"),
+                                 fid(tmp_path / "Work", "Inbox.md")]
 
 
 # ---------------------------------------------------------------- folder: mirroring
@@ -329,9 +344,9 @@ def test_a_note_deleted_from_the_folder_is_removed(tmp_path, cfg, conn):
     _apply(conn, notes.scan(vault, cfg))
     (vault / "Plain.txt").unlink()
     plan, result = _apply(conn, notes.scan(vault, cfg))
-    assert [r["external_id"] for r in plan["removed"]] == ["file:Vault/Plain.txt"]
+    assert [r["external_id"] for r in plan["removed"]] == [fid(vault, "Plain.txt")]
     assert result["removed"] == 1
-    assert "file:Vault/Plain.txt" not in _active_ids(conn)
+    assert fid(vault, "Plain.txt") not in _active_ids(conn)
 
 
 def test_a_note_moved_to_obsidians_trash_is_removed(tmp_path, cfg, conn):
@@ -339,7 +354,7 @@ def test_a_note_moved_to_obsidians_trash_is_removed(tmp_path, cfg, conn):
     _apply(conn, notes.scan(vault, cfg))
     (vault / "Inbox.md").rename(vault / ".trash" / "Inbox.md")
     plan, _ = _apply(conn, notes.scan(vault, cfg))
-    assert [r["external_id"] for r in plan["removed"]] == ["file:Vault/Inbox.md"]
+    assert [r["external_id"] for r in plan["removed"]] == [fid(vault, "Inbox.md")]
     text = "\n".join(notes.report_lines(notes.scan(vault, cfg),
                                         obs.build_plan(conn, notes.scan(vault, cfg))))
     assert "nothing new" in text
@@ -350,7 +365,7 @@ def test_a_note_that_turns_unreadable_is_not_mistaken_for_a_deletion(tmp_path, c
     _apply(conn, notes.scan(vault, cfg))
     write_note(vault, "Plain.txt", "", raw=b"\xff\xfe\x00\xd8broken utf-16", mtime=MTIME + 60)
     scan = notes.scan(vault, cfg)
-    assert "file:Vault/Plain.txt" not in _by_id(scan)
+    assert fid(vault, "Plain.txt") not in _by_id(scan)
     assert obs.build_plan(conn, scan)["removed"] == []
 
 
@@ -360,7 +375,7 @@ def test_another_folders_notes_are_never_removed(tmp_path, cfg, conn):
     _apply(conn, notes.scan(tmp_path / "A", cfg))
     plan, _ = _apply(conn, notes.scan(tmp_path / "B", cfg))
     assert plan["removed"] == []
-    assert _active_ids(conn) == ["file:A/a.md", "file:B/b.md"]
+    assert _active_ids(conn) == [fid(tmp_path / "A", "a.md"), fid(tmp_path / "B", "b.md")]
 
 
 def test_a_mass_removal_is_refused(tmp_path, cfg, conn, monkeypatch):

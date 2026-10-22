@@ -39,7 +39,9 @@ Calendar.app on the Mac, then:
 - **Calendar.app** → select one calendar in the sidebar → *File* → *Export* →
   **Export…** → `Home.ics`. One calendar per export; repeat for each calendar
   you want (Home, Work, …). Do *not* use *Calendar Archive…* — that `.icbu` is
-  Apple's own backup format, not iCalendar.
+  Apple's own backup format, not iCalendar. For events you delete to leave
+  the archive too, list those names in `[connectors.calendar]
+  mirror_calendars` (see *Deleted events* below).
 - **iCloud.com** has no export button. A calendar shared as a *Public
   Calendar* has a `webcal://` link; change it to `https://`, open it in a
   browser to download the `.ics`, then turn public sharing off again.
@@ -88,6 +90,7 @@ All optional, in `config.toml`:
 [connectors.calendar]
 path = "~/Downloads/Home.ics"        # what to read when no path is given
 account = "you@gmail.com"            # whose calendars a multi-calendar export holds
+mirror_calendars = ["Home", "Work"]  # one-calendar exports whose name is yours alone
 horizon_days = 90                    # repeating events expand to today + this
 exclude_calendars = ["Holidays in United States"]
 ```
@@ -180,13 +183,28 @@ What is mirrored is **one account**, decided like this:
 
 - **One calendar** (Calendar.app's export, any single `.ics`) is account
   `calendar:<its name>` and mirrors only that calendar — importing `Work.ics`
-  never removes anything from `Home.ics`.
+  never removes anything from `Home.ics`. But the name is all such an export
+  says, and **two calendars can share a name**: with iCloud and an Exchange
+  account on the Mac, both default calendars are called *Calendar*. Under one
+  account, importing either export would remove every event of the other,
+  and the next import of the other would remove them back. So a one-calendar
+  export **mirrors only when its name is yours alone**:
+  - a calendar named by its owner's address (Google's primary calendar is
+    `you@gmail.com`) mirrors as it is;
+  - any other name mirrors once you list it in `[connectors.calendar]
+    mirror_calendars` — you vouching that no other calendar you export is
+    called that. Rename a duplicate in Calendar.app (*Get Info*) first if you
+    have one.
+
+  Until then the dry run says `not mirroring deletions: 'Home' is known only
+  by its name …` and nothing is removed; events you delete stay archived.
 - **Several calendars** (Takeout, Google's Export zip) are one Google account's
   whole set: `[connectors.calendar] account`, else the address in a
   `<you>@gmail.com.ical.zip` file name, else the one calendar named by an
   email address (Google names your primary calendar that way). If none of
   those says whose calendars they are, nothing is removed and the report says
-  how to fix it. Importing each calendar's `.ics` on its own also works.
+  how to fix it. Importing each calendar's `.ics` on its own also works, as a
+  one-calendar export (above).
 - **Export every calendar.** Takeout and Google's Export include all of your
   calendars by default; one left out of a later export reads as all its
   events deleted. The dry run's `remove:` line names what would go, and a
@@ -235,8 +253,9 @@ invite's CN, Apple's place title); nothing is ever linked automatically.
   name, description formatting) surface as conflicts, never applied.
 - **Moving a one-off event** to another time changes its id: the mirror
   removes the old row and adds the new one.
-- **A changing calendar list.** A Takeout that held one calendar mirrors as
-  `calendar:<name>`; once it holds several it mirrors as the account. Rows
+- **A changing calendar list.** A Takeout that held one calendar is account
+  `calendar:<name>` (mirrored when named by your address or listed in
+  `mirror_calendars`); once it holds several it mirrors as the account. Rows
   imported under the old scope are kept, never wrongly removed — but no longer
   mirrored.
 - **Places are matched by their text.** "Veracruz" and "Veracruz All Natural,

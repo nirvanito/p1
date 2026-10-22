@@ -79,8 +79,9 @@ Identity, and what a re-import does
                   library: skipped unless `include_hidden = true`, never
                   removed.
   Takeout         'takeout:<path under Google Photos/>', taken from the copy in
-                  'Photos from YYYY'; album copies of one photo are one record
-                  that lists its albums.
+                  'Photos from YYYY' (or its wording in the Takeout's
+                  language: 'Fotos von YYYY', ...); album copies of one
+                  photo are one record that lists its albums.
   folder          'file:<path inside the folder>|<size in bytes>'.
   Folders and Takeouts are remembered, not mirrored: a folder is often a
   partial copy, and a file missing from it proves nothing.
@@ -103,6 +104,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import unicodedata
 import zipfile
 import zlib
 from collections import Counter
@@ -130,8 +132,20 @@ ZIP_SEEK_LIMIT = 16 << 20
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 _MAX_OFFSET_SEC = 14 * 3600
 _ONEDRIVE_FOLDERS = (("Pictures", "Camera Roll"), ("Pictures", "Samsung Gallery"))
-_TAKEOUT_ROOTS = {"google photos", "google fotos"}
-_YEAR_FOLDER = re.compile(r"^Photos from \d{4}$", re.IGNORECASE)
+_TAKEOUT_ROOTS = {"google photos", "google fotos", "google foto"}
+# A Takeout made in another language names its year folders in that language.
+# Listed by wording, not matched by shape: an album the owner called 'Bled
+# 2022' is an album, and must keep its label. A wording missing from this list
+# still gets a stable id (see _merge_album_copies) — only its label is wrong.
+_YEAR_FOLDER = re.compile(
+    r"^(?:Photos from|Fotos von|Fotos de|Photos de|Foto's van|Foto's uit|Foto del"
+    r"|Foto dal|Zdjęcia z|Фото за) (?:19|20)\d{2}$", re.IGNORECASE)
+# The suffix Google adds to the copy of a photo edited in Google Photos, by
+# the language the Takeout was made in (as GooglePhotosTakeoutHelper lists
+# them). The original is imported; the edited copy is the same photo.
+_EDITED_SUFFIXES = ("-edited", "-bearbeitet", "-bewerkt", "-modifié", "-modificato",
+                    "-ha editado", "-editat", "-edytowane", "-編集済み")
+_YEAR_AT_END = re.compile(r"(?<!\d)((?:19|20)\d{2})$")
 _PIXEL_NAME = re.compile(r"^PXL_(\d{8})_(\d{6})", re.IGNORECASE)
 _STAMP_NAME = re.compile(r"(?<!\d)((?:19|20)\d{6})[_-](\d{6})(?!\d)")
 _DUP = re.compile(r"^(.*)\((\d+)\)$")
@@ -349,6 +363,22 @@ def _ext(fname: str) -> str:
 
 def _stem(fname: str) -> str:
     return os.path.splitext(fname)[0]
+
+
+def _fold(name: str) -> str:
+    """A file name compared as a name: one case, and one Unicode form — a Mac
+    writes 'modifié' decomposed, Windows composed."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _edited_original(stem: str) -> str | None:
+    """The folded stem of the photo an edited copy was made from
+    ('IMG_1-bearbeitet' -> 'img_1'), or None when it is not an edited copy."""
+    folded = _fold(stem)
+    for suffix in _EDITED_SUFFIXES:
+        if folded.endswith(suffix) and len(folded) > len(suffix):
+            return folded[:-len(suffix)]
+    return None
 
 
 def _cloud_only(st: os.stat_result) -> bool:
@@ -661,7 +691,7 @@ def _read_tree(files: list[_File], cfg: Config, skipped: Counter, kind: str) -> 
         entries = by_dir[parent]
         sidecar_files = {f.name: f for f in entries if f.name.lower().endswith(".json")}
         sidecars = _Sidecars(sidecar_files)
-        stills = {_stem(f.name).lower() for f in entries if _ext(f.name) in PHOTO_EXT}
+        stills = {_fold(_stem(f.name)) for f in entries if _ext(f.name) in PHOTO_EXT}
         claimed: set[str] = set()
         for f in entries:
             ext = _ext(f.name)
@@ -676,10 +706,10 @@ def _read_tree(files: list[_File], cfg: Config, skipped: Counter, kind: str) -> 
                 continue
             is_video = ext in VIDEO_EXT
             stem = _stem(f.name)
-            if is_video and stem.lower() in stills:
+            if is_video and _fold(stem) in stills:
                 skipped["Live Photo motion clip (its still is imported)"] += 1
                 continue
-            if stem.lower().endswith("-edited") and stem[:-7].lower() in stills:
+            if _edited_original(stem) in stills:
                 skipped["edited copy (the original is imported)"] += 1
                 continue
             side = None
@@ -753,6 +783,8 @@ def _file_record(f: _File, meta: dict, side: dict | None, cfg: Config,
     folder = f.parent.rsplit("/", 1)[-1] if f.parent else None
     rec["_album"] = None if not folder or folder.lower() in _TAKEOUT_ROOTS \
         or _YEAR_FOLDER.match(folder) else folder
+    year = _YEAR_AT_END.search(folder or "")
+    rec["_year_shaped"] = bool(year) and year[1] in {started[:4], rec["journal_date"][:4]}
     # One photo in three albums is three files with three sidecars that agree
     # on the original name and the capture instant.
     rec["_key"] = ((rec["title"], side["taken_utc"]) if side and side["taken_utc"]
@@ -764,14 +796,20 @@ def _file_record(f: _File, meta: dict, side: dict | None, cfg: Config,
 
 def _merge_album_copies(takeout: list[dict], skipped: Counter) -> list[dict]:
     """A Takeout repeats a photo in every album it is in. Keep one record —
-    the 'Photos from YYYY' copy where there is one — listing the albums."""
+    the 'Photos from YYYY' copy where there is one — listing the albums.
+
+    Which copy is kept is the photo's id, so it must not depend on which
+    albums the photo is in today. A year folder in a wording _YEAR_FOLDER
+    does not list reads as an album; the copy in a folder ending in the
+    photo's own year is still preferred, so taking the photo out of an album
+    later does not give it a second id."""
     groups: dict = {}
     for rec in takeout:
         groups.setdefault(rec["_key"], []).append(rec)
     out = []
     for group in groups.values():
-        group.sort(key=lambda r: (r["_album"] is not None, len(r["external_id"]),
-                                  r["external_id"]))
+        group.sort(key=lambda r: (r["_album"] is not None, not r["_year_shaped"],
+                                  len(r["external_id"]), r["external_id"]))
         keep = group[0]
         albums = sorted({r["_album"] for r in group if r["_album"]})
         if albums:
@@ -780,7 +818,7 @@ def _merge_album_copies(takeout: list[dict], skipped: Counter) -> list[dict]:
         if len(group) > 1:
             skipped["album copy of a photo already listed (its album is recorded)"] += \
                 len(group) - 1
-        for k in ("_album", "_key", "_detail"):
+        for k in ("_album", "_key", "_detail", "_year_shaped"):
             keep.pop(k, None)
         out.append(keep)
     return out

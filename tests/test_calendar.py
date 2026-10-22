@@ -35,6 +35,15 @@ def _pinned_today(monkeypatch):
     monkeypatch.setattr(cal, "_today", lambda cfg: TODAY)
 
 
+@pytest.fixture
+def vouched(cfg):
+    """The owner vouches that Home and Work are the only calendars of those
+    names they export — what a single calendar known only by its name needs
+    before its deletions are mirrored (tests/test_fix_connectors_calendar.py)."""
+    cfg.connectors = {"calendar": {"mirror_calendars": ["Home", "Work"]}}
+    return cfg
+
+
 def ics(*events, calname="Home", prodid="-//Apple Inc.//macOS 15.1//EN", extra=()):
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", f"PRODID:{prodid}"]
     if calname:
@@ -263,7 +272,7 @@ def test_count_interval_and_utc_until(tmp_path, cfg):
         "u1@20261001T140000Z", "u1@20261008T140000Z", "u1@20261015T140000Z"]
 
 
-def test_exdate_removes_an_occurrence(tmp_path, cfg):
+def test_exdate_removes_an_occurrence(tmp_path, cfg, vouched):
     scan = scan_of(tmp_path, cfg, ev("x1", ";TZID=America/Chicago:20261001T090000",
                                      "RRULE:FREQ=WEEKLY;COUNT=4",
                                      "EXDATE;TZID=America/Chicago:20261008T090000"))
@@ -329,7 +338,7 @@ def test_an_unsupported_rule_keeps_the_first_occurrence_and_stops_mirroring(tmp_
     assert "a repeat rule it cannot expand" in text
 
 
-def test_a_series_keeps_its_newest_thousand_occurrences(tmp_path, cfg):
+def test_a_series_keeps_its_newest_thousand_occurrences(tmp_path, cfg, vouched):
     scan = scan_of(tmp_path, cfg, ev("d1", ";VALUE=DATE:20220101", "RRULE:FREQ=DAILY"))
     days = sorted(r["journal_date"] for r in scan["records"])
     assert len(days) == 1000
@@ -350,7 +359,7 @@ def test_the_horizon_is_configurable(tmp_path, cfg):
 
 # ---------------------------------------------------------------- status and other components
 
-def test_a_cancelled_event_is_skipped_counted_and_not_present(tmp_path, cfg):
+def test_a_cancelled_event_is_skipped_counted_and_not_present(tmp_path, cfg, vouched):
     scan = scan_of(tmp_path, cfg, ev("c1", ":20261020T150000Z", "STATUS:CANCELLED"),
                    ev("k1", ":20261020T170000Z"))
     assert sorted(_by_id(scan)) == ["k1@20261020T170000Z"]
@@ -619,7 +628,7 @@ WEEKLY = ev("w1", ";TZID=America/Chicago:20261001T100000", "RRULE:FREQ=WEEKLY;CO
 LUNCH = ev("l1", ":20261020T170000Z", summary="Lunch")
 
 
-def test_an_event_deleted_from_the_calendar_is_removed(tmp_path, cfg, conn):
+def test_an_event_deleted_from_the_calendar_is_removed(tmp_path, cfg, conn, vouched):
     _apply(conn, scan_of(tmp_path / "a", cfg, WEEKLY, LUNCH))
     assert "l1@20261020T170000Z" in _ids(conn)
     plan, result = _apply(conn, scan_of(tmp_path / "b", cfg, WEEKLY))
@@ -628,7 +637,7 @@ def test_an_event_deleted_from_the_calendar_is_removed(tmp_path, cfg, conn):
     assert len(_ids(conn)) == 4
 
 
-def test_an_exdated_occurrence_is_removed_but_the_series_stays(tmp_path, cfg, conn):
+def test_an_exdated_occurrence_is_removed_but_the_series_stays(tmp_path, cfg, conn, vouched):
     _apply(conn, scan_of(tmp_path / "a", cfg, WEEKLY))
     later = ev("w1", ";TZID=America/Chicago:20261001T100000", "RRULE:FREQ=WEEKLY;COUNT=4",
                "EXDATE;TZID=America/Chicago:20261015T100000", summary="1:1")
@@ -638,7 +647,7 @@ def test_an_exdated_occurrence_is_removed_but_the_series_stays(tmp_path, cfg, co
 
 
 def test_occurrences_beyond_todays_window_are_not_treated_as_deleted(tmp_path, cfg, conn,
-                                                                     monkeypatch):
+                                                                     monkeypatch, vouched):
     """An earlier run whose window reached further (a clock set ahead, a
     longer horizon) archived occurrences today's window does not reach.
     They are still in the calendar, and must stay."""
@@ -653,7 +662,8 @@ def test_occurrences_beyond_todays_window_are_not_treated_as_deleted(tmp_path, c
     assert obs.build_plan(conn, scan)["removed"] == []
 
 
-def test_one_calendars_export_never_removes_another_calendars_events(tmp_path, cfg, conn):
+def test_one_calendars_export_never_removes_another_calendars_events(tmp_path, cfg, conn,
+                                                                     vouched):
     _apply(conn, scan_of(tmp_path / "home", cfg, LUNCH, calname="Home"))
     scan = scan_of(tmp_path / "work", cfg, WEEKLY, calname="Work")
     assert scan["account"] == "calendar:Work"
@@ -692,14 +702,15 @@ def test_a_calendar_left_out_of_a_later_export_is_named_in_a_warning(tmp_path, c
 
 
 def test_an_event_deleted_from_a_calendar_still_exported_draws_no_warning(tmp_path, cfg,
-                                                                          conn):
+                                                                          conn, vouched):
     _apply(conn, scan_of(tmp_path / "a", cfg, WEEKLY, LUNCH))
     scan = scan_of(tmp_path / "b", cfg, WEEKLY)
     text = "\n".join(cal.report_lines(scan, obs.build_plan(conn, scan)))
     assert "remove: 1 no longer in the calendar" in text and "WARNING" not in text
 
 
-def test_removing_most_of_the_archive_at_once_is_refused(tmp_path, cfg, conn, monkeypatch):
+def test_removing_most_of_the_archive_at_once_is_refused(tmp_path, cfg, conn, monkeypatch,
+                                                         vouched):
     monkeypatch.setattr(obs, "MASS_REMOVAL_MIN", 2)
     many = [ev(f"m{i}", f":202610{10 + i}T150000Z") for i in range(5)]
     _apply(conn, scan_of(tmp_path / "a", cfg, *many))

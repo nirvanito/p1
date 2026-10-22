@@ -151,10 +151,10 @@ has to know it. In order:
 If none of these says, the report says `account: unknown` and nothing is ever
 removed. Set `account` and the next import mirrors.
 
-## The archive mirrors the phone (decided 2026-09-24)
+## Texts: the archive mirrors the phone (decided 2026-09-24)
 
-A text or call deleted on the phone is removed by the next import — but only
-from a file that is the phone's **whole** state:
+A text deleted on the phone is removed by the next import — but only from a
+file that is the phone's **whole** state:
 
 | the file says | mirrors? |
 |---|---|
@@ -164,9 +164,23 @@ from a file that is the phone's **whole** state:
 | a `count` that disagrees with what it holds | never — the file is incomplete |
 | anything, with `mirror = false` | never |
 
-Texts and calls decide separately: reading only an `sms-*.xml` never touches
-the archived calls, and the reverse. Every id in a mirroring file counts as
-present, including drafts and the other rows this connector skips.
+Every id in a mirroring file counts as present, including drafts and the
+other rows this connector skips.
+
+**Calls are remembered, never removed** (decided 2026-10-22). A
+`calls-*.xml`, even a `type="full"` one, is not the phone's whole call
+history: Android's call log keeps only its newest calls (500 on stock
+Android; Samsung sets its own limit) and drops the oldest by itself, a few a
+day. Mirroring it removed every call the phone aged out — a handful per
+import, never enough to trip the mass-removal guard — until the archive held
+no more than the phone does, which defeats keeping years of calls. So a call
+missing from a later backup stays archived, whether the phone dropped it or
+you deleted it from Recents; the report says so on the `calls:` line (`kept
+even once the phone's call log drops them`). `lifecrm imports retract`
+still undoes a whole import. (Mirroring only within the span a calls file
+covers — removing a missing call only when it is newer than the file's
+oldest call — would keep deletions *and* history; it needs the shared write
+layer to scope removal by time, and is not built.)
 
 What removal can never do — the same guarantees as the iPhone (`docs/texts.md`):
 
@@ -183,9 +197,9 @@ What removal can never do — the same guarantees as the iPhone (`docs/texts.md`
   `lifecrm restore "<that snapshot>"`. `imports retract` cannot bring back
   what an import removed.
 
-**Changing what the backup includes looks like deleting it.** Turning MMS or
-call logs off, or limiting the backup to some conversations, makes the next
-full backup lack those rows. A large change is refused by the guard above; a
+**Changing what the backup includes looks like deleting it.** Turning MMS
+off, or limiting the backup to some conversations, makes the next full
+backup lack those rows. A large change is refused by the guard above; a
 small one shows in the dry run as `remove: N no longer on the phone` — read it
 before `--apply`, or set `mirror = false` while you experiment.
 

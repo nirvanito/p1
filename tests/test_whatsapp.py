@@ -444,9 +444,11 @@ def test_an_unsaved_number_is_a_phone_handle_from_either_phone(me, tmp_path):
     assert phone in android["handles"]
 
 
-def test_a_chosen_name_loses_its_tilde(me, tmp_path):
+def test_a_chosen_name_keeps_its_tilde_in_the_handle_but_not_the_display_name(me, tmp_path):
+    # The '~' marks someone who is not in the contacts: it keeps them apart
+    # from a contact who happens to share the name (tests/test_fix_connectors_whatsapp.py).
     scan = wa.scan(ios_zip(tmp_path), me)
-    assert {"kind": "app_account", "value": "whatsapp:Tío Beto",
+    assert {"kind": "app_account", "value": "whatsapp:~Tío Beto",
             "display_name": "Tío Beto"} in scan["handles"]
 
 
@@ -467,7 +469,7 @@ def test_a_group_message_names_every_member_and_you(me, tmp_path):
     assert rec["participants"] == [
         {"kind": "app_account", "value": "whatsapp:Linda Rivera", "role": "sender"},
         {"kind": "app_account", "value": "whatsapp:Alex Rivera", "role": "recipient"},
-        {"kind": "app_account", "value": "whatsapp:Tío Beto", "role": "recipient"},
+        {"kind": "app_account", "value": "whatsapp:~Tío Beto", "role": "recipient"},
         {"kind": "phone", "value": "+12105550131", "role": "recipient"}]
     assert json.loads(rec["value_json"]) == {"group": True}
     assert scan["facts"]["chats"][0]["group"] is True

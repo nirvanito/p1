@@ -342,14 +342,16 @@ old file is kept under `data/`. Every setting is in
   supports it. Every observation names the import that brought it in and the
   export file it came from. Every `ask` fact carries an id you can check.
 - **Mirroring, per connector.** Texts (`ios_messages`, `mac_messages`,
-  `android_sms` from a full backup), calls, AI chats, calendars, contacts,
-  notes and a Mac Photos library *mirror* their source when it names an
-  account: what the source no longer holds is removed on the next import.
-  Removal is scoped to that account, preceded by a snapshot, and refused
-  when it would remove a large share of the archive at once
-  (`--allow-mass-removal` overrides). A record that a journal entry or a
-  relationship cites is hidden instead of deleted. WhatsApp exports, bank
-  statements, location, browser history, photo folders and Takeouts
+  `android_sms` from a full backup), iPhone calls, AI chats, calendars (a
+  one-calendar export once its name is listed in `mirror_calendars`, since
+  two calendars can share a name), contacts, notes and a Mac Photos library
+  *mirror* their source when it names an account: what the source no longer
+  holds is removed on the next import. Removal is scoped to that account,
+  preceded by a snapshot, and refused when it would remove a large share of
+  the archive at once (`--allow-mass-removal` overrides). A record that a
+  journal entry or a relationship cites is hidden instead of deleted.
+  WhatsApp exports, Android calls (the phone's call log ages old calls out),
+  bank statements, location, browser history, photo folders and Takeouts
   *remember*, because a missing record there is not evidence of deletion.
 - **Health** comes from Health Connect or Apple Health into
   `health_records`, keyed on the source's own record ids (or a stable hash

@@ -104,7 +104,17 @@ Two things to know:
 
 Journal dates follow the same rule as everything else here: the record's own
 timezone, with the 05:00 rollover — a 00:30 weigh-in belongs to yesterday,
-and a sleep session belongs to the day you woke up.
+and a sleep session belongs to the day you woke up (no rollover for sleep: a
+night that ends at 04:30 is that morning's, the rule Apple Health and the
+phone's own app use).
+
+A journal date is derived here, not read from the export, so a stored record
+that differs from the export *only* in its journal date has not changed on
+the phone — the day rule has (sleep moved to the wake day on 2026-10-22; a
+night ending before 05:00 imported earlier sits on the day before). Such a
+record is **re-dated** by the next import that holds it: an audit-logged
+update, reported as `re-dated: N stored record(s) …`, never a CONFLICT. A
+record whose own data differs and is not newer is still a conflict.
 
 What does NOT come in: gym set/rep/load detail (Health Connect doesn't carry
 it — that's a future Strong-CSV/Hevy importer), and iPhone data (Apple

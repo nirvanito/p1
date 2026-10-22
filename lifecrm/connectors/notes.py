@@ -18,14 +18,16 @@ but each has a file:
 
 One observation per note, stream `note`, keyed on the source's own identity:
 
-  folder   file:<folder name>/<path inside it>    (POSIX separators)
+  folder   file:<folder name>~<fingerprint>/<path inside it>   (POSIX separators)
   Keep     keep:<json file name without .json>
   Apple    apple:<ZIDENTIFIER>
 
-The prefix keeps three sources apart in one stream; the folder's own name in
-the folder id keeps two vaults that both hold an Inbox.md apart, while the
-same vault synced to a second machine keeps its ids. Renaming a note in a
-folder or in Keep renames its file, so it reads as one note deleted and one
+The prefix keeps three sources apart in one stream. A folder has no identity
+but where it is, so its id carries the folder's name and a fingerprint of its
+path inside the home folder (folder_key): two folders both called Notes that
+both hold an Inbox.md stay apart, while the same synced vault on a second
+machine, in the same place under its home, keeps its ids. Renaming a note in
+a folder or in Keep renames its file, so it reads as one note deleted and one
 added — the price of using the only identity those sources have.
 
 The archive mirrors each source (decision #2, extended to notes): a note
@@ -285,9 +287,31 @@ def _file_id(vault: str, rel: str) -> str:
     return f"file:{vault}/{rel}"
 
 
+def folder_key(root: Path) -> str:
+    """The id prefix of a folder's notes: its name and a short fingerprint of
+    where it is, '<name>~<8 hex>'.
+
+    The name alone was not an identity: two folders both called Notes (a
+    OneDrive folder and an Obsidian vault) that both hold an Inbox.md shared
+    one id, so importing one overwrote the other's note, and one folder's
+    mirror removed a note the other still held. Every other source's id
+    names one record in the world; this makes a folder's do too.
+
+    The fingerprint is of the folder's path inside the home folder — its full
+    path only when it lies outside — so the same synced folder on a new
+    machine, in the same place under a home of another name, keeps its ids.
+    `root` is resolved."""
+    try:
+        where = root.relative_to(Path.home().resolve()).as_posix()
+    except ValueError:
+        where = root.as_posix()
+    fingerprint = hashlib.sha256(where.encode("utf-8")).hexdigest()[:8]
+    return f"{root.name or 'root'}~{fingerprint}"
+
+
 def _read_folder(folder: Path, cfg: Config) -> dict:
     root = folder.resolve()
-    vault = root.name or str(root)
+    vault = folder_key(root)
     origin = "obsidian" if (root / ".obsidian").is_dir() else "notes_folder"
     records: list[dict] = []
     present: set[str] = set()

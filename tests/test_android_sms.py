@@ -421,7 +421,7 @@ def test_a_bare_file_is_recognised_by_its_root_not_its_name(cfg, tmp_path):
     p.write_text(document("calls", calls()), encoding="utf-8")
     scan = an.scan(p, cfg)
     assert set(_streams(scan)) == {"android_call"}
-    assert scan["mirror_streams"] == ["android_call"]
+    assert "mirror_streams" not in scan        # calls are remembered, never mirrored
     assert scan["target_kind"] == "file"
 
 
@@ -556,23 +556,24 @@ def test_reimporting_the_same_backup_is_a_no_op(cfg, conn, tmp_path):
     assert plan["identical"] == 12
 
 
-def test_a_text_and_a_call_deleted_on_the_phone_are_removed_and_return_if_restored(
+def test_a_text_deleted_on_the_phone_is_removed_and_returns_if_restored(
         cfg, conn, tmp_path):
     _apply(conn, an.scan(make_backup(tmp_path / "a"), cfg))
     later = an.scan(make_backup(tmp_path / "b", variant="deleted"), cfg)
     text = "\n".join(an.report_lines(later, obs.build_plan(conn, later)))
-    assert "remove: 2 no longer on the phone (deleted)" in text
+    assert "remove: 1 no longer on the phone (deleted)" in text
     plan, result = _apply(conn, later)
-    assert sorted(r["stream"] for r in plan["removed"]) == ["android_call", "android_sms"]
-    assert result["removed"] == 2
+    # The call missing from the later backup stays: calls are remembered
+    # (tests/test_fix_connectors_android.py).
+    assert sorted(r["stream"] for r in plan["removed"]) == ["android_sms"]
+    assert result["removed"] == 1
     assert conn.execute("SELECT COUNT(*) c FROM observations_fts WHERE "
                         "observations_fts MATCH '\"see you at 6\"'").fetchone()["c"] == 0
     assert run_checks(conn, cfg)["failures"] == 0
 
     # restored with the app's own Restore: the next backup has it again
     plan, _ = _apply(conn, an.scan(make_backup(tmp_path / "c"), cfg))
-    assert sorted(r["body"] or r["stream"] for r in plan["new"]) == ["android_call",
-                                                                      "see you at 6"]
+    assert sorted(r["body"] or r["stream"] for r in plan["new"]) == ["see you at 6"]
 
 
 def test_every_id_in_the_file_counts_as_present_skipped_ones_included(cfg, tmp_path):
@@ -614,7 +615,8 @@ def test_a_backup_that_does_not_state_its_type_mirrors_only_when_configured(
     assert obs.build_plan(conn, scan)["removed"] == []
 
     cfg.connectors = {"android_sms": {"mirror": True}}
-    assert len(obs.build_plan(conn, an.scan(untyped, cfg))["removed"]) == 2
+    assert [r["stream"] for r in obs.build_plan(conn, an.scan(untyped, cfg))["removed"]] \
+        == ["android_sms"]
 
 
 def test_mirror_false_turns_mirroring_off_even_for_a_full_backup(cfg, conn, tmp_path):
@@ -622,9 +624,7 @@ def test_mirror_false_turns_mirroring_off_even_for_a_full_backup(cfg, conn, tmp_
     cfg.connectors = {"android_sms": {"mirror": False}}
     scan = an.scan(make_backup(tmp_path / "b", variant="deleted"), cfg)
     assert obs.build_plan(conn, scan)["removed"] == []
-    assert scan["not_mirroring"] == [
-        "texts: mirror = false in [connectors.android_sms]",
-        "calls: mirror = false in [connectors.android_sms]"]
+    assert scan["not_mirroring"] == ["texts: mirror = false in [connectors.android_sms]"]
 
 
 def test_a_mirror_setting_that_is_not_true_or_false_is_refused(cfg, tmp_path):
@@ -841,5 +841,6 @@ def test_cli_removal_takes_a_snapshot(tmp_path, monkeypatch):
     r = runner.invoke(app, ["observe", "android_sms",
                             str(make_backup(tmp_path / "b", variant="deleted")), "--apply"])
     assert r.exit_code == 0, r.output
-    assert "2 removed" in r.output and "snapshot before removing:" in r.output
+    # the deleted text; the call missing too is remembered
+    assert "1 removed" in r.output and "snapshot before removing:" in r.output
     assert list((root / "backups").glob("pre-removal-*.db"))

@@ -4,14 +4,19 @@ WhatsApp has no API for its history, and its own backups are encrypted. What
 both phones do have is *Export chat*: one chat at a time, as plain text. The
 iPhone shares a 'WhatsApp Chat - <name>.zip' holding '_chat.txt'; Android
 shares 'WhatsApp Chat with <name>.txt', zipped together with the media when
-media is included. This connector reads those files. It never opens
-WhatsApp's databases, never talks to the phone, and never sends anything.
+media is included — named in the phone's language ('WhatsApp Chat mit
+<name>', 'Chat de WhatsApp con <name>', ...). This connector reads those
+files. It never opens WhatsApp's databases, never talks to the phone, and
+never sends anything.
 
 Accepted targets
 ----------------
 - one export: the .zip, the .txt, or the folder an unzipped export leaves
 - a folder holding several exports (zips, text files, unzipped folders),
-  each read as its own chat; files that are not WhatsApp exports are ignored
+  each read as its own chat; files that are not WhatsApp exports are ignored.
+  A file whose name mentions WhatsApp in a wording this reader does not know
+  is recognised by its first line, and the report warns that the chat's name
+  was taken from the file name as it stands
 - nothing at all: `default_target` uses [connectors.whatsapp] exports_dir,
   else ~/Downloads (where AirDrop, Quick Share and browsers put things) when
   it holds an export
@@ -71,7 +76,10 @@ name, or the number of someone not in the contacts. A phone-shaped sender
 becomes a phone handle, so it meets the same number from texts and calls.
 Anything else becomes app_account 'whatsapp:<name as shown>' with that name
 as its display_name — the export's only identifier for that person. Linking
-it to an entity stays the owner's decision (`handles list --suggest`).
+it to an entity stays the owner's decision (`handles list --suggest`). A
+group member who is not in the contacts shows as '~ <the name they chose>';
+the '~' stays in the handle ('whatsapp:~Sam', display name 'Sam'), so a
+stranger never shares a handle with the contact Sam, nor passes for you.
 
 Which sender is you: [connectors.whatsapp] me = "Alex Rivera" (a name, or a
 list of them, as your own lines show it). Without it, a one-to-one chat gives
@@ -130,20 +138,35 @@ _ORDER_SETTINGS = {"dmy": "dmy", "day-first": "dmy", "mdy": "mdy",
 
 # 'WhatsApp Chat with Jake.txt' (Android), 'WhatsApp Chat - Jake.zip' (iPhone),
 # the folder an unzipped export leaves, and the ' (1)' a browser appends to a
-# second download of the same name.
+# second download of the same name. Android names the file in the phone's own
+# language — 'WhatsApp Chat mit Jake' (de), 'Chat de WhatsApp con Jake' (es),
+# 'Conversa do WhatsApp com Jake' (pt), 'Discussion WhatsApp avec Jake' (fr),
+# 'WhatsApp-chat met Jake' (nl) — so the shape is matched rather than the
+# English words: a few words, 'WhatsApp', at most one word more, 'with' in one
+# of these languages (or the iPhone's ' - '), then the chat's name. The chat's
+# name is part of every message's id, and decides one-to-one vs group, so a
+# file name read wrong would misfile the whole chat.
+_WITH = ("with", "mit", "con", "com", "avec", "met", "med", "dengan", "amb", "cu",
+         "z", "\N{CYRILLIC SMALL LETTER ES}", "\N{CYRILLIC SMALL LETTER ZE}", "-")
 _EXPORT_NAME = re.compile(
-    r"WhatsApp Chat (?:with |- )(?P<chat>.+?)(?: \(\d+\))?(?P<ext>\.txt|\.zip)?", re.I)
+    r"(?:[^\W\d_]+ ){0,3}WhatsApp(?:[ -][^\W\d_]+)? (?:" + "|".join(_WITH) + r") "
+    r"(?P<chat>.+?)(?: \(\d+\))?(?P<ext>\.txt|\.zip)?", re.I)
+# How much of a text file is read to tell whether it is a chat export.
+_SNIFF_BYTES = 4096
 
 
 # ---------------------------------------------------------------- finding exports
 
-def _chat_name(file_or_folder: str) -> str:
-    """The chat's name from an export's own file or folder name."""
+def _chat_name(file_or_folder: str) -> tuple[str, bool]:
+    """(the chat's name, whether it came from a name WhatsApp writes) from an
+    export's own file or folder name. Any other name — renamed by hand, or a
+    language this reader does not know — is used as it stands, and the
+    report says so."""
     m = _EXPORT_NAME.fullmatch(file_or_folder)
     if m:
-        return m["chat"].strip()
+        return m["chat"].strip(), True
     stem = re.sub(r"\.(txt|zip)$", "", file_or_folder, flags=re.I)
-    return re.sub(r" \(\d+\)$", "", stem).strip() or file_or_folder
+    return re.sub(r" \(\d+\)$", "", stem).strip() or file_or_folder, False
 
 
 def _is_chat_text(file_name: str) -> bool:
@@ -151,6 +174,33 @@ def _is_chat_text(file_name: str) -> bool:
         return True
     m = _EXPORT_NAME.fullmatch(file_name)
     return bool(m and (m["ext"] or "").lower() == ".txt")
+
+
+def _looks_like_chat(head: bytes) -> bool:
+    """Whether a text file's first line is a WhatsApp message header: how an
+    export is recognised when its name is not one this reader knows."""
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = head.decode("utf-16", errors="ignore")
+    else:
+        text = head.decode("utf-8-sig", errors="ignore")
+    first = next((ln for ln in re.split(r"\r\n|\r|\n", text) if ln.strip(_MARKS + " \t")),
+                 "")
+    bare = first.lstrip(_MARKS)
+    return any(rx.fullmatch(bare) for rx in _HEADERS.values())
+
+
+def _mentions_whatsapp(file_name: str) -> bool:
+    return "whatsapp" in file_name.casefold()
+
+
+def _zip_head(zf: zipfile.ZipFile, member: str) -> bytes:
+    with zf.open(member) as f:
+        return f.read(_SNIFF_BYTES)
+
+
+def _file_head(path: Path) -> bytes:
+    with open(path, "rb") as f:
+        return f.read(_SNIFF_BYTES)
 
 
 def _media_beside(names: list[str], text_member: str) -> dict[str, str]:
@@ -180,6 +230,11 @@ def _from_zip(path: Path, label: str) -> list[dict]:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         texts = [n for n in names if _is_chat_text(PurePosixPath(n).name)]
         if not texts:
+            # A name in a language this reader does not know: the text inside
+            # still says what it is.
+            texts = [n for n in names if PurePosixPath(n).suffix.lower() == ".txt"
+                     and _looks_like_chat(_zip_head(zf, n))]
+        if not texts:
             listing = ", ".join(names[:10]) or "(empty)"
             raise DomainError(
                 f"{path.name} holds no WhatsApp chat text — expected {IOS_TEXT} "
@@ -192,7 +247,9 @@ def _from_zip(path: Path, label: str) -> list[dict]:
                 chat = _chat_name(folder) if folder else _chat_name(path.name)
             else:
                 chat = _chat_name(p.name)
-            out.append({"chat": chat, "raw": zf.read(member),
+                if not chat[1] and len(texts) == 1 and _chat_name(path.name)[1]:
+                    chat = _chat_name(path.name)     # the zip's own name says it
+            out.append({"chat": chat[0], "named": chat[1], "raw": zf.read(member),
                         "label": label if len(texts) == 1 else f"{label}/{member}",
                         "media": _media_beside(names, member)})
     return out
@@ -202,7 +259,7 @@ def _from_text(path: Path, label: str) -> dict:
     folder = path.parent
     chat = _chat_name(folder.name) if path.name == IOS_TEXT else _chat_name(path.name)
     names = sorted(p.name for p in folder.iterdir() if p.is_file())
-    return {"chat": chat, "raw": path.read_bytes(), "label": label,
+    return {"chat": chat[0], "named": chat[1], "raw": path.read_bytes(), "label": label,
             "media": _media_beside(names, path.name)}
 
 
@@ -223,10 +280,10 @@ def _find_exports(target: Path) -> tuple[list[dict], str]:
     found: list[dict] = []
     entries = sorted(target.iterdir(), key=lambda p: p.name)
     for p in entries:
-        if p.is_file() and _EXPORT_NAME.fullmatch(p.name):
-            if p.suffix.lower() == ".zip" and zipfile.is_zipfile(p):
+        if p.is_file() and _is_export_file(p):
+            if p.suffix.lower() == ".zip":
                 found += _from_zip(p, p.name)
-            elif p.suffix.lower() == ".txt":
+            else:
                 found.append(_from_text(p, p.name))
         elif p.is_dir():
             if (p / IOS_TEXT).is_file():
@@ -257,10 +314,36 @@ def _source_hash(target: Path, exports: list[dict]) -> str:
     return h.hexdigest()
 
 
+def _is_export_file(p: Path) -> bool:
+    """A .zip or .txt in a folder that is a chat export: by the name WhatsApp
+    gives it, or — for a file whose name mentions WhatsApp in a form this
+    reader does not know — by what it holds. Anything else in the folder is
+    someone else's file and is left alone."""
+    ext = p.suffix.lower()
+    if ext not in (".zip", ".txt"):
+        return False
+    if ext == ".zip" and not zipfile.is_zipfile(p):
+        return False
+    if _EXPORT_NAME.fullmatch(p.name):
+        return True
+    if not _mentions_whatsapp(p.name):
+        return False
+    try:
+        if ext == ".txt":
+            return _looks_like_chat(_file_head(p))
+        with zipfile.ZipFile(p) as zf:
+            return any(_is_chat_text(PurePosixPath(n).name)
+                       or (n.lower().endswith(".txt") and _looks_like_chat(_zip_head(zf, n)))
+                       for n in zf.namelist() if not n.endswith("/"))
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
 def _has_exports(folder: Path) -> bool:
     try:
         return folder.is_dir() and any(
-            _EXPORT_NAME.fullmatch(p.name) or (p / IOS_TEXT).is_file()
+            (p.is_file() and _is_export_file(p))
+            or (p.is_dir() and _EXPORT_NAME.fullmatch(p.name)) or (p / IOS_TEXT).is_file()
             for p in folder.iterdir())
     except OSError:
         return False
@@ -396,12 +479,26 @@ def _local(msg: dict, order: str, label: str) -> datetime:
 # ---------------------------------------------------------------- senders
 
 def clean_label(raw: str) -> str:
-    """A sender as the phone displayed it, without the invisible marks — and
-    without the '~' WhatsApp puts before a name someone chose for themself."""
+    """A sender as the phone displayed it, without the invisible marks.
+
+    The '~' WhatsApp puts before a name someone chose for themself — a group
+    member who is not in your contacts — is kept, closed up to the name
+    ('~ Sam', '~\N{NARROW NO-BREAK SPACE}Sam' -> '~Sam'). It is the export's only
+    sign that this is not your contact Sam: without it a stranger would share
+    your contact's handle, and one who calls themself by your name would be
+    taken for you."""
     s = "".join(ch for ch in raw if ch not in _MARKS)
     s = " ".join(s.replace("\N{NO-BREAK SPACE}", " ")
                  .replace("\N{NARROW NO-BREAK SPACE}", " ").split())
-    return s.lstrip("~").strip()
+    if s.startswith("~"):
+        rest = s.lstrip("~").strip()
+        return f"~{rest}" if rest else ""
+    return s
+
+
+def display_label(label: str) -> str:
+    """The name to show for a sender: a chosen name without its '~'."""
+    return label.lstrip("~").strip() or label
 
 
 def sender_handle(label: str) -> tuple[str, str]:
@@ -515,9 +612,17 @@ def _read_chat(export: dict, order_setting: str | None, zone: ZoneInfo) -> dict:
     label = export["label"]
     msgs, flavor, preamble = _messages(_decode(export["raw"], label), label)
     order, how, warning = _date_order(msgs, order_setting, label)
+    warnings = [warning] if warning else []
+    if not export.get("named", True):
+        warnings.append(
+            f"{label}: the chat's name '{export['chat']}' is the file's own name — "
+            f"not one WhatsApp writes in a language this reader knows. The name is "
+            f"part of every message's id and of telling a one-to-one chat from a "
+            f"group: if it is not the chat's name, rename the file "
+            f"'WhatsApp Chat with <chat name>.txt' before --apply")
     chat = {"name": export["chat"], "key": _key(sender_handle(export["chat"])),
             "label": label, "flavor": flavor, "order": order, "order_how": how,
-            "warnings": [warning] if warning else [], "lines": len(msgs),
+            "warnings": warnings, "lines": len(msgs),
             "preamble": preamble, "items": [], "system": {}, "skipped": {},
             "senders": {}, "plain_senders": set(), "group_change": False,
             "media": export["media"]}
@@ -723,7 +828,8 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         k = _key(h)
         if k not in handles:
             handles[k] = {"kind": h[0], "value": h[1],
-                          "display_name": label if h[0] == "app_account" else None}
+                          "display_name": display_label(label)
+                          if h[0] == "app_account" and label else None}
         return {"kind": handles[k]["kind"], "value": handles[k]["value"]}
 
     owner_part = seen(owner["handle"], owner["label"]) if owner["handle"] else None

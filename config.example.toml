@@ -78,6 +78,7 @@ max_loops = 10                     # open tasks/plans listed
 # [connectors.calendar]             # docs/calendar.md
 # path = "~/Downloads/takeout-20261022T120000Z-001.zip"   # .ics, folder, Takeout or .ical.zip
 # account = "you@example.com"       # names the account a multi-calendar export mirrors
+# mirror_calendars = ["Home", "Work"]   # one-calendar exports that mirror: names no other calendar of yours has
 # horizon_days = 90                 # how far ahead repeating events expand
 # exclude_calendars = ["Holidays in United States"]
 

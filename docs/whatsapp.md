@@ -21,7 +21,9 @@ re-export them whenever you want to catch up. Re-importing is always safe.
 *Include media* or *Without media*. Share it to the laptop: **Quick Share**
 lands it in the Windows `Downloads` folder; OneDrive, Google Drive or email
 work too. You get `WhatsApp Chat with <name>.txt`, or a `.zip` holding that
-file and the media when media is included.
+file and the media when media is included. The name is in the phone's
+language — `WhatsApp Chat mit <name>.txt`, `Chat de WhatsApp con <name>.txt`,
+`Conversa do WhatsApp com <name>.txt`, … — and reads the same.
 
 **iPhone** — open the chat → tap the chat's name at the top → **Export
 Chat** → *Attach Media* or *Without Media*. **AirDrop** it to the Mac (it
@@ -95,6 +97,17 @@ Accepted targets:
 
 A browser's `(1)` on a second download of the same name is understood: it
 is the same chat, and its messages count as duplicates, not new ones.
+
+**The file name names the chat.** It is the shape that is recognised, not
+the English words: a few words, `WhatsApp`, then "with" in the phone's
+language (`with`, `mit`, `con`, `com`, `avec`, `met`, `med`, `dengan`, `z`,
+`с`, …) or the iPhone's ` - `, then the chat's name. So `WhatsApp Chat mit
+Max.txt` is the one-to-one chat with Max, with the same message ids as
+`WhatsApp Chat with Max.txt`. A file whose name mentions WhatsApp in some
+other wording is recognised by its first line instead, and its whole name is
+taken as the chat's name — the dry run then prints a **WARNING**: the name
+is part of every message's id and decides one-to-one vs group, so rename the
+file `WhatsApp Chat with <chat name>.txt` before `--apply` if it is wrong.
 
 ## What gets imported
 
@@ -191,7 +204,13 @@ The export identifies a sender only as the phone displays them:
   — the export's only identifier for them;
 - **someone not in your contacts** → their number → a `phone` handle, the
   same one their texts and calls produce. The export gives no name for it.
-  (A `~` WhatsApp puts before a self-chosen name is dropped.)
+- **a group member not in your contacts who chose a name** → WhatsApp shows
+  `~ Sam` → handle `app_account:whatsapp:~Sam`, display name `Sam`. The `~`
+  stays in the handle: it is the export's only sign that this is *not* your
+  contact Sam, so the two never share a handle — and a stranger who calls
+  themself by your own name is never taken for you. Save them as a contact
+  later and the next export shows them as `Sam`: a new handle (link both),
+  and their messages import again under it, as for any renamed contact.
 
 Linking is the usual one decision per handle, past and future:
 
@@ -215,8 +234,8 @@ it never links anything itself.
   language, but the markers — "This message was deleted", `<Media omitted>`,
   `<This message was edited>`, system lines — are recognised in English
   only. In another language they come through as message text or as "not
-  understood", and export file names in another language (`WhatsApp Chat
-  mit …`) are not picked out of a folder — pass the file itself.
+  understood". (Export *file names* in other languages are understood —
+  see "The file name names the chat" above.)
 
 ## Commands
 

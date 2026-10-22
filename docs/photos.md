@@ -173,6 +173,22 @@ albums is three files with three sidecars; it becomes one record (the
 `Photos from YYYY` copy) listing its `albums`. Photos in Google's trash are
 skipped.
 
+**Takeouts in other languages.** A Takeout is written in your Google
+account's language: the root may be `Google Fotos`, the year folders
+`Fotos von 2022` (German), `Fotos de 2022` (Spanish, Portuguese), `Photos de
+2022` (French), `Foto's van 2022` / `Foto's uit 2022` (Dutch), `Foto del
+2022` / `Foto dal 2022` (Italian), `Zdjęcia z 2022` (Polish), `Фото за 2022`
+(Russian) — these wordings are recognised as year folders, never albums. They
+are from memory, not from real exports (checklist). A wording not on that
+list still gives each photo **one stable id**: of its copies, the one in a
+folder ending in the photo's own year is kept, so taking a photo out of an
+album later never makes a second record — but that year folder is then
+listed among the photo's `albums`. An album you named with a year (`Bled
+2022`) keeps its label. Google's edited copies are skipped beside their
+original in every language Google is known to suffix them in: `-edited`,
+`-bearbeitet`, `-bewerkt`, `-modifié`, `-modificato`, `-ha editado`,
+`-editat`, `-edytowane`, `-編集済み`.
+
 Library schemas: `ZASSET` (macOS 11+) and `ZGENERICASSET` (macOS 10.15), with
 columns introspected rather than assumed — a column a version lacks reads as
 absent. Photos.sqlite is copied through SQLite's backup API (or, for a copied
@@ -220,6 +236,7 @@ here:
 | [ ] Real Photos.sqlite on the owner's macOS version | `Photos library, macOS 11+ schema` and no error |
 | [ ] Do library offsets match the trip? | the sample line's `UTC+02:00` on a Slovenia photo |
 | [ ] Takeout sidecar names in a 2026 export | `skipped: … Takeout sidecar with no photo beside it` near zero |
+| [ ] A Takeout in a language other than English: the year-folder wording and the sidecar names | `--json` → the records' `albums` hold no year folder; sidecar line as above |
 | [ ] The oldest photo against what the phone shows | `per year: …` |
 
 Answers so far: none — no real camera roll, Takeout or library has been read.

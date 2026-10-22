@@ -75,7 +75,13 @@ the next import, scoped to the import's account:
 
 - An export of **one** calendar (Apple's File > Export, a single .ics) is
   account `calendar:<its name>` and mirrors only that calendar — exporting
-  "Home" never removes "Work".
+  "Home" never removes "Work". But a name is all such an export says, and
+  two calendars can share one (iCloud's and Exchange's "Calendar"); under
+  one account each import would remove the other's events. So it mirrors
+  only when the name cannot be shared — a calendar named by its owner's
+  email address — or is listed in `[connectors.calendar] mirror_calendars`
+  (the owner vouching that no other calendar they export has that name).
+  Otherwise nothing is removed, and the report says how to turn it on.
 - An export of **several** (Takeout, Google's Export zip) is the Google
   account's whole set: account = `[connectors.calendar] account`, else the
   email in a `<you>@gmail.com.ical.zip` file name, else the one calendar
@@ -318,23 +324,54 @@ def _person_email(s: str) -> bool:
     return bool(_EMAIL.match(s.strip())) and not _CALENDAR_ID.search(s.strip())
 
 
-def _account(cals: list[_Cal], target: Path, settings: dict) -> tuple[str | None, str]:
-    """(account, how it was decided). See the module docstring."""
+def _vouched(settings: dict) -> set[str]:
+    raw = settings.get("mirror_calendars") or ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    if not isinstance(raw, (list, tuple)) or not all(isinstance(n, str) for n in raw):
+        raise DomainError(f"[connectors.calendar] mirror_calendars must be a list of "
+                          f"calendar names, e.g. [\"Home\", \"Work\"] — got {raw!r}")
+    return {n.strip().casefold() for n in raw if n.strip()}
+
+
+def _account(cals: list[_Cal], target: Path, settings: dict
+             ) -> tuple[str | None, str, str | None]:
+    """(account, how it was decided, why it must not mirror — or None).
+
+    One calendar is its own account, `calendar:<name>` — but a name is not an
+    identity. Two calendars can share one (iCloud's and an Exchange account's
+    'Calendar' sit side by side in Calendar.app), the export carries nothing
+    else that tells them apart, and the shared mirror is scoped by account:
+    importing one would remove every event of the other, and the next import
+    of the other would remove them back. So a name mirrors only when it
+    cannot be shared — a Google calendar named by its owner's address — or
+    when the owner vouches for it in `[connectors.calendar] mirror_calendars`.
+    See the module docstring for several calendars."""
     names = list(dict.fromkeys(c.name for c in cals))
     if len(names) == 1:
-        return f"calendar:{names[0]}", "a single calendar"
+        only = names[0]
+        account = f"calendar:{only}"
+        if _person_email(only):
+            return account, "a single calendar, named by its owner's address", None
+        if only.strip().casefold() in _vouched(settings):
+            return account, "a single calendar, [connectors.calendar] mirror_calendars", None
+        return account, "a single calendar's name", (
+            f"'{only}' is known only by its name, and two calendars can share a name "
+            f"(an iCloud and an Exchange 'Calendar') — each one's import would remove "
+            f"the other's events. If no other calendar you export is called '{only}', "
+            f"add it to [connectors.calendar] mirror_calendars in config.toml")
     configured = str(settings.get("account") or "").strip()
     if configured:
-        return configured, "[connectors.calendar] account"
+        return configured, "[connectors.calendar] account", None
     m = re.match(r"^(.+?)\.(?:ical|ics)\.zip$", target.name, re.I)
     if m and _person_email(m.group(1)):
-        return m.group(1).lower(), "the export's file name"
+        return m.group(1).lower(), "the export's file name", None
     emails = [n for n in names if _person_email(n)]
     if len(emails) == 1:
-        return emails[0].lower(), "the calendar named by an email address"
+        return emails[0].lower(), "the calendar named by an email address", None
     return None, (f"{len(names)} calendars and no owner named — set "
                   f"[connectors.calendar] account = \"you@gmail.com\" in config.toml, "
-                  f"or import each calendar's .ics on its own")
+                  f"or import each calendar's .ics on its own"), None
 
 
 # ---------------------------------------------------------------- one event's fields
@@ -882,7 +919,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         else:
             kept.append((cal_name, rec))
 
-    account, account_how = _account(cals, target, settings)
+    account, account_how, name_only = _account(cals, target, settings)
     records = sorted((rec for _, rec in kept),
                      key=lambda r: (r["stream"], r["started_at"], r["external_id"]))
     used = {(p["kind"], p["value"]) for r in records for p in r["participants"]}
@@ -905,9 +942,11 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         "account_from": account_how,
     }
     extra = {}
+    if name_only:
+        facts["mirror_hint"] = name_only
     if out.mirror_off:
         facts["not_mirroring"] = sorted(out.mirror_off)
-    else:
+    elif not name_only:
         extra = {"present_ids": out.present, "mirror_streams": list(streams)}
     return base.empty_scan(
         name,
@@ -987,6 +1026,8 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
                      + " — what it cannot read is not evidence of a deletion")
     elif not scan["account"]:
         lines.append(f"  to mirror deletions: {facts.get('account_from')}")
+    if facts.get("mirror_hint"):
+        lines.append(f"  not mirroring deletions: {facts['mirror_hint']}")
 
     tail = []
     if plan["identical"]:

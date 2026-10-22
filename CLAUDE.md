@@ -147,8 +147,9 @@ asserted.
   - `ios_calls` — CallHistory.storedata from a Mac or a backup; stream
     `ios_call`; mirrors. `docs/calls.md`.
   - `android_sms` — SMS Backup & Restore XML; streams android_sms /
-    android_mms / android_call; mirrors only a type="full" file whose count
-    matches, with a known account. `docs/android-texts.md`.
+    android_mms / android_call; texts mirror only a type="full" file whose
+    count matches, with a known account; calls are remembered (the phone's
+    call log ages old calls out). `docs/android-texts.md`.
   - `whatsapp` — "Export chat" .txt/.zip, one chat per export; remembers.
   - `contacts` (+ `_vcard.py`, `_ios_addressbook.py`, `_abcddb.py`) — vCard,
     Mac Contacts, iPhone AddressBook as `contact_card`; handles carry the

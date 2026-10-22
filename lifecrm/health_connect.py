@@ -371,10 +371,21 @@ def _read(conn: sqlite3.Connection, cfg: Config, source_file: str,
 # ---------------------------------------------------------------- plan / apply
 
 def build_plan(conn: sqlite3.Connection, records: list[dict]) -> dict:
+    """New / updated / refreshed / conflicting records, by health.classify's
+    newer-wins rule — with one exception that rule cannot see.
+
+    A journal date is not the source's data: it is derived here, from the
+    record's own times and zone (which are compared) and from this program's
+    day rule. A record that differs from its stored row *only* in journal date
+    has not changed at the source; the rule that dates it has (sleep moved to
+    the wake day, 2026-10-22: a night ending at 04:30 used to be filed on the
+    day before). Its last-modified time cannot be newer, so newer-wins would
+    keep the old date for good and report a CONFLICT on every import. It is
+    re-dated instead — an audit-logged update, counted in `redated`."""
     existing = health.existing_by_key(conn)
     seen: set[tuple[str, str]] = set()
     new, updates, refreshed, conflicts = [], [], [], []
-    identical = dup_incoming = 0
+    identical = dup_incoming = redated = 0
     for rec in records:
         key = (rec["metric"], rec["external_id"])
         if key in seen:
@@ -386,6 +397,9 @@ def build_plan(conn: sqlite3.Connection, records: list[dict]) -> dict:
             new.append(rec)
             continue
         kind, changes = health.classify(row, rec)
+        if kind == "conflict" and set(changes) == {"journal_date"}:
+            kind = "update"
+            redated += 1
         if kind == "identical":
             identical += 1
         elif kind == "refreshed":
@@ -399,7 +413,7 @@ def build_plan(conn: sqlite3.Connection, records: list[dict]) -> dict:
                                           for f, (old, neu) in changes.items()}})
     return {"new": new, "updates": updates, "refreshed": refreshed,
             "conflicts": conflicts, "identical": identical,
-            "dup_incoming": dup_incoming}
+            "dup_incoming": dup_incoming, "redated": redated}
 
 
 def apply_plan(conn: sqlite3.Connection, plan: dict) -> dict:
@@ -426,6 +440,7 @@ def plan_summary(scan: dict, plan: dict) -> dict:
             "new": len(plan["new"]), "updated": len(plan["updates"]),
             "refreshed": len(plan["refreshed"]), "identical": plan["identical"],
             "duplicates_in_export": plan["dup_incoming"],
+            "redated": plan.get("redated", 0),
             "conflicts": plan["conflicts"], "unmapped": scan["unmapped"],
             "skipped": scan["skipped"],
             "origin_apps": origin_report(scan["records"])}
@@ -479,6 +494,10 @@ def report_lines(scan: dict, plan: dict) -> list[str]:
         tail.append(f"{plan['dup_incoming']} duplicate row(s) inside the export")
     if tail:
         lines.append("  " + ", ".join(tail))
+    if plan.get("redated"):
+        lines.append(f"  re-dated: {plan['redated']} stored record(s) whose data is "
+                     f"unchanged move to the journal day the current rule gives them "
+                     f"(sleep belongs to the morning it ended)")
     for c in plan["conflicts"]:
         lines.append(f"  CONFLICT {c['metric']} {c['external_id'][:12]}…: "
                      f"differs from stored record but is not newer — kept "

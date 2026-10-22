@@ -189,7 +189,12 @@ to, not everyone in the room. An event type not yet mapped is counted under
 - **Attachments** are described, not copied: name, type, and the path
   relative to the Messages folder. The file stays where it is — in the
   backup, or on the Mac, where `media_path` points at it; media never enters
-  the database.
+  the database. Texts imported by a build before 2026-10-22 kept the path
+  as the phone wrote it (`Library/SMS/Attachments/…`); re-importing those
+  messages reports one `CONFLICT … (value_json)` per message with an
+  attachment, kept existing: nothing is lost, those rows simply keep the old
+  form, and the newer form is never forced over them. (The owner's archive
+  held no texts then, so none of this applies to it.)
 - **Participants are handles**: phone numbers (normalized — see below), email
   addresses, and, for Business Chat and alphanumeric senders like `AMAZON`, an
   `app_account` handle so they can be linked or ignored.

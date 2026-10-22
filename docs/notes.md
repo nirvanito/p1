@@ -149,7 +149,7 @@ Deliberate choices worth knowing:
 
 | source | `external_id` |
 |---|---|
-| folder | `file:<folder name>/<path inside it>` |
+| folder | `file:<folder name>~<fingerprint>/<path inside it>` |
 | Google Keep | `keep:<json file name without .json>` |
 | Apple Notes | `apple:<ZIDENTIFIER>` (the note's own UUID) |
 
@@ -158,10 +158,27 @@ updates (its last edit is newer), and a changed note that is *not* newer — an
 old backup copied over a newer file — is a **conflict**: never applied,
 surfaced in the report.
 
-The folder's own name is part of the id, so two vaults that both hold an
-`Inbox.md` stay apart, and the same vault synced to a second machine keeps
-its ids. Point the connector at the same folder every time — the vault root,
-not a subfolder of it one day and the root the next.
+A folder has no identity of its own but where it is, so its notes' ids carry
+the folder's name and a short fingerprint of its path inside your home
+folder (`Notes~1a2b3c4d`; the full path for a folder outside home). Two
+folders that are both called `Notes` and both hold an `Inbox.md` — a OneDrive
+folder and an Obsidian vault — are two sources: neither overwrites the
+other's note, and neither one's mirror removes the other's. The same synced
+folder on a new machine, in the same place under your home (whatever the
+home is called), keeps its ids. A folder that moves — to another place under
+home, another drive, or between Windows and a Mac (`OneDrive\Notes` vs
+`Library/CloudStorage/OneDrive-Personal/Notes`) — is a new source: its notes
+import again under new ids, and the old path's copies stay until you retract
+that path's imports (`lifecrm imports list --json` shows each import's
+`account`: the folder's full path). Point the connector at the same folder every time — the
+vault root, not a subfolder of it one day and the root the next.
+
+Imported folder notes before 2026-10-22? Their ids had no fingerprint
+(`file:Notes/Inbox.md`). The next import of the same folder adds every note
+under its new id and removes the old-id rows as "no longer in the source" —
+for a vault of more than 100 notes that is refused as a mass removal: check
+the dry run (every removed note reappears as new) and re-run with
+`--allow-mass-removal`. A note a journal entry cites is hidden, not deleted.
 
 A Keep or folder note is identified by its file name, which follows its
 title. **Renaming a note reads as one note deleted and one added.** That is

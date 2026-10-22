@@ -47,10 +47,10 @@ how this reader assembles text parts. Re-importing a later backup of the same
 phone is a no-op for everything already stored. A draft, or a message still
 in the outbox or failed, is not imported: it was never delivered.
 
-Deletion semantics — the archive mirrors the phone (owner's decision, 2026-09-24)
--------------------------------------------------------------------------------
-A message or call deleted on the phone is removed by the next import, but only
-from a backup that is the phone's whole state. The app can also write archive
+Deletion semantics — texts mirror the phone (owner's decision, 2026-09-24)
+-------------------------------------------------------------------------
+A message deleted on the phone is removed by the next import, but only from a
+backup that is the phone's whole state. The app can also write archive
 ("only new since last time") backups, and those must never remove anything:
 
 - the file's root says type="full"            -> mirrors
@@ -62,14 +62,23 @@ from a backup that is the phone's whole state. The app can also write archive
 - a file whose `count` disagrees with what it holds is incomplete, and
   never mirrors.
 
-Mirroring is scoped per file — texts and calls separately — and to the
-phone's own number (the import's account), from [connectors.android_sms]
-account or, failing that, the `from` address of the phone's sent MMS. Without
-an account nothing is removed. Every id in a mirroring file counts as present,
-including the drafts and messages this reader skips, and the shared write
-layer's guards apply: a removal large enough to look like an incomplete
-backup is refused without --allow-mass-removal, a snapshot is taken first,
-and a row a confirmed entry cites is hidden rather than deleted.
+Mirroring is scoped to the texts file and to the phone's own number (the
+import's account), from [connectors.android_sms] account or, failing that,
+the `from` address of the phone's sent MMS. Without an account nothing is
+removed. Every id in a mirroring file counts as present, including the
+drafts and messages this reader skips, and the shared write layer's guards
+apply: a removal large enough to look like an incomplete backup is refused
+without --allow-mass-removal, a snapshot is taken first, and a row a
+confirmed entry cites is hidden rather than deleted.
+
+Calls are remembered, never removed. A calls file, even a full one, is not
+the phone's whole call history: Android's call log keeps only its newest
+calls (500 on stock Android; Samsung's limit is its own) and drops older ones
+by itself, a few a day. Mirroring it would remove every call the phone aged
+out — never enough at once to trip the mass-removal guard — until the archive
+held no more than the phone does, which is what archiving calls is for. A
+call deleted from the phone's Recents therefore stays archived; `imports
+retract` undoes an import.
 
 Known limitations, by design
 ----------------------------
@@ -858,12 +867,19 @@ def scan(target: Path, cfg: Config) -> base.Scan:
     mirror_streams: list[str] = []
     not_mirroring: list[str] = []
     for info in infos:
+        if info["kind"] == "calls":
+            # The call log is not the phone's whole call history: Android keeps
+            # only its newest calls (500 on stock Android) and drops older ones
+            # by itself. A full backup missing an old call says nothing about
+            # whether anyone deleted it, so mirroring would shrink the archive
+            # to whatever the phone still lists. Calls are remembered.
+            info["mirrored"] = False
+            continue
         mirrors, why = _mirroring(info, settings["mirror"], reader.read[info["kind"]])
         info["mirrored"] = mirrors
         if mirrors:
             present |= reader.present[info["kind"]]
-            mirror_streams += list(_MESSAGE_STREAMS) if info["kind"] == "texts" \
-                else ["android_call"]
+            mirror_streams += list(_MESSAGE_STREAMS)
         else:
             not_mirroring.append(why)
 
@@ -961,7 +977,9 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
                      + f", {b['read']} {what}"
                      + (f" (file says {b['count']})" if b["count"] not in (None, b["read"])
                         else "")
-                     + (" — deletions on the phone are mirrored" if b["mirrored"] else ""))
+                     + (" — deletions on the phone are mirrored" if b["mirrored"] else "")
+                     + (" — kept even once the phone's call log drops them"
+                        if kind == "calls" else ""))
     if scan["account"]:
         source = facts.get("account_source")
         lines.append(f"  account: {scan['account']}"

@@ -154,12 +154,17 @@ def test_the_android_sample_mirrors_the_google_account(tmp_path, cfg):
     assert any("room, resource" in s for s in scan["skipped"])
 
 
-def test_the_iphone_sample_mirrors_its_one_calendar(tmp_path, cfg):
-    scan = cal.scan(_sample(tmp_path, "iphone"), cfg)
+def test_the_iphone_sample_mirrors_its_one_calendar_once_its_name_is_vouched_for(tmp_path,
+                                                                                 cfg):
+    path = _sample(tmp_path, "iphone")
+    scan = cal.scan(path, cfg)
     assert scan["account"] == "calendar:Home"
+    assert "present_ids" not in scan            # a name alone could be shared
     mom = P.person("mom")
     assert any(p["value"] == mom.email for r in scan["records"]
                for p in r["participants"])       # written as urn:uuid + EMAIL
+    cfg.connectors = {"calendar": {"mirror_calendars": ["Home"]}}
+    assert "present_ids" in cal.scan(path, cfg)
 
 
 # ---------------------------------------------------------------- the pipeline
