@@ -311,7 +311,7 @@ JOURNAL: tuple[JournalDay, ...] = (
          _e(kind="event", primary="chores", secondary=["travel"],
             title="Renewed passport at the post office", time_of_day="morning",
             closes="passport_task", links=[("resolves", "passport_task")],
-            measurements=[("money", 130, "USD")])),
+            measurements=[("money", 130, "USD")], occurred="09:30")),
         ("Lunch with Priya, we talked through the board meeting dry run.",
          _e(kind="event", primary="work", secondary=["food"], title="Lunch with Priya: board dry run",
             entities=[("priya", "participant")], time_of_day="afternoon")),
