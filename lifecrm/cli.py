@@ -706,53 +706,67 @@ def ask(
 
     if not question or not question.strip():
         _fail('ask what? e.g. python -m lifecrm ask "how did I sleep last week"')
+    if days is not None and days < 1:
+        _fail(f"--days must be at least 1 (got {days})")
 
     conn = _conn(cfg, readonly=True)
     try:
         result = recall_mod.answer(
             conn, cfg, question, days=days, use_llm=not no_llm, model=model,
-            warn=lambda msg: typer.echo(msg, err=True))
+            warn=lambda msg: typer.echo(f"warning: {msg}", err=True))
     except sqlite3.Error as e:
         _fail(f"retrieval failed: {e}")
+    except (ValueError, OverflowError) as e:
+        _fail(f"could not read that question: {e}")
     finally:
         conn.close()
     bundle, answer_text = result["evidence"], result["answer"]
     source, citations = result["answer_source"], result["citations"]
     evidence_text, llm_state = result["evidence_text"], result["model"]
 
-    if not no_log:
-        wconn = _conn(cfg)
-        _commit_or_rollback(wconn, lambda: recall_domain.log_question(
-            wconn, question, answered=bundle["has_evidence"],
-            answer_summary=answer_text))
     if as_json:
         _echo_json(result)
-        return
+    else:
+        typer.echo(answer_text)
+        index = recall_mod.evidence_index(bundle)
+        used = citations["cited"]
+        if used and not show_evidence:
+            typer.echo("")
+            typer.echo("sources:")
+            for cid in used:
+                typer.echo(f"  [{cid}] {index.get(cid, '')}")
+        if show_evidence:
+            typer.echo("")
+            typer.echo(evidence_text)
+        w = bundle["window"]
+        note = "" if llm_state["available"] or no_llm else f" · {llm_state['reason']}"
+        typer.echo("")
+        typer.echo(f"window: {w['label']} ({w['start']} to {w['end']}) · "
+                   f"answer: {source}{note}")
 
-    typer.echo(answer_text)
-    if source.startswith("model:"):
-        if citations["unknown"]:
-            typer.echo(f"warning: the model cited evidence that does not exist "
-                       f"({', '.join(citations['unknown'])}) — treat those "
-                       f"claims as unsupported", err=True)
-        if citations["uncited"]:
-            typer.echo("warning: the model cited no evidence — verify it "
-                       "against --evidence", err=True)
-    index = recall_mod.evidence_index(bundle)
-    used = citations["cited"]
-    if used and not show_evidence:
-        typer.echo("")
-        typer.echo("sources:")
-        for cid in used:
-            typer.echo(f"  [{cid}] {index[cid]}")
-    if show_evidence:
-        typer.echo("")
-        typer.echo(evidence_text)
-    w = bundle["window"]
-    note = "" if llm_state["available"] or no_llm else f" · {llm_state['reason']}"
-    typer.echo("")
-    typer.echo(f"window: {w['label']} ({w['start']} to {w['end']}) · "
-               f"answer: {source}{note}")
+    # Logged after the answer is out: a database that is behind the code or
+    # locked by another program costs the log line, never the answer.
+    if not no_log:
+        try:
+            wconn = db_mod.connect(cfg.db_path)
+        except sqlite3.Error as e:
+            typer.echo(f"warning: question not logged ({e})", err=True)
+            return
+        try:
+            if db_mod.pending_migrations(wconn):
+                typer.echo("warning: question not logged — the database schema "
+                           "is behind code (run: python -m lifecrm migrate)", err=True)
+                return
+            recall_domain.log_question(
+                wconn, question,
+                answered=bundle.get("answered", bundle["has_evidence"]),
+                answer_summary=answer_text)
+            wconn.commit()
+        except (sqlite3.Error, DomainError) as e:
+            wconn.rollback()
+            typer.echo(f"warning: question not logged ({e})", err=True)
+        finally:
+            wconn.close()
 
 
 # ---------------------------------------------------------------- dashboard

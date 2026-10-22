@@ -1,24 +1,38 @@
 """Deterministic retrieval: turn a question into cited evidence.
 
 This is the answer layer's foundation, and it deliberately contains no model.
-A question is parsed into a time window and a set of metrics by plain rules,
-then answered from the database — every number, entry, and passage comes back
-with an id (M1, E2, P3) and its provenance, and `no_data` names what was
-asked for but does not exist.
+A question is parsed by plain rules — a time window, metrics, the people and
+places it names, the kind of record it asks about — then answered from the
+database. Everything comes back with a citable id and its provenance:
+
+  M#  a statistic: sensor import, journal measurements, or a transaction sum
+  E#  a journal entry the owner confirmed
+  P#  a passage of the owner's own transcribed words
+  O#  an OBSERVED record — a text, call, calendar event, AI chat turn,
+      transaction, contact card — bulk-imported and never reviewed. It is
+      evidence of what a record says, never confirmed fact.
+
+`no_data` names what was asked for but does not exist.
 
 The split matters: retrieval is deterministic, testable, and reproducible;
 a local LLM (lifecrm/llm.py) is only ever allowed to PHRASE this evidence,
-never to supply facts. The same evidence bundle serves the CLI, `--json` for
-an external tool caller, and eventually the voice loop.
+never to supply facts — and what it phrases is checked before anyone sees
+it: every id it cites must exist, and every number or date it states must
+appear in the evidence it cited. The same bundle serves the CLI, `--json` for
+an external tool caller, the web UI and the voice loop.
 
 Reads only — callers pass a read-only connection.
 """
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import sqlite3
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from .config import Config
 from .domain import days as days_mod
@@ -51,23 +65,34 @@ HEALTH_METRICS: dict[str, dict] = {
                            "label": "hydration"},
 }
 
+# twin: the sensor metric measuring the same thing. When the sensor has data,
+# the journal not also stating it is not a gap worth reporting.
 JOURNAL_METRICS: dict[str, dict] = {
     "mood":          {"agg": "avg", "unit": "/10", "label": "mood"},
     "energy":        {"agg": "avg", "unit": "/10", "label": "energy"},
-    "sleep_hours":   {"agg": "avg", "unit": "h", "label": "sleep (journal)"},
+    "sleep_hours":   {"agg": "avg", "unit": "h", "label": "sleep (journal)",
+                      "twin": "sleep_session"},
     "sleep_quality": {"agg": "avg", "unit": "/10", "label": "sleep quality"},
     "rating":        {"agg": "avg", "unit": "/10", "label": "rating"},
-    "weight":        {"agg": "avg", "unit": "kg", "label": "weight (journal)"},
-    "steps":         {"agg": "sum", "unit": "steps", "label": "steps (journal)"},
+    # On a workout entry 'weight' is the load lifted (bench, 185 lb), not
+    # the owner's body weight; averaging the two would be nonsense.
+    "weight":        {"agg": "avg", "unit": "kg", "label": "weight (journal)",
+                      "skip_categories": ("exercise",), "twin": "weight"},
+    "steps":         {"agg": "sum", "unit": "steps", "label": "steps (journal)",
+                      "twin": "steps"},
     "calories":      {"agg": "sum", "unit": "kcal", "label": "calories (journal)"},
     "water_ml":      {"agg": "sum", "unit": "ml", "label": "water"},
     "reps":          {"agg": "sum", "unit": "reps", "label": "reps"},
     "sets":          {"agg": "sum", "unit": "sets", "label": "sets"},
     "duration":      {"agg": "sum", "unit": "min", "label": "duration"},
-    "distance":      {"agg": "sum", "unit": "km", "label": "distance (journal)"},
+    "distance":      {"agg": "sum", "unit": "km", "label": "distance (journal)",
+                      "twin": "distance"},
     "servings":      {"agg": "sum", "unit": "servings", "label": "servings"},
-    "money":         {"agg": "sum", "unit": "", "label": "money"},
+    "money":         {"agg": "sum", "unit": "", "label": "money (journal)"},
 }
+
+MONEY_WORDS = ("spent", "spend", "spending", "cost", "costs", "paid", "pay",
+               "money", "bought", "buy", "purchase", "purchased", "purchases")
 
 # (question words) -> (health metrics, journal metrics). Matched on whole
 # tokens, so 'resting' never fires 'rest'.
@@ -98,9 +123,8 @@ KEYWORDS: list[tuple[tuple[str, ...], list[str], list[str]]] = [
      [], ["energy"]),
     (("water", "hydration", "hydrated", "drank", "drink"),
      ["hydration"], ["water_ml"]),
-    (("bodyfat", "bodyfat%"), ["body_fat"], []),
-    (("spent", "spend", "spending", "cost", "paid", "money", "bought"),
-     [], ["money"]),
+    (("bodyfat",), ["body_fat"], []),
+    (MONEY_WORDS, [], ["money"]),
 ]
 
 # ---------------------------------------------------------------- windows
@@ -108,11 +132,46 @@ KEYWORDS: list[tuple[tuple[str, ...], list[str], list[str]]] = [
 MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
      "august", "september", "october", "november", "december"], start=1)}
-MONTH_ABBR = {m[:3]: i for m, i in MONTHS.items()}
+MONTH_ABBR = {m[:3]: i for m, i in MONTHS.items()} | {"sept": 9}
+MONTH_NAMES = {i: m.capitalize() for m, i in MONTHS.items()}
+WEEKDAYS = {d: i for i, d in enumerate(
+    ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+     "sunday"])}
+WORD_NUMBERS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+                "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                "ten": 10, "eleven": 11, "twelve": 12}
+UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+# 'last 100000 years' is a typo, not a window — and would overflow date.
+MAX_SPAN_DAYS = 36500
 
-_ISO_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
-_ISO_MONTH = re.compile(r"\b(\d{4})-(\d{2})\b")
-_LAST_N = re.compile(r"\b(?:last|past|previous)\s+(\d+)\s+(day|week|month|year)s?\b")
+# A bare 'may' or 'march' is usually a verb, and 'jan' or 'jun' a name. These
+# count as months only beside something that makes them one: 'in may',
+# 'march 3', 'may 2025', 'may last year'.
+_AMBIGUOUS_MONTHS = frozenset({"may", "march"}) | frozenset(MONTH_ABBR)
+_TIME_LEAD = frozenset({"in", "during", "of", "since", "until", "till",
+                        "before", "after", "from", "through", "last", "this",
+                        "next", "early", "late", "mid", "by", "on"})
+
+_NUM = r"(\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+_ISO_DATE = re.compile(r"(?<![\d-])(\d{4})-(\d{2})-(\d{2})(?!\d)")
+_ISO_MONTH = re.compile(r"(?<![\d-])(\d{4})-(\d{2})(?![\d-])")
+_LAST_N = re.compile(rf"\b(?:last|past|previous)\s+{_NUM}\s+(day|week|month|year)s?\b")
+_AGO = re.compile(rf"\b{_NUM}\s+(day|week|month|year)s?\s+ago\b")
+_YEAR = re.compile(r"\b(?:in|during|of|for|since|from|year)\s+((?:19|20)\d{2})\b(?![-\d])")
+_MONTH_WORDS = sorted(set(MONTHS) | set(MONTH_ABBR), key=len, reverse=True)
+_MONTH_RE = re.compile(r"\b(" + "|".join(_MONTH_WORDS) + r")\b")
+_WEEKDAY_RE = re.compile(r"\b(?:(last|next|this|on)\s+)?(" + "|".join(WEEKDAYS)
+                         + r")s?\b")
+
+
+def ask_setting(cfg: Config, key: str, default: int) -> int:
+    """A positive whole number from [ask]; a typo there falls back to the
+    default rather than reading as a bad question."""
+    try:
+        n = int((cfg.ask or {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return n if n >= 1 else default
 
 
 def local_today(cfg: Config) -> date:
@@ -122,105 +181,369 @@ def local_today(cfg: Config) -> date:
         datetime.now(timezone.utc), cfg.timezone, cfg.day_rollover_hour))
 
 
-def _month_window(year: int, month: int) -> tuple[str, str]:
+def _month_span(year: int, month: int) -> tuple[date, date]:
     start = date(year, month, 1)
-    end = (date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1))
+    end = date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def _month_window(year: int, month: int) -> tuple[str, str]:
+    start, end = _month_span(year, month)
     return start.isoformat(), end.isoformat()
 
 
+def _number(text: str) -> int:
+    return int(text) if text.isdigit() else WORD_NUMBERS[text]
+
+
+def _period(which: str, unit: str, today: date) -> tuple[date, date, str] | None:
+    """this/last/next week|month|year. 'last week' is the 7 days before
+    today (rolling); months and years are calendar ones."""
+    which = "last" if which in ("past", "previous") else which
+    if unit == "week":
+        monday = today - timedelta(days=today.weekday())
+        if which == "this":
+            return monday, today, "this week"
+        if which == "last":
+            return today - timedelta(days=7), today - timedelta(days=1), "last week"
+        return monday + timedelta(days=7), monday + timedelta(days=13), "next week"
+    if unit == "month":
+        if which == "this":
+            return today.replace(day=1), today, "this month"
+        if which == "last":
+            prev = today.replace(day=1) - timedelta(days=1)
+            return *_month_span(prev.year, prev.month), "last month"
+        nxt = _month_span(today.year, today.month)[1] + timedelta(days=1)
+        return *_month_span(nxt.year, nxt.month), "next month"
+    if which == "this":
+        return today.replace(month=1, day=1), today, "this year"
+    year = today.year - 1 if which == "last" else today.year + 1
+    return date(year, 1, 1), date(year, 12, 31), f"{which} year"
+
+
+def _month_point(token: str, after: str, today: date,
+                 year_hint: int | None, ignored: list[str]
+                 ) -> tuple[date, date, str] | None:
+    """A month name, optionally with a day and/or a year after it."""
+    month = MONTHS.get(token) or MONTH_ABBR[token]
+    dm = re.match(r"\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?", after)
+    ym = re.match(r"\.?,?\s+(\d{4})\b", after)
+    year = (int(dm.group(2)) if dm and dm.group(2)
+            else int(ym.group(1)) if ym else year_hint)
+    if dm:
+        n = int(dm.group(1))
+        y = year or today.year
+        try:
+            d = date(y, month, n)
+            if year is None and d > today:
+                d = date(y - 1, month, n)
+        except ValueError:
+            ignored.append(f"{MONTH_NAMES[month]} {n} is not a real date")
+            return None
+        return d, d, f"{MONTH_NAMES[month]} {d.day}, {d.year}"
+    if year is None:
+        # In July, 'December' means last December — not one five months away.
+        year = today.year if month <= today.month else today.year - 1
+    start, end = _month_span(year, month)
+    return start, end, f"{MONTH_NAMES[month]} {year}"
+
+
+def _point(text: str, today: date) -> tuple[date, date, str] | None:
+    """One time expression at the very start of `text` — the X in 'since X'
+    or 'between X and Y'. Anchored, so 'from Jake in July' is not 'since
+    July'."""
+    t = re.sub(r"^(?:the\s+)", "", text.strip())
+    m = _ISO_DATE.match(t)
+    if m:
+        try:
+            d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+        return d, d, d.isoformat()
+    m = re.match(r"(today|yesterday|tomorrow)\b", t)
+    if m:
+        d = today + timedelta(days={"today": 0, "yesterday": -1,
+                                    "tomorrow": 1}[m.group(1)])
+        return d, d, m.group(1)
+    m = re.match(r"(last|this|next|past|previous)\s+(week|month|year)\b", t)
+    if m:
+        return _period(m.group(1), m.group(2), today)
+    m = _MONTH_RE.match(t)
+    if m:
+        return _month_point(m.group(1), t[m.end():], today, None, [])
+    m = re.match(r"((?:19|20)\d{2})\b(?![-\d])", t)
+    if m:
+        y = int(m.group(1))
+        return date(y, 1, 1), date(y, 12, 31), str(y)
+    return None
+
+
 def parse_window(question: str, cfg: Config, today: date | None = None,
-                 default_days: int = 30) -> dict:
+                 default_days: int = 30,
+                 names: frozenset[str] = frozenset()) -> dict:
     """Resolve the question's time expression.
 
     Rolling definitions, stated plainly because the answer always shows the
     resolved window: 'last week' is the 7 days before today, 'this week'
-    starts Monday. `explicit` is False when nothing in the question named a
-    time — callers widen text search in that case rather than silently
-    hiding older matches.
+    starts Monday, 'last year' is the previous calendar year. `explicit` is
+    False when nothing in the question named a time — callers widen text
+    search in that case rather than silently hiding older matches.
+
+    `names` are words the question uses as names (resolved entities): a
+    person called June is never read as the month. Something that looks like
+    a date but is not one ('2026-13', 'Feb 30') is ignored, never a crash,
+    and listed under `ignored` so the answer can say so.
     """
-    q = question.lower()
+    q = question.lower().replace("’", "'")
     today = today or local_today(cfg)
+    ignored: list[str] = []
 
     def win(start: date | str, end: date | str, label: str) -> dict:
-        return {"start": start if isinstance(start, str) else start.isoformat(),
-                "end": end if isinstance(end, str) else end.isoformat(),
-                "label": label, "explicit": True}
+        w = {"start": start if isinstance(start, str) else start.isoformat(),
+             "end": end if isinstance(end, str) else end.isoformat(),
+             "label": label, "explicit": True}
+        if ignored:
+            w["ignored"] = list(ignored)
+        return w
 
-    dates = _ISO_DATE.findall(q)
+    def since_before(pos: int) -> bool:
+        return bool(re.search(r"\b(?:since|after|from)\s+$", q[:pos]))
+
+    # ---- ISO dates and months, validated
+    dates: list[tuple[date, int]] = []
+    for m in _ISO_DATE.finditer(q):
+        try:
+            dates.append((date(int(m.group(1)), int(m.group(2)),
+                               int(m.group(3))), m.start()))
+        except ValueError:
+            ignored.append(f"{m.group(0)} is not a real date")
     if len(dates) >= 2:
-        lo, hi = sorted(dates[:2])
+        lo, hi = sorted(d for d, _ in dates[:2])
         return win(lo, hi, f"{lo} to {hi}")
-    if len(dates) == 1:
-        return win(dates[0], dates[0], dates[0])
-
-    m = _ISO_MONTH.search(q)
-    if m:
-        start, end = _month_window(int(m.group(1)), int(m.group(2)))
+    if dates:
+        d, pos = dates[0]
+        if since_before(pos):
+            return win(d, max(d, today), f"since {d}")
+        return win(d, d, d.isoformat())
+    for m in _ISO_MONTH.finditer(q):
+        try:
+            start, end = _month_span(int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            ignored.append(f"{m.group(0)} is not a real month")
+            continue
+        if since_before(m.start()):
+            return win(start, max(start, today), f"since {m.group(0)}")
         return win(start, end, m.group(0))
 
-    if re.search(r"\b(today)\b", q):
+    # ---- ranges in words: between X and Y, since X
+    m = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+)$", q)
+    if m:
+        a, b = _point(m.group(1), today), _point(m.group(2), today)
+        if a and b:
+            return win(min(a[0], b[0]), max(a[1], b[1]), f"{a[2]} to {b[2]}")
+    for m in re.finditer(r"\b(?:since|after|from)\s+(.+)$", q):
+        p = _point(m.group(1), today)
+        if p:
+            return win(p[0], max(p[0], today), f"since {p[2]}")
+
+    # ---- days
+    if re.search(r"\b(?:today|tonight|this (?:morning|afternoon|evening))\b", q):
         return win(today, today, "today")
-    if re.search(r"\b(yesterday)\b", q):
+    if re.search(r"\byesterday\b", q):
         y = today - timedelta(days=1)
         return win(y, y, "yesterday")
+    if re.search(r"\btomorrow\b", q):
+        t = today + timedelta(days=1)
+        return win(t, t, "tomorrow")
     if re.search(r"\blast night\b", q):
         # Sleep is filed under the day you woke up, so last night == today.
         return win(today, today, "last night")
 
+    # ---- N units ago / last N units
+    m = _AGO.search(q)
+    if m:
+        n, unit = _number(m.group(1)), m.group(2)
+        label = f"{n} {unit}{'s' if n != 1 else ''} ago"
+        if n >= 1 and n * UNIT_DAYS[unit] <= MAX_SPAN_DAYS:
+            if unit == "day":
+                d = today - timedelta(days=n)
+                return win(d, d, label)
+            if unit == "week":
+                d = today - timedelta(days=7 * n)
+                monday = d - timedelta(days=d.weekday())
+                return win(monday, monday + timedelta(days=6), label)
+            if unit == "month":
+                y, mo = divmod(today.year * 12 + today.month - 1 - n, 12)
+                return win(*_month_span(y, mo + 1), label)
+            # 'four years ago' is fuzzy: the year centred on that date.
+            try:
+                d = today.replace(year=today.year - n)
+            except ValueError:                  # Feb 29
+                d = today.replace(year=today.year - n, day=28)
+            return win(d - timedelta(days=182), d + timedelta(days=182),
+                       f"around {label}")
+        ignored.append(f"'{m.group(0)}' is not a usable span")
     m = _LAST_N.search(q)
     if m:
-        n, unit = int(m.group(1)), m.group(2)
-        span = {"day": 1, "week": 7, "month": 30, "year": 365}[unit] * n
-        return win(today - timedelta(days=span - 1), today,
-                   f"last {n} {unit}{'s' if n != 1 else ''}")
+        n, unit = _number(m.group(1)), m.group(2)
+        if n < 1:
+            ignored.append(f"'{m.group(0)}' is an empty span")
+        else:
+            span = n * UNIT_DAYS[unit]
+            label = f"last {n} {unit}{'s' if n != 1 else ''}"
+            if span > MAX_SPAN_DAYS:
+                ignored.append(f"'{m.group(0)}' capped at {MAX_SPAN_DAYS} days")
+                span = MAX_SPAN_DAYS
+            return win(today - timedelta(days=span - 1), today, label)
 
-    if re.search(r"\bthis week\b", q):
-        return win(today - timedelta(days=today.weekday()), today, "this week")
-    if re.search(r"\b(last|past) week\b", q):
-        return win(today - timedelta(days=7), today - timedelta(days=1),
-                   "last week")
-    if re.search(r"\bthis month\b", q):
-        return win(today.replace(day=1), today, "this month")
-    if re.search(r"\b(last|past) month\b", q):
-        first = today.replace(day=1)
-        prev = first - timedelta(days=1)
-        start, end = _month_window(prev.year, prev.month)
-        return win(start, end, "last month")
-    if re.search(r"\bthis year\b", q):
-        return win(today.replace(month=1, day=1), today, "this year")
+    # ---- weekends and weeks
+    monday = today - timedelta(days=today.weekday())
+    if re.search(r"\blast weekend\b", q):
+        return win(monday - timedelta(days=2), monday - timedelta(days=1),
+                   "last weekend")
+    if re.search(r"\bthis weekend\b", q):
+        return win(monday + timedelta(days=5), monday + timedelta(days=6),
+                   "this weekend")
+    if re.search(r"\bnext weekend\b", q):
+        return win(monday + timedelta(days=12), monday + timedelta(days=13),
+                   "next weekend")
+    m = re.search(r"\b(this|last|past|previous|next) week\b", q)
+    if m:
+        return win(*_period(m.group(1), "week", today))
 
-    for token in re.findall(r"[a-z]+", q):
-        month = MONTHS.get(token) or MONTH_ABBR.get(token)
-        if not month:
+    # ---- month names (before 'last year', so 'July last year' is July)
+    year_hint = (today.year - 1 if re.search(r"\b(?:last|previous) year\b", q)
+                 else today.year if re.search(r"\bthis year\b", q) else None)
+    for m in _MONTH_RE.finditer(q):
+        token = m.group(1)
+        if token in names:
             continue
-        ymatch = re.search(rf"{token}\s+(\d{{4}})", q)
-        year = int(ymatch.group(1)) if ymatch else (
-            today.year if month <= today.month else today.year - 1)
-        start, end = _month_window(year, month)
-        return win(start, end, f"{token.capitalize()} {year}")
+        after = q[m.end():]
+        if token in _AMBIGUOUS_MONTHS:
+            before = q[:m.start()].split()
+            lead = before[-1] if before else ""
+            if not (lead in _TIME_LEAD
+                    or re.match(r"\.?,?\s+\d{1,4}\b", after)
+                    or re.match(r"\s+(?:last|this|next) year\b", after)):
+                continue
+        p = _month_point(token, after, today, year_hint, ignored)
+        if p:
+            return win(*p)
+
+    m = re.search(r"\b(this|last|past|previous|next) month\b", q)
+    if m:
+        return win(*_period(m.group(1), "month", today))
+    m = re.search(r"\b(this|last|past|previous|next) year\b", q)
+    if m:
+        return win(*_period(m.group(1), "year", today))
+    m = _YEAR.search(q)
+    if m:
+        y = int(m.group(1))
+        return win(date(y, 1, 1), min(date(y, 12, 31), max(today, date(y, 1, 1))),
+                   str(y))
+
+    m = _WEEKDAY_RE.search(q)
+    if m:
+        which, wd = m.group(1), WEEKDAYS[m.group(2)]
+        if which == "next":
+            d = today + timedelta(days=(wd - today.weekday()) % 7 or 7)
+        else:
+            delta = (today.weekday() - wd) % 7
+            d = today - timedelta(days=delta or (7 if which == "last" else 0))
+        label = f"{which + ' ' if which in ('last', 'next') else ''}{m.group(2).capitalize()}"
+        return win(d, d, f"{label} ({d})")
 
     start = today - timedelta(days=default_days - 1)
-    return {"start": start.isoformat(), "end": today.isoformat(),
-            "label": f"last {default_days} days", "explicit": False}
+    w = {"start": start.isoformat(), "end": today.isoformat(),
+         "label": f"last {default_days} days", "explicit": False}
+    if ignored:
+        w["ignored"] = ignored
+    return w
 
 
-# ---------------------------------------------------------------- text search
+# ---------------------------------------------------------------- words
 
 STOPWORDS = {
-    "a", "about", "all", "am", "an", "and", "any", "are", "as", "at", "average",
-    "back", "be", "been", "being", "between", "but", "by", "can", "day", "days",
-    "did", "do", "does", "doing", "done", "each", "for", "from", "get", "go",
-    "had", "has", "have", "how", "i", "if", "in", "is", "it", "its", "just",
-    "last", "like", "long", "many", "me", "month", "months", "more", "most",
-    "much", "my", "night", "of", "often", "on", "or", "over", "past", "recent",
-    "recently", "show", "so", "some", "that", "the", "their", "them", "then",
-    "there", "these", "this", "those", "time", "times", "to", "today", "up",
-    "was", "we", "week", "weeks", "were", "what", "when", "where", "which",
-    "who", "why", "will", "with", "year", "years", "yesterday", "you", "your",
+    "a", "about", "all", "also", "am", "an", "and", "any", "anything", "are",
+    "as", "at", "average", "back", "be", "been", "being", "between", "but",
+    "by", "can", "could", "day", "days", "did", "do", "does", "doing", "done",
+    "each", "ever", "for", "from", "get", "go", "had", "has", "have", "he",
+    "her", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its",
+    "just", "last", "like", "long", "many", "me", "month", "months", "more",
+    "most", "much", "my", "night", "of", "often", "on", "or", "our", "over",
+    "past", "really", "recent", "recently", "she", "should", "show", "so",
+    "some", "something", "still", "than", "that", "the", "their", "them",
+    "then", "there", "these", "they", "this", "those", "time", "times", "to",
+    "today", "up", "very", "was", "we", "week", "weeks", "were", "what",
+    "when", "where", "which", "who", "why", "will", "with", "would", "year",
+    "years", "yesterday", "you", "your",
 }
 
+# Verbs that say HOW something was communicated, not WHAT about. "what did I
+# text Jake about the lake" is about the lake; ranking on "text" would favour
+# every message that happens to contain the word.
+INTENT_WORDS = frozenset({
+    "ask", "asked", "asking", "say", "said", "says", "tell", "told", "tells",
+    "talk", "talked", "talking", "speak", "spoke", "spoken", "send", "sent",
+    "hear", "heard", "message", "messaged", "messages", "text", "texted",
+    "texts", "texting", "chat", "chatted", "chats", "call", "called", "calls",
+    "calling", "write", "wrote", "written", "reply", "replied", "mention",
+    "mentioned", "mentions", "see", "saw", "seen", "meet", "met", "went",
+    "goes", "going", "gone", "give", "gave", "given", "got", "know", "knew",
+    "remember", "discuss", "discussed", "email", "emailed",
+})
 
-def fts_query(question: str) -> str | None:
+_WORD_RE = re.compile(r"\w+(?:['’]\w+)*")
+_HONORIFICS = frozenset({"dr", "mr", "mrs", "ms", "mx", "prof", "sir"})
+
+
+def _fold(text: str) -> str:
+    """Case- and accent-insensitive, the same rule entities.match uses."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def _key(text: str) -> str:
+    """A name as comparable words: 'Dr. Ellis' -> 'dr ellis', "O'Brien" ->
+    'obrien'."""
+    return " ".join(re.findall(r"\w+", _fold(text).replace("'", "")
+                               .replace("’", "")))
+
+
+def _words(question: str) -> list[dict]:
+    """The question's words: as typed, as a comparable key, as an FTS term.
+    A possessive is not part of the name — "Jake's" is Jake."""
+    out = []
+    for m in _WORD_RE.finditer(question):
+        raw = m.group(0).replace("’", "'")
+        base = re.sub(r"'s$", "", raw, flags=re.IGNORECASE)
+        out.append({"raw": raw, "key": _key(base), "term": base.lower()})
+    return out
+
+
+def _terms(words: list[dict], drop: frozenset[str] = frozenset()) -> list[str]:
+    seen, keep = set(), []
+    for w in words:
+        t = w["term"].strip("'")
+        if (len(t) <= 2 or t in STOPWORDS or t.isdigit() or t in drop
+                or w["key"] in drop):
+            continue
+        if t not in seen:
+            seen.add(t)
+            keep.append(t)
+    return keep[:12]
+
+
+def _fts_expr(terms: list[str], op: str = " OR ", prefix: bool = False) -> str | None:
+    """Every term re-quoted as a phrase: FTS5 operators, quotes and
+    punctuation in a question can never reach the parser as syntax."""
+    if not terms:
+        return None
+    return op.join(f'"{t}"' + ("*" if prefix and len(t) >= 4 else "")
+                   for t in terms)
+
+
+def fts_query(question: str, drop: set[str] | frozenset[str] | None = None) -> str | None:
     """Build a safe FTS5 MATCH expression from free text.
 
     Every token is extracted as word characters only and re-quoted, so FTS5
@@ -228,20 +551,25 @@ def fts_query(question: str) -> str | None:
     parser as syntax (a raw question like `what's up? OR "` is a MATCH error,
     not a search). Tokens are OR-ed and results ranked by bm25.
     """
-    tokens = [t for t in re.findall(r"[\w']+", question.lower())
-              if len(t) > 2 and t not in STOPWORDS and not t.isdigit()]
-    seen, keep = set(), []
-    for t in tokens:
-        t = t.strip("'")
-        if t and t not in seen:
-            seen.add(t)
-            keep.append(t)
-    if not keep:
-        return None
-    return " OR ".join(f'"{t}"' for t in keep[:12])
+    return _fts_expr(_terms(_words(question), frozenset(drop or ())))
 
 
-# ---------------------------------------------------------------- evidence
+def _clean(text, cap: int = 280) -> str:
+    """Evidence text as it may be shown to a model: one line, capped, and
+    with no square brackets — a quoted message containing '[M1]' must never
+    look like a citation."""
+    t = " ".join(str(text or "").split()).replace("[", "(").replace("]", ")")
+    if len(t) > cap:
+        t = t[:cap - 1].rstrip() + "…"
+    return t
+
+
+def _plain(text, cap: int = 160) -> str:
+    """An excerpt for prose: highlight markers removed."""
+    return _clean((text or "").replace("«", "").replace("»", ""), cap)
+
+
+# ---------------------------------------------------------------- evidence: metrics
 
 def _round(value: float | None, unit: str) -> float | None:
     if value is None:
@@ -251,40 +579,129 @@ def _round(value: float | None, unit: str) -> float | None:
     return round(value, 2)
 
 
+def _trend(series: list[dict]) -> int | None:
+    """Percent change, second half of the window against the first; None
+    when it is too short to say or the change is under 5%."""
+    if len(series) < 4:
+        return None
+    half = len(series) // 2
+    first = sum(s["value"] for s in series[:half]) / half
+    second = sum(s["value"] for s in series[half:]) / (len(series) - half)
+    if not first:
+        return None
+    change = (second - first) / abs(first) * 100
+    return round(change) if abs(change) >= 5 else None
+
+
+def _health_days(conn: sqlite3.Connection, metric: str, spec: dict,
+                 window: dict) -> tuple[list[tuple], list[str], int, list[str]]:
+    """(day, value, records, origin-or-None) per day, the origins seen, how
+    many days had more than one, and the export files behind them.
+
+    Samsung Health and Google Fit can both write the same walk; summing every
+    record would count it twice. For a summed metric each day therefore takes
+    the single app with the larger total, never both. Averages are safe to
+    pool across apps."""
+    rows = conn.execute(
+        "SELECT journal_date AS day, COALESCE(origin_app, '') AS origin, "
+        "SUM(value) AS total, COUNT(*) AS n, "
+        "GROUP_CONCAT(DISTINCT source_file) AS sources "
+        "FROM health_records WHERE metric=? AND status='active' "
+        "AND value IS NOT NULL AND journal_date BETWEEN ? AND ? "
+        "GROUP BY day, origin ORDER BY day, origin",
+        (metric, window["start"], window["end"])).fetchall()
+    per_day: dict[str, list] = {}
+    sources: set[str] = set()
+    for r in rows:
+        per_day.setdefault(r["day"], []).append(r)
+        if r["sources"]:
+            sources.update(r["sources"].split(","))
+    out, multi = [], 0
+    for day, group in per_day.items():
+        if len(group) > 1:
+            multi += 1
+        if spec["agg"] == "sum":
+            best = max(group, key=lambda r: (r["total"], r["origin"]))
+            out.append((day, best["total"], best["n"],
+                        best["origin"] if len(group) > 1 else None))
+        else:
+            n = sum(r["n"] for r in group)
+            out.append((day, sum(r["total"] for r in group) / n, n, None))
+    origins = sorted({r["origin"] for r in rows if r["origin"]})
+    return out, origins, multi, sorted(sources)
+
+
 def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
-                   spec: dict, window: dict) -> dict | None:
+                   spec: dict, window: dict, entry_match: str | None = None,
+                   span: dict | None = None) -> dict | None:
+    """A metric over the window, with its per-day series and provenance.
+
+    Journal measurements belong either to a day or to an entry (workout
+    distance, money spent on a dinner); both count, the entry's journal date
+    standing in for the measurement's own. `entry_match` (an FTS expression)
+    keeps only measurements of entries that match it — 'how much did I spend
+    on groceries' sums the grocery entries, not the whole month.
+    """
     factor = spec.get("factor", 1)
-    agg = "SUM" if spec["agg"] == "sum" else "AVG"
+    window = span or window
+    origins: list[str] = []
+    multi = 0
+    entry_uuids: list[str] = []
+    units: list[str] = []
     if table == "health_records":
-        sql = (f"SELECT journal_date AS day, {agg}(value) AS value, "
-               f"COUNT(*) AS n, GROUP_CONCAT(DISTINCT source_file) AS sources "
-               f"FROM health_records WHERE metric=? AND status='active' "
-               f"AND value IS NOT NULL AND journal_date BETWEEN ? AND ? "
-               f"GROUP BY day ORDER BY day")
+        days_out, origins, multi, sources = _health_days(conn, metric, spec, window)
     else:
-        sql = (f"SELECT journal_date AS day, "
-               f"{agg}(COALESCE(normalized_value, numeric_value)) AS value, "
-               f"COUNT(*) AS n, NULL AS sources "
-               f"FROM measurements WHERE metric=? AND status='active' "
-               f"AND journal_date IS NOT NULL "
-               f"AND COALESCE(normalized_value, numeric_value) IS NOT NULL "
-               f"AND journal_date BETWEEN ? AND ? GROUP BY day ORDER BY day")
-    rows = conn.execute(sql, (metric, window["start"], window["end"])).fetchall()
-    if not rows:
+        agg = "SUM" if spec["agg"] == "sum" else "AVG"
+        where = ["m.metric=?", "m.status='active'",
+                 "(m.entry_id IS NULL OR e.status='active')",
+                 "COALESCE(m.normalized_value, m.numeric_value) IS NOT NULL",
+                 "COALESCE(m.journal_date, e.journal_date) BETWEEN ? AND ?"]
+        args: list = [metric, window["start"], window["end"]]
+        skip = spec.get("skip_categories")
+        if skip:
+            marks = ",".join("?" for _ in skip)
+            where.append(
+                "(m.entry_id IS NULL OR NOT EXISTS (SELECT 1 FROM entry_categories ec "
+                "JOIN categories c ON c.id = ec.category_id "
+                f"WHERE ec.entry_id = m.entry_id AND ec.is_primary = 1 AND c.name IN ({marks})))")
+            args += list(skip)
+        if entry_match:
+            where.append("m.entry_id IN (SELECT rowid FROM entries_fts "
+                         "WHERE entries_fts MATCH ?)")
+            args.append(entry_match)
+        rows = conn.execute(
+            f"SELECT COALESCE(m.journal_date, e.journal_date) AS day, "
+            f"{agg}(COALESCE(m.normalized_value, m.numeric_value)) AS value, "
+            f"COUNT(*) AS n, GROUP_CONCAT(DISTINCT e.uuid) AS entries, "
+            f"GROUP_CONCAT(DISTINCT m.unit) AS units "
+            f"FROM measurements m LEFT JOIN entries e ON e.id = m.entry_id "
+            f"WHERE {' AND '.join(where)} GROUP BY day ORDER BY day",
+            args).fetchall()
+        days_out = [(r["day"], r["value"], r["n"], None) for r in rows]
+        sources = []
+        entry_uuids = sorted({u for r in rows if r["entries"]
+                              for u in r["entries"].split(",")})
+        units = sorted({u for r in rows if r["units"] for u in r["units"].split(",")})
+    if not days_out:
         return None
     unit = spec["unit"]
-    series = [{"date": r["day"], "value": _round(r["value"] * factor, unit),
-               "records": r["n"]} for r in rows]
+    if metric == "money" and len(units) == 1:
+        unit = units[0].upper()
+    series = []
+    for day, value, n, origin in days_out:
+        point = {"date": day, "value": _round(value * factor, unit), "records": n}
+        if origin is not None:
+            point["origin"] = origin
+        series.append(point)
     values = [s["value"] for s in series]
-    sources = sorted({s for r in rows if r["sources"]
-                      for s in r["sources"].split(",")})
     lo = min(series, key=lambda s: s["value"])
     hi = max(series, key=lambda s: s["value"])
-    return {
+    out = {
         "metric": metric,
         "label": spec["label"],
         "unit": unit,
         "origin": "sensor import" if table == "health_records" else "journal",
+        "tier": "observed" if table == "health_records" else "confirmed",
         "table": table,
         "days": len(series),
         "total": _round(sum(values), unit),
@@ -295,11 +712,23 @@ def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
         "per_day_agg": spec["agg"],
         "series": series,
         "source_files": sources,
+        "trend_pct": _trend(series),
     }
+    if origins:
+        out["origins"] = origins
+        out["multi_origin_days"] = multi
+    if entry_uuids:
+        out["entry_uuids"] = entry_uuids
+    if span is not None:
+        out["span"] = span
+    return out
 
 
 def detect_metrics(question: str) -> tuple[list[str], list[str]]:
-    tokens = set(re.findall(r"[\w]+", question.lower()))
+    q = question.lower()
+    tokens = set(re.findall(r"[\w]+", q))
+    if re.search(r"\bbody\s*fat\b", q):
+        tokens.add("bodyfat")
     health: list[str] = []
     journal: list[str] = []
     for words, h, j in KEYWORDS:
@@ -309,29 +738,55 @@ def detect_metrics(question: str) -> tuple[list[str], list[str]]:
     return health, journal
 
 
+# ---------------------------------------------------------------- evidence: confirmed tier
+
+def _entry_items(conn: sqlite3.Connection, rows: list, via: str) -> list[dict]:
+    """Entry rows as evidence items, with categories in one query."""
+    if not rows:
+        return []
+    marks = ",".join("?" for _ in rows)
+    cats: dict[str, list[str]] = {}
+    for c in conn.execute(
+            "SELECT e.uuid, c.name FROM entry_categories ec "
+            "JOIN categories c ON c.id = ec.category_id "
+            "JOIN entries e ON e.id = ec.entry_id "
+            f"WHERE e.uuid IN ({marks}) ORDER BY e.uuid, ec.is_primary DESC, c.name",
+            [r["uuid"] for r in rows]):
+        cats.setdefault(c["uuid"], []).append(c["name"])
+    out = []
+    for r in rows:
+        keys = r.keys()
+        snippet = r["snippet"] if "snippet" in keys else None
+        if not snippet and "body" in keys and r["body"]:
+            snippet = _clean(r["body"], 140)
+        out.append({"uuid": r["uuid"], "date": r["journal_date"], "kind": r["kind"],
+                    "title": r["title"], "snippet": snippet,
+                    "categories": cats.get(r["uuid"], []), "tier": "confirmed",
+                    "via": via,
+                    "occurred_at": r["occurred_at"] if "occurred_at" in keys else None,
+                    "due_at": r["due_at"] if "due_at" in keys else None,
+                    "closed_at": r["closed_at"] if "closed_at" in keys else None,
+                    "closure": r["closure"] if "closure" in keys else None})
+    return out
+
+
+_ENTRY_COLS = ("e.uuid, e.journal_date, e.title, e.body, e.occurred_at, e.due_at, "
+               "e.closed_at, e.closure, k.name AS kind")
+
+
 def search_entries(conn: sqlite3.Connection, match: str, window: dict,
                    limit: int) -> list[dict]:
     clause = ("AND e.journal_date BETWEEN ? AND ? " if window["explicit"] else "")
     args: tuple = ((match, window["start"], window["end"], limit)
                    if window["explicit"] else (match, limit))
     rows = conn.execute(
-        "SELECT e.uuid, e.journal_date, e.title, e.body, k.name AS kind, "
+        f"SELECT {_ENTRY_COLS}, "
         "snippet(entries_fts, -1, '«', '»', '…', 14) AS snippet "
         "FROM entries_fts JOIN entries e ON e.id = entries_fts.rowid "
         "JOIN entry_kinds k ON k.id = e.kind_id "
         f"WHERE entries_fts MATCH ? AND e.status='active' {clause}"
-        "ORDER BY rank LIMIT ?", args).fetchall()
-    out = []
-    for r in rows:
-        cats = [c["name"] for c in conn.execute(
-            "SELECT c.name FROM entry_categories ec "
-            "JOIN categories c ON c.id=ec.category_id "
-            "WHERE ec.entry_id=(SELECT id FROM entries WHERE uuid=?) "
-            "ORDER BY ec.is_primary DESC", (r["uuid"],))]
-        out.append({"uuid": r["uuid"], "date": r["journal_date"],
-                    "kind": r["kind"], "title": r["title"],
-                    "snippet": r["snippet"], "categories": cats})
-    return out
+        "ORDER BY rank, e.id LIMIT ?", args).fetchall()
+    return _entry_items(conn, rows, "search")
 
 
 def search_passages(conn: sqlite3.Connection, match: str, window: dict,
@@ -340,85 +795,930 @@ def search_passages(conn: sqlite3.Connection, match: str, window: dict,
     args: tuple = ((match, window["start"], window["end"], limit)
                    if window["explicit"] else (match, limit))
     rows = conn.execute(
-        "SELECT t.source_id, s.journal_date, s.type, "
+        "SELECT t.source_id, s.uuid AS source_uuid, s.journal_date, s.type, "
         "snippet(transcripts_fts, -1, '«', '»', '…', 24) AS snippet "
         "FROM transcripts_fts JOIN transcripts t ON t.id = transcripts_fts.rowid "
         "JOIN sources s ON s.id = t.source_id "
         f"WHERE transcripts_fts MATCH ? {clause}"
-        "ORDER BY rank LIMIT ?", args).fetchall()
-    return [{"source_id": r["source_id"], "date": r["journal_date"],
-             "source_type": r["type"], "snippet": r["snippet"]} for r in rows]
+        "ORDER BY rank, t.id LIMIT ?", args).fetchall()
+    return [{"source_id": r["source_id"], "source_uuid": r["source_uuid"],
+             "date": r["journal_date"], "source_type": r["type"],
+             "snippet": r["snippet"], "tier": "confirmed"} for r in rows]
+
+
+def open_loops(conn: sqlite3.Connection, window: dict, *,
+               entity_ids: list[int] | None = None, limit: int = 10
+               ) -> tuple[list[dict], int]:
+    """Open tasks and plans — closed_at NULL — soonest due first, then the
+    most recently recorded. Returns (items, how many are open in total)."""
+    where = ["e.status='active'", "e.closed_at IS NULL",
+             "k.name IN ('task', 'plan')"]
+    args: list = []
+    if window["explicit"]:
+        where.append("e.journal_date BETWEEN ? AND ?")
+        args += [window["start"], window["end"]]
+    if entity_ids:
+        marks = ",".join("?" for _ in entity_ids)
+        where.append(f"e.id IN (SELECT entry_id FROM mentions WHERE entity_id IN ({marks}))")
+        args += entity_ids
+    w = " AND ".join(where)
+    total = conn.execute(
+        f"SELECT COUNT(*) AS c FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+        f"WHERE {w}", args).fetchone()["c"]
+    rows = conn.execute(
+        f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+        f"WHERE {w} ORDER BY e.due_at IS NULL, e.due_at, e.journal_date DESC, e.id DESC "
+        f"LIMIT ?", [*args, limit]).fetchall()
+    return _entry_items(conn, rows, "loop"), total
+
+
+# ---------------------------------------------------------------- entities
+
+def _resolve_entities(conn: sqlite3.Connection, question: str,
+                      words: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Names in the question that are known entities: (resolved, ambiguous).
+
+    Exact names and aliases only, never fuzzy — case- and accent-insensitive,
+    over every run of up to four words, so voice input ('jake'), accents
+    ('José') and multi-word names ('Maya Chen', 'Dr. Ellis') all resolve.
+    One more rule, because people are named by first name: a word that is
+    the first name of exactly ONE known person resolves to them. A name that
+    fits several entities is ambiguous: listed, never used as a filter —
+    retrieval does not guess.
+    """
+    ents = {r["id"]: dict(r) for r in conn.execute(
+        "SELECT id, name, type FROM entities WHERE status='active'")}
+    labels: dict[str, dict[int, str]] = {}
+    for e in ents.values():
+        labels.setdefault(_key(e["name"]), {})[e["id"]] = "name"
+    for r in conn.execute(
+            "SELECT a.alias, a.entity_id FROM entity_aliases a "
+            "JOIN entities e ON e.id = a.entity_id WHERE e.status='active'"):
+        labels.setdefault(_key(r["alias"]), {}).setdefault(r["entity_id"], "alias")
+    first_names: dict[str, set[int]] = {}
+    for label, hits in labels.items():
+        parts = [p for p in label.split() if p not in _HONORIFICS]
+        for eid in hits:
+            if parts and ents[eid]["type"] == "person":
+                first_names.setdefault(parts[0], set()).add(eid)
+
+    keys = [w["key"] for w in words]
+    consumed = [False] * len(words)
+    has_upper = any(c.isupper() for c in question)
+    found: dict[int, dict] = {}
+    ambiguous: list[dict] = []
+
+    def month_word(i: int) -> bool:
+        # 'in June' is the month even when someone is called June.
+        return (keys[i] in MONTHS or keys[i] in MONTH_ABBR) and i > 0 \
+            and keys[i - 1] in _TIME_LEAD
+
+    def add(ids, span: list[int], via: str) -> None:
+        for j in span:
+            consumed[j] = True
+        matched = " ".join(words[j]["raw"] for j in span)
+        if len(ids) > 1:
+            ambiguous.append({"matched": matched, "candidates": sorted(
+                ({"entity_id": i, "name": ents[i]["name"], "type": ents[i]["type"]}
+                 for i in ids), key=lambda c: (c["name"], c["entity_id"]))})
+            return
+        eid = next(iter(ids))
+        ent = found.setdefault(eid, {
+            "name": ents[eid]["name"], "type": ents[eid]["type"],
+            "matched": matched, "via": via, "id": eid, "entity_id": eid,
+            "tokens": [], "positions": []})
+        ent["tokens"] += [keys[j] for j in span]
+        ent["positions"] += span
+
+    for n in (4, 3, 2, 1):
+        for i in range(len(words) - n + 1):
+            if any(consumed[i:i + n]):
+                continue
+            key = " ".join(keys[i:i + n])
+            if n == 1 and (key in STOPWORDS or len(key) < 2 or month_word(i)):
+                continue
+            hits = labels.get(key)
+            if hits:
+                add(hits, list(range(i, i + n)),
+                    "name" if "name" in hits.values() else "alias")
+    for i, w in enumerate(words):
+        key = w["key"]
+        if (consumed[i] or key in STOPWORDS or len(key) < 3
+                or key in _HONORIFICS or month_word(i)):
+            continue
+        # In a typed, capitalised question a lowercase 'park' is a word, not
+        # Grace Park; voice input is all lowercase and gets the benefit.
+        if has_upper and not w["raw"][:1].isupper():
+            continue
+        if key in first_names:
+            add(first_names[key], [i], "first name")
+    return list(found.values()), ambiguous
+
+
+def _entity_entries(conn: sqlite3.Connection, entity_id: int, window: dict,
+                    limit: int = 5) -> list[dict]:
+    """Entries that mention the entity — stated facts first, then newest."""
+    clause = "AND e.journal_date BETWEEN ? AND ? " if window["explicit"] else ""
+    args = [entity_id, *([window["start"], window["end"]] if window["explicit"] else []),
+            limit]
+    rows = conn.execute(
+        f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+        f"WHERE e.status='active' AND e.id IN "
+        f"(SELECT entry_id FROM mentions WHERE entity_id = ?) {clause}"
+        f"ORDER BY (k.name = 'fact') DESC, e.journal_date DESC, e.id DESC LIMIT ?",
+        args).fetchall()
+    return _entry_items(conn, rows, "entity")
+
+
+def _last_mention(conn: sqlite3.Connection, entity_id: int, window: dict,
+                  today: date, participant_only: bool) -> list[dict]:
+    """The newest entry naming the entity — for a person, only one they took
+    part in (a fact about them is not contact): the confirmed side of 'when
+    did I last talk to X'."""
+    clause = "AND e.journal_date BETWEEN ? AND ? " if window["explicit"] else ""
+    role = " AND role = 'participant'" if participant_only else ""
+    rows = conn.execute(
+        f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+        f"WHERE e.status='active' AND e.journal_date <= ? AND e.id IN "
+        f"(SELECT entry_id FROM mentions WHERE entity_id = ?{role}) "
+        f"{clause}ORDER BY e.journal_date DESC, COALESCE(e.occurred_at, '') DESC, "
+        f"e.id DESC LIMIT 1",
+        [today.isoformat(), entity_id,
+         *([window["start"], window["end"]] if window["explicit"] else [])]).fetchall()
+    return _entry_items(conn, rows, "contact")
 
 
 def find_entities(conn: sqlite3.Connection, question: str) -> list[dict]:
-    """Capitalized words in the question that resolve to known entities."""
-    from .domain import entities as entities_mod
-    names = re.findall(r"\b[A-Z][a-z]{2,}\b", question)
-    found: dict[int, dict] = {}
-    for name in names[:6]:
-        result = entities_mod.match(conn, name)
-        if result["status"] in ("exact", "alias"):
-            for m in result["matches"]:
-                found[m["id"]] = {"name": m["name"], "type": m["type"],
-                                  "matched": name, "id": m["id"]}
-    for ent in found.values():
-        ent["entries"] = [dict(r) for r in conn.execute(
-            "SELECT e.uuid, e.journal_date AS date, e.title FROM mentions m "
-            "JOIN entries e ON e.id=m.entry_id WHERE m.entity_id=? "
-            "AND e.status='active' ORDER BY e.journal_date DESC LIMIT 5",
-            (ent["id"],))]
-    return list(found.values())
+    """Known entities the question names, each with its recent entries."""
+    resolved, _ = _resolve_entities(conn, question, _words(question))
+    everything = {"explicit": False}
+    for ent in resolved:
+        ent["entries"] = [{"uuid": e["uuid"], "date": e["date"], "title": e["title"],
+                           "kind": e["kind"]}
+                          for e in _entity_entries(conn, ent["id"], everything)]
+    return resolved
+
+
+# ---------------------------------------------------------------- observed tier
+
+TEXT_STREAMS = ("imessage", "sms", "rcs", "android_sms", "android_mms", "whatsapp")
+CALL_STREAMS = ("ios_call", "android_call")
+AI_STREAMS = ("claude_chat", "chatgpt_chat")
+# Reactions and thread events carry no prose of their own: searching them
+# only ever matches the group name they inherit.
+QUIET_STREAMS = ("text_reaction", "text_event")
+
+STREAM_GROUPS: dict[str, tuple[str, ...]] = {
+    "text": TEXT_STREAMS,
+    "call": CALL_STREAMS,
+    "calendar": ("calendar_event",),
+    "contact card": ("contact_card",),
+    "note": ("note",),
+    "transaction": ("txn",),
+    "photo": ("photo",),
+    "place visit": ("place_visit",),
+    "web visit": ("browser_visit",),
+    "AI chat": AI_STREAMS,
+}
+STREAM_LABELS = {s: label for label, streams in STREAM_GROUPS.items()
+                 for s in streams}
+AI_NAMES = {"claude_chat": "Claude", "chatgpt_chat": "ChatGPT"}
+# What 'when did I last talk to X' counts as contact.
+CONTACT_GROUPS = ("text", "call", "calendar")
+# The span of a search that was not clipped to the window.
+ALL_RECORDS = "all records"
+_UNTIMED = ("contact card", "note", "transaction")
+
+# Question words that narrow the observed search to some streams.
+STREAM_WORDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
+    (frozenset({"claude"}), ("claude_chat",)),
+    (frozenset({"chatgpt", "gpt", "openai"}), ("chatgpt_chat",)),
+    (frozenset({"ai", "chatbot", "chatbots"}), AI_STREAMS),
+    (frozenset({"text", "texts", "texted", "texting", "message", "messages",
+                "messaged", "imessage", "imessages", "sms", "rcs", "dm", "dms"}),
+     TEXT_STREAMS),
+    (frozenset({"whatsapp"}), ("whatsapp",)),
+    (frozenset({"call", "calls", "called", "calling", "phoned", "rang"}),
+     CALL_STREAMS),
+    (frozenset({"calendar", "meeting", "meetings", "appointment",
+                "appointments", "invite", "invites"}), ("calendar_event",)),
+    (frozenset({"note", "notes"}), ("note",)),
+    (frozenset({"photo", "photos", "picture", "pictures", "pic", "pics",
+                "selfie", "selfies"}), ("photo",)),
+    (frozenset({"transaction", "transactions", "charge", "charges", "charged",
+                "bank"}), ("txn",)),
+    (frozenset({"website", "websites", "browsed", "browsing", "webpage"}),
+     ("browser_visit",)),
+]
+
+_OUT_VERBS = frozenset({"ask", "asked", "tell", "told", "say", "said", "text",
+                        "texted", "send", "sent", "message", "messaged",
+                        "write", "wrote", "call", "called", "email", "emailed"})
+_IN_VERBS = _OUT_VERBS | {"says", "tells", "texts", "suggest", "suggested",
+                          "recommend", "recommended", "reply", "replied",
+                          "answer", "answered"}
+_CONTACT_VERBS = frozenset({"talk", "talked", "spoke", "speak", "spoken",
+                            "text", "texted", "message", "messaged", "call",
+                            "called", "see", "saw", "seen", "hear", "heard",
+                            "meet", "met", "chat", "chatted", "email",
+                            "emailed", "visit", "visited", "go", "went", "been",
+                            "contact", "contacted"})
+_RECENT_RE = re.compile(r"\b(?:last|latest|most recent(?:ly)?|recently)\b")
+_PROFILE_RE = re.compile(
+    r"\b(?:favou?rites?|birthday|born|hometown|phone|number|email|address|"
+    r"lives?|living|grew|grow|raised|from)\b|\bwho(?:'s| is)\b|\btell me about\b")
+_LOOPS_RE = re.compile(
+    r"\bopen (?:tasks?|loops?|items?|plans?|to-?dos?)\b|\bto-?dos?\b"
+    r"|\bon my (?:list|plate)\b|\b(?:need|have) to do\b|\bunfinished\b"
+    r"|\boutstanding (?:tasks?|items?)\b|\bpending (?:tasks?|items?)\b"
+    r"|\bmy (?:tasks|plans)\b")
+LOOP_WORDS = frozenset({"open", "task", "tasks", "todo", "todos", "list",
+                        "plate", "loop", "loops", "outstanding", "unfinished",
+                        "pending", "plans", "items", "need"})
+
+
+def has_observed_tier(conn: sqlite3.Connection) -> bool:
+    """A pre-v4 database has no observed tier; retrieval skips it rather
+    than failing — `ask` must work on an un-migrated read-only database."""
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN "
+            "('observations', 'observations_fts', 'observation_participants', "
+            "'entity_handles', 'imports')")}
+    except sqlite3.Error:
+        return False
+    return len(names) == 5
+
+
+def stream_label(stream: str) -> str:
+    return STREAM_LABELS.get(stream, stream.replace("_", " "))
+
+
+def parse_intent(question: str, words: list[dict], entities: list[dict],
+                 health: list[str], journal: list[str]) -> dict:
+    """What kind of record the question is after, by rule."""
+    q = question.lower().replace("’", "'")
+    keys = [w["key"] for w in words]
+    persons = [e for e in entities if e["type"] == "person"]
+    person_pos = {p for e in persons for p in e["positions"]}
+    streams: list[str] = []
+    stream_keys: set[str] = set()
+    for i, k in enumerate(keys):
+        if i in person_pos:            # a person called Claude is a person
+            continue
+        for vocab, group in STREAM_WORDS:
+            if k in vocab:
+                stream_keys.add(k)
+                streams += [s for s in group if s not in streams]
+
+    def followed_by(pos: int, verbs: frozenset[str]) -> bool:
+        return pos + 1 < len(keys) and keys[pos + 1] in verbs
+
+    out = any(k == "i" and followed_by(i, _OUT_VERBS) for i, k in enumerate(keys))
+    senders = [e["id"] for e in persons
+               if any(followed_by(p, _IN_VERBS) for p in e["positions"])]
+    ai_in = any(k in ("claude", "chatgpt", "gpt") and i not in person_pos
+                and followed_by(i, _IN_VERBS) for i, k in enumerate(keys))
+    direction = None
+    if out and not (senders or ai_in):
+        direction = "out"
+    elif (senders or ai_in) and not out:
+        direction = "in"
+
+    loops = bool(_LOOPS_RE.search(q))
+    money = "money" in journal or "txn" in streams
+    drop = set(INTENT_WORDS) | stream_keys
+    drop |= {t for e in persons for t in e["tokens"]}
+    if loops:
+        drop |= LOOP_WORDS
+    if money:
+        drop |= set(MONEY_WORDS)
+    topic = _terms(words, frozenset(drop))
+    display = {w["term"].strip("'"): w["raw"] for w in words}
+    return {
+        "streams": streams,
+        "direction": direction,
+        "senders": senders if direction == "in" else [],
+        "recency": bool(_RECENT_RE.search(q) and set(keys) & _CONTACT_VERBS)
+        or "last time" in q,
+        "profile": bool(_PROFILE_RE.search(q)),
+        "loops": loops,
+        "money": money,
+        "topic_terms": topic,
+        "topic_display": " ".join(display.get(t, t) for t in topic),
+        # A pure metric question ('how did I sleep') is answered by the
+        # metrics; searching texts for 'sleep' would only add noise.
+        "metric_only": bool(health or journal) and not money and not streams
+        and not entities and not loops,
+    }
+
+
+_OBS_COLS = ("o.id, o.uuid, o.stream, o.journal_date, o.started_at, o.ended_at, "
+             "o.utc_offset_sec, o.direction, o.title, substr(o.body, 1, 1500) AS body, "
+             "o.value, o.unit, o.value_json, o.origin_app, i.uuid AS import_uuid, "
+             "i.connector, i.account, i.source_file")
+# Abandoned ChatGPT branches stay in the archive but rank after the answer
+# that was kept.
+_OFF_PATH = ("CASE WHEN o.stream = 'chatgpt_chat' AND (CASE WHEN json_valid(o.value_json) "
+             "THEN json_extract(o.value_json, '$.on_current_path') END) = 0 "
+             "THEN 1 ELSE 0 END")
+_RECENT_FIRST = "o.journal_date DESC, o.started_at DESC, o.id DESC"
+
+
+def _party_clause(family: list[int], sender_only: bool = False) -> tuple[str, list]:
+    """Observations with a participant whose handle the owner linked to
+    this entity (or to one merged into it)."""
+    marks = ",".join("?" for _ in family)
+    return ("EXISTS (SELECT 1 FROM observation_participants p "
+            "JOIN entity_handles h ON h.kind = p.handle_kind AND h.value = p.handle_value "
+            f"WHERE p.observation_id = o.id AND h.entity_id IN ({marks}) "
+            "AND h.confirmed_at IS NOT NULL AND h.ignored = 0"
+            + (" AND p.role = 'sender'" if sender_only else "") + ")"), list(family)
+
+
+def _entity_family(conn: sqlite3.Connection, entity_id: int) -> list[int]:
+    """The entity plus everything merged into it: merge moves mentions and
+    aliases, but handles stay on the merged row."""
+    return [r[0] for r in conn.execute(
+        "WITH RECURSIVE fam(id) AS (SELECT ? UNION "
+        "SELECT e.id FROM entities e JOIN fam ON e.merged_into = fam.id) "
+        "SELECT id FROM fam ORDER BY id", (entity_id,))]
+
+
+def _linked_handles(conn: sqlite3.Connection, family: list[int]) -> list[str]:
+    marks = ",".join("?" for _ in family)
+    return [f"{r['kind']}:{r['value']}" for r in conn.execute(
+        f"SELECT kind, value FROM entity_handles WHERE entity_id IN ({marks}) "
+        f"AND confirmed_at IS NOT NULL AND ignored = 0 ORDER BY kind, value", family)]
+
+
+class _LiveNames:
+    """Entity id -> (live id, name), following merges; cached per question."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn, self.cache = conn, {}
+
+    def get(self, entity_id: int) -> tuple[int, str] | None:
+        if entity_id not in self.cache:
+            row, cur, seen = None, entity_id, set()
+            while cur is not None and cur not in seen:
+                seen.add(cur)
+                row = self.conn.execute(
+                    "SELECT id, name, status, merged_into FROM entities WHERE id=?",
+                    (cur,)).fetchone()
+                if row is None or row["status"] != "merged":
+                    break
+                cur = row["merged_into"]
+            self.cache[entity_id] = (row["id"], row["name"]) if row else None
+        return self.cache[entity_id]
+
+
+def _detail(value_json: str | None) -> dict:
+    """The structured fields worth showing: scalars only, capped, cleaned."""
+    if not value_json:
+        return {}
+    try:
+        data = json.loads(value_json)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k in sorted(data):
+        v = data[k]
+        if isinstance(v, bool) or isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str) and v.strip():
+            out[k] = _clean(v, 200)
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _local_hhmm(started_at: str, offset: int | None, cfg: Config) -> str | None:
+    try:
+        dt = datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    if offset is not None:
+        return (dt + timedelta(seconds=offset)).strftime("%H:%M")
+    return dt.astimezone(ZoneInfo(cfg.timezone)).strftime("%H:%M")
+
+
+def _names(ps: list[dict]) -> str:
+    seen: list[str] = []
+    for p in ps:
+        if p["name"] not in seen:
+            seen.append(p["name"])
+    return ", ".join(seen[:4]) + (f" and {len(seen) - 4} more" if len(seen) > 4 else "")
+
+
+def _who(o: dict) -> str | None:
+    if o["stream"] in AI_STREAMS:
+        bot = AI_NAMES.get(o["stream"], "the assistant")
+        return f"you → {bot}" if o["direction"] == "out" else f"{bot} → you"
+    if o["kind"] in ("contact card", "note", "photo", "transaction", "web visit"):
+        return None
+    others = [p for p in o["participants"] if not p["is_owner"]]
+    senders = [p for p in others if p["role"] in ("sender", "organizer")]
+    rest = [p for p in others if p not in senders]
+    if o["direction"] == "out":
+        return "you → " + (_names(rest or others) or "?")
+    if o["direction"] == "in":
+        return (_names(senders or others) or "?") + " → you"
+    return ("with " + _names(others)) if others else None
+
+
+def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
+               via: str, cap: int = 280) -> list[dict]:
+    """Observation rows as evidence items: participants resolved through
+    entity_handles to entity names (or kind:value while unresolved), the
+    owner shown as 'you', provenance down to the import and file."""
+    if not rows:
+        return []
+    marks = ",".join("?" for _ in rows)
+    parts: dict[int, list] = {}
+    for p in conn.execute(
+            "SELECT p.observation_id, p.role, p.handle_kind, p.handle_value, "
+            "h.display_name, h.entity_id, h.confirmed_at, h.ignored "
+            "FROM observation_participants p "
+            # LEFT: a participant whose handle row is missing is still a
+            # participant — shown as kind:value, never dropped.
+            "LEFT JOIN entity_handles h ON h.kind = p.handle_kind "
+            "AND h.value = p.handle_value "
+            f"WHERE p.observation_id IN ({marks}) ORDER BY p.observation_id, "
+            "CASE p.role WHEN 'sender' THEN 0 WHEN 'organizer' THEN 1 "
+            "WHEN 'recipient' THEN 2 ELSE 3 END, p.handle_kind, p.handle_value",
+            [r["id"] for r in rows]):
+        parts.setdefault(p["observation_id"], []).append(p)
+    live = _LiveNames(conn)
+    items = []
+    for r in rows:
+        account = (r["account"] or "").lower()
+        participants = []
+        for p in parts.get(r["id"], []):
+            value = p["handle_value"]
+            owner = (bool(account) and value.lower() in (account,)
+                     or bool(account) and value.lower().endswith(":" + account)
+                     or (p["display_name"] or "").lower().startswith("you (")
+                     or (r["direction"] == "out" and p["role"] == "sender"))
+            ent = (live.get(p["entity_id"]) if p["entity_id"] is not None
+                   and p["confirmed_at"] and not p["ignored"] else None)
+            participants.append({
+                "role": p["role"], "handle": f"{p['handle_kind']}:{value}",
+                "display_name": _clean(p["display_name"], 80) or None,
+                "entity_id": ent[0] if ent else None,
+                "entity": ent[1] if ent else None, "is_owner": owner,
+                "name": "you" if owner else (ent[1] if ent else
+                                             f"{p['handle_kind']}:{value}")})
+        keys = r.keys()
+        snippet = r["snippet"] if "snippet" in keys and r["snippet"] else None
+        kind = stream_label(r["stream"])
+        item = {"id": None, "tier": "observed", "uuid": r["uuid"],
+                "stream": r["stream"], "kind": kind, "date": r["journal_date"],
+                "started_at": r["started_at"],
+                "local_time": _local_hhmm(r["started_at"], r["utc_offset_sec"], cfg),
+                "direction": r["direction"],
+                "title": _clean(r["title"], 120) or None,
+                "snippet": _clean(snippet or r["body"], cap) or None,
+                "participants": participants, "who": None,
+                "connector": r["connector"], "import_uuid": r["import_uuid"],
+                "account": r["account"], "source_file": r["source_file"],
+                "value": r["value"], "unit": r["unit"],
+                "detail": _detail(r["value_json"]), "origin_app": r["origin_app"],
+                "via": via}
+        item["who"] = _who(item)
+        items.append(item)
+    return items
+
+
+def search_observations(conn: sqlite3.Connection, cfg: Config, *,
+                        terms: list[str] | tuple = (), window: dict | None = None,
+                        streams: list[str] | tuple | None = None,
+                        direction: str | None = None,
+                        family: list[int] | None = None, sender_only: bool = False,
+                        limit: int = 6, recency: bool = False,
+                        via: str = "search") -> list[dict]:
+    """Full-text search over the observed tier (status active only).
+
+    Terms are AND-ed first and the result topped up with an OR search, so a
+    message naming both 'lake' and 'Slovenia' outranks one naming either.
+    Terms of four letters or more match as prefixes ('lake' finds
+    'lakeside'). A conversation title is weighted below the message body:
+    every turn of a chat called "Lake crew" carries that title, and must not
+    outrank the one message that is actually about the lake. `family`
+    restricts to observations an entity took part in; `sender_only` to
+    ones it sent. The window clips only when the question named a time —
+    the same rule as entries.
+    """
+    where = ["o.status = 'active'"]
+    args: list = []
+    if streams:
+        where.append(f"o.stream IN ({','.join('?' for _ in streams)})")
+        args += list(streams)
+    else:
+        where.append(f"o.stream NOT IN ({','.join('?' for _ in QUIET_STREAMS)})")
+        args += list(QUIET_STREAMS)
+    if direction:
+        where.append("o.direction = ?")
+        args.append(direction)
+    if window and window.get("explicit"):
+        where.append("o.journal_date BETWEEN ? AND ?")
+        args += [window["start"], window["end"]]
+    if family:
+        clause, fargs = _party_clause(family, sender_only)
+        where.append(clause)
+        args += fargs
+    w = " AND ".join(where)
+    rows: list = []
+    if not terms:
+        rows = conn.execute(
+            f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+            f"JOIN imports i ON i.id = o.import_id WHERE {w} "
+            f"AND (o.body IS NOT NULL OR o.title IS NOT NULL OR o.value IS NOT NULL) "
+            f"ORDER BY {_OFF_PATH}, {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
+        return _obs_items(conn, cfg, rows, via=via)
+    order = _RECENT_FIRST if recency else "bm25(observations_fts, 0.5, 1.0), o.id"
+    exprs = [_fts_expr(list(terms), " ", prefix=True)]
+    if len(terms) > 1:
+        exprs.append(_fts_expr(list(terms), " OR ", prefix=True))
+    # A text's title is its group's name, inherited by every message in the
+    # thread: "Bled crew" would make each one a hit for 'Bled'. Texts match
+    # on what was said; an AI chat's title is the owner's own topic and counts.
+    text_marks = ",".join("?" for _ in TEXT_STREAMS + QUIET_STREAMS)
+    body_only = (f"(o.stream NOT IN ({text_marks}) OR o.id IN (SELECT rowid "
+                 f"FROM observations_fts WHERE observations_fts MATCH ?))")
+    seen: set[int] = set()
+    for expr in exprs:
+        if len(rows) >= limit:
+            break
+        for r in conn.execute(
+                # The body's snippet, even when the hit was the title: the
+                # title is shown anyway, the body is what was said.
+                f"SELECT {_OBS_COLS}, snippet(observations_fts, 1, '«', "
+                f"'»', '…', 20) AS snippet FROM observations_fts "
+                f"JOIN observations o ON o.id = observations_fts.rowid "
+                f"JOIN imports i ON i.id = o.import_id "
+                f"WHERE observations_fts MATCH ? AND {w} AND {body_only} "
+                f"ORDER BY {_OFF_PATH}, {order} LIMIT ?",
+                [expr, *args, *TEXT_STREAMS, *QUIET_STREAMS,
+                 f"body : ({expr})", limit]).fetchall():
+            if r["id"] not in seen and len(rows) < limit:
+                seen.add(r["id"])
+                rows.append(r)
+    return _obs_items(conn, cfg, rows, via=via)
+
+
+def last_contact(conn: sqlite3.Connection, cfg: Config, family: list[int],
+                 window: dict, today: date, *, streams: list[str] | None = None,
+                 direction: str | None = None) -> list[dict]:
+    """The newest text, call and calendar event the entity took part in —
+    one of each at most, nothing dated after today. A missed (zero-second)
+    call is an attempt, not contact. `streams` narrows it ('when did I last
+    CALL Mom'), and so does `direction` ('when did I last text Jake')."""
+    items: list[dict] = []
+    groups = [g for g in CONTACT_GROUPS
+              if streams and set(STREAM_GROUPS[g]) & set(streams)] or CONTACT_GROUPS
+    for group in groups:
+        group_streams = STREAM_GROUPS[group]
+        clause, fargs = _party_clause(family)
+        where = [f"o.stream IN ({','.join('?' for _ in group_streams)})",
+                 "o.status = 'active'", "o.journal_date <= ?", clause]
+        args = [*group_streams, today.isoformat(), *fargs]
+        if group == "call":
+            where.append("(o.value IS NULL OR o.value > 0)")
+        if direction and group != "calendar":
+            where.append("o.direction = ?")
+            args.append(direction)
+        if window.get("explicit"):
+            where.append("o.journal_date BETWEEN ? AND ?")
+            args += [window["start"], window["end"]]
+        rows = conn.execute(
+            f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+            f"JOIN imports i ON i.id = o.import_id WHERE {' AND '.join(where)} "
+            f"ORDER BY {_RECENT_FIRST} LIMIT 1", args).fetchall()
+        items += _obs_items(conn, cfg, rows, via="contact")
+    return items
+
+
+def contact_cards(conn: sqlite3.Connection, cfg: Config, family: list[int],
+                  labels: list[str], limit: int = 2) -> list[dict]:
+    """The entity's contact cards: linked through a handle on the card, or
+    titled with the entity's exact name or alias."""
+    where, args = [], []
+    if family:
+        clause, fargs = _party_clause(family)
+        where.append(clause)
+        args += fargs
+    if labels:
+        where.append(f"o.title COLLATE NOCASE IN ({','.join('?' for _ in labels)})")
+        args += labels
+    if not where:
+        return []
+    rows = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+        f"JOIN imports i ON i.id = o.import_id WHERE o.stream = 'contact_card' "
+        f"AND o.status = 'active' AND ({' OR '.join(where)}) "
+        f"ORDER BY o.started_at DESC, o.id DESC LIMIT ?", [*args, limit]).fetchall()
+    return _obs_items(conn, cfg, rows, via="card", cap=500)
+
+
+def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
+             display: str, window: dict, limit: int = 10
+             ) -> tuple[list[dict], list[dict]]:
+    """Transaction totals (stream txn: value = amount, negative = money out,
+    unit = currency) — one M-item per currency, plus the transactions
+    themselves as O-items.
+
+    Named merchant terms search every record unless the question named a
+    time (the text-search rule: 'how much did I spend at Veracruz' means all
+    of it); a general 'how much did I spend' uses the window."""
+    where = ["o.stream = 'txn'", "o.status = 'active'", "o.value IS NOT NULL"]
+    args: list = []
+    all_records = bool(terms) and not window["explicit"]
+    if not all_records:
+        where.append("o.journal_date BETWEEN ? AND ?")
+        args += [window["start"], window["end"]]
+    if terms:
+        source = ("FROM observations_fts JOIN observations o ON o.id = observations_fts.rowid "
+                  "JOIN imports i ON i.id = o.import_id")
+        where.insert(0, "observations_fts MATCH ?")
+        args.insert(0, _fts_expr(terms, " ", prefix=True))
+    else:
+        source = "FROM observations o JOIN imports i ON i.id = o.import_id"
+    w = " AND ".join(where)
+    totals = conn.execute(
+        f"SELECT UPPER(COALESCE(o.unit, '')) AS cur, COUNT(*) AS n, "
+        f"SUM(CASE WHEN o.value < 0 THEN -o.value ELSE 0 END) AS spent, "
+        f"SUM(CASE WHEN o.value > 0 THEN o.value ELSE 0 END) AS received, "
+        f"MIN(CASE WHEN o.value < 0 THEN o.value END) AS largest, "
+        f"MIN(o.journal_date) AS first, MAX(o.journal_date) AS last, "
+        f"GROUP_CONCAT(DISTINCT i.source_file) AS sources "
+        f"{source} WHERE {w} GROUP BY cur ORDER BY n DESC, cur", args).fetchall()
+    if not totals:
+        return [], []
+    days: dict[str, list] = {}
+    for r in conn.execute(
+            f"SELECT UPPER(COALESCE(o.unit, '')) AS cur, o.journal_date AS day, "
+            f"SUM(CASE WHEN o.value < 0 THEN -o.value ELSE 0 END) AS spent, "
+            f"COUNT(*) AS n {source} WHERE {w} GROUP BY cur, day ORDER BY cur, day",
+            args):
+        days.setdefault(r["cur"], []).append(r)
+    rows = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet {source} WHERE {w} "
+        f"ORDER BY {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
+    label = f'spending matching "{display}"' if terms else "spending"
+    metrics = []
+    for t in totals:
+        series = [{"date": d["day"], "value": round(d["spent"], 2), "records": d["n"]}
+                  for d in days.get(t["cur"], [])]
+        spent_days = [s for s in series if s["value"] > 0] or series
+        hi = max(spent_days, key=lambda s: s["value"])
+        lo = min(spent_days, key=lambda s: s["value"])
+        span = ({"start": t["first"], "end": t["last"], "label": ALL_RECORDS}
+                if all_records else {"start": window["start"], "end": window["end"],
+                                     "label": window["label"]})
+        metrics.append({
+            "metric": "txn_spend", "label": label, "unit": t["cur"],
+            "origin": "transactions, observed", "tier": "observed",
+            "table": "observations", "count": t["n"],
+            "days": len(spent_days), "total": round(t["spent"], 2),
+            "received": round(t["received"], 2),
+            "largest": round(-t["largest"], 2) if t["largest"] is not None else None,
+            "mean": round(t["spent"] / len(spent_days), 2) if spent_days else 0,
+            "min": lo["value"], "min_date": lo["date"],
+            "max": hi["value"], "max_date": hi["date"],
+            "latest": series[-1]["value"], "latest_date": series[-1]["date"],
+            "per_day_agg": "sum", "series": series,
+            "source_files": sorted(set((t["sources"] or "").split(",")) - {""}),
+            "span": span, "terms": list(terms), "terms_display": display,
+            "transactions": [],
+            "trend_pct": None})
+    return metrics, _obs_items(conn, cfg, rows, via="spending")
+
+
+def _stream_counts(conn: sqlite3.Connection, streams: list[str]) -> dict[str, int]:
+    marks = ",".join("?" for _ in streams)
+    return {r["stream"]: r["n"] for r in conn.execute(
+        f"SELECT stream, COUNT(*) AS n FROM observations WHERE status='active' "
+        f"AND stream IN ({marks}) GROUP BY stream", streams)}
+
+
+# ---------------------------------------------------------------- the bundle
+
+class _Ids:
+    """Citable items in first-seen order; the same record found two ways
+    keeps one id."""
+
+    def __init__(self, prefix: str):
+        self.prefix, self.items, self.by_uuid = prefix, [], {}
+
+    def add(self, item: dict) -> str:
+        existing = self.by_uuid.get(item["uuid"])
+        if existing is not None:
+            # A search snippet shows WHY it matched; prefer it to an excerpt.
+            if "«" in (item.get("snippet") or "") \
+                    and "«" not in (existing.get("snippet") or ""):
+                existing["snippet"] = item["snippet"]
+            return existing["id"]
+        item["id"] = f"{self.prefix}{len(self.items) + 1}"
+        self.items.append(item)
+        self.by_uuid[item["uuid"]] = item
+        return item["id"]
 
 
 def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
                    today: date | None = None, days: int | None = None,
-                   max_entries: int = 8, max_passages: int = 4) -> dict:
+                   max_entries: int = 8, max_passages: int = 4,
+                   max_observations: int | None = None) -> dict:
     """Everything the database can offer about this question, each item
     carrying a citable id and its provenance."""
-    ask_cfg = cfg.ask
-    window = parse_window(question, cfg, today=today,
-                          default_days=days or int(ask_cfg.get("default_days", 30)))
+    if days is not None and days < 1:
+        raise ValueError(f"days must be at least 1 (got {days})")
+    max_obs = (int(max_observations) if max_observations is not None
+               else ask_setting(cfg, "max_observations", 6))
+    today = today or local_today(cfg)
+    observed = has_observed_tier(conn)
+
+    words = _words(question)
+    entities, ambiguous = _resolve_entities(conn, question, words)
+    window = parse_window(
+        question, cfg, today=today,
+        default_days=days or ask_setting(cfg, "default_days", 30),
+        names=frozenset(t for e in entities for t in e["tokens"]))
     health, journal = detect_metrics(question)
+    intent = parse_intent(question, words, entities, health, journal)
+    terms = intent["topic_terms"]
+
+    E, O = _Ids("E"), _Ids("O")
+    metrics: list[dict] = []
+    no_data: list[str] = []
 
     def missing_label(label: str, origin: str) -> str:
         # Several labels already carry their origin ("sleep (journal)") —
         # don't produce "sleep (journal) (journal)".
         return label if "(" in label else f"{label} ({origin})"
 
-    metrics: list[dict] = []
-    no_data: list[str] = []
+    # ---- money: transactions first, then what the journal says was spent
+    if intent["money"]:
+        if observed:
+            found, txns = spending(conn, cfg, terms=terms,
+                                   display=intent["topic_display"], window=window,
+                                   limit=ask_setting(cfg, "max_transactions", 10))
+            ids = [O.add(t) for t in txns]
+            for m in found:
+                m["transactions"] = [i for i, t in zip(ids, txns)
+                                     if (t["unit"] or "").upper() == m["unit"]]
+                metrics.append(m)
+            if not found:
+                what = (f'transactions matching "{intent["topic_display"]}"'
+                        if terms else "transactions")
+                no_data.append(f"{what} ({ALL_RECORDS})"
+                               if terms and not window["explicit"] else what)
+        else:
+            no_data.append("transactions (no observed tier in this database)")
+
     for name in health:
         found = _metric_series(conn, table="health_records", metric=name,
                                spec=HEALTH_METRICS[name], window=window)
         (metrics.append(found) if found else no_data.append(
             missing_label(HEALTH_METRICS[name]["label"], "sensor import")))
     for name in journal:
+        spec, match, span = JOURNAL_METRICS[name], None, None
+        if name == "money" and terms:
+            spec = {**spec, "label": f'money (journal) matching "{intent["topic_display"]}"'}
+            match = _fts_expr(terms, " ", prefix=True)
+            if not window["explicit"]:
+                span = {"start": "0001-01-01", "end": "9999-12-31",
+                        "label": ALL_RECORDS}
         found = _metric_series(conn, table="measurements", metric=name,
-                               spec=JOURNAL_METRICS[name], window=window)
-        (metrics.append(found) if found else no_data.append(
-            missing_label(JOURNAL_METRICS[name]["label"], "journal")))
+                               spec=spec, window=window, entry_match=match, span=span)
+        answered_by = {m["metric"] for m in metrics if m["table"] != "measurements"}
+        if found:
+            metrics.append(found)
+        elif not (spec.get("twin") in answered_by
+                  or name == "money" and "txn_spend" in answered_by):
+            # Spending answered from transactions, or steps from the sensor:
+            # the journal not also stating it is not a gap worth reporting.
+            no_data.append(missing_label(spec["label"], "journal")
+                           + (f" ({ALL_RECORDS})" if span else ""))
     for i, m in enumerate(metrics, start=1):
         m["id"] = f"M{i}"
 
-    match = fts_query(question)
-    entries = search_entries(conn, match, window, max_entries) if match else []
+    # ---- open loops
+    loops, loops_total = [], 0
+    if intent["loops"]:
+        named = [e["id"] for e in entities]
+        rows, loops_total = open_loops(conn, window, entity_ids=named or None,
+                                       limit=ask_setting(cfg, "max_loops", 10))
+        loops = [E.add(r) for r in rows]
+
+    # ---- the people and places it names
+    for ent in entities:
+        ent_entries = _entity_entries(conn, ent["id"], window)
+        ent["entries"] = [{"uuid": e["uuid"], "date": e["date"], "title": e["title"],
+                           "kind": e["kind"]} for e in ent_entries]
+        ent["facts"] = [E.add(e) for e in ent_entries]
+        ent["handles_linked"], ent["cards"], ent["hits"] = 0, [], []
+        contact = [E.add(e) for e in _last_mention(
+            conn, ent["id"], window, today, participant_only=ent["type"] == "person")]
+        if observed and ent["type"] == "person":
+            family = _entity_family(conn, ent["id"])
+            handles = _linked_handles(conn, family)
+            ent["handles_linked"] = len(handles)
+            labels = [ent["name"]] + [r["alias"] for r in conn.execute(
+                "SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY alias",
+                (ent["id"],))]
+            ent["cards"] = [O.add(c) for c in contact_cards(conn, cfg, family, labels)]
+            if handles:
+                contact += [O.add(o) for o in last_contact(
+                    conn, cfg, family, window, today,
+                    streams=intent["streams"] or None, direction=intent["direction"])]
+                if (terms or intent["streams"]) and not intent["metric_only"] \
+                        and not intent["money"]:
+                    ent["hits"] = [O.add(o) for o in search_observations(
+                        conn, cfg, terms=terms, window=window,
+                        streams=intent["streams"] or None,
+                        direction=intent["direction"], family=family,
+                        sender_only=ent["id"] in intent["senders"],
+                        limit=max_obs, recency=intent["recency"])]
+        ent["last_contact"] = _latest_contact(contact, E, O, cfg)
+
+    # ---- full-text: entries, transcripts, and the observed tier
+    entry_drop = set(INTENT_WORDS) | (LOOP_WORDS if intent["loops"] else set()) \
+        | (set(MONEY_WORDS) if intent["money"] else set())
+    match = fts_query(question, drop=entry_drop)
+    entry_hits = ([E.add(e) for e in search_entries(conn, match, window, max_entries)]
+                  if match else [])
     passages = search_passages(conn, match, window, max_passages) if match else []
-    for i, e in enumerate(entries, start=1):
-        e["id"] = f"E{i}"
     for i, p in enumerate(passages, start=1):
         p["id"] = f"P{i}"
 
-    entities = find_entities(conn, question)
+    # A named person with linked handles was searched through them above;
+    # money questions are answered by the transactions themselves.
+    obs_hits: list[str] = []
+    person_filtered = any(e["handles_linked"] for e in entities
+                          if e["type"] == "person")
+    if observed and not intent["metric_only"] and not intent["money"] \
+            and not person_filtered and (terms or intent["streams"]):
+        obs_hits = [O.add(o) for o in search_observations(
+            conn, cfg, terms=terms, window=window,
+            streams=intent["streams"] or None, direction=intent["direction"],
+            limit=max_obs, recency=intent["recency"])]
+    if observed and intent["streams"]:
+        counts = _stream_counts(conn, intent["streams"])
+        for label, streams in STREAM_GROUPS.items():
+            wanted = [s for s in streams if s in intent["streams"]]
+            if wanted and not any(counts.get(s) for s in wanted):
+                no_data.append(f"{label} records ({', '.join(wanted)}): none imported")
+
     covered = conn.execute(
         "SELECT COUNT(DISTINCT journal_date) AS c FROM entries "
         "WHERE status='active' AND journal_date BETWEEN ? AND ?",
         (window["start"], window["end"])).fetchone()["c"]
 
+    has_evidence = bool(metrics or E.items or passages or O.items)
+    asked_for_numbers = bool(health or journal or intent["money"])
     return {"question": question, "window": window, "metrics": metrics,
-            "entries": entries, "passages": passages, "entities": entities,
-            "no_data": no_data, "match": match,
+            "entries": E.items, "passages": passages, "observations": O.items,
+            "entities": entities, "ambiguous": ambiguous, "no_data": no_data,
+            "match": match, "intent": intent, "loops": loops,
+            "loops_total": loops_total, "obs_hits": obs_hits,
+            "entry_hits": entry_hits,
+            "observed_tier": observed,
             "days_with_entries_in_window": covered,
-            "has_evidence": bool(metrics or entries or passages or entities)}
+            "has_evidence": has_evidence,
+            # 'answered' feeds recall_log, the build-this-next list: a
+            # question that asked for numbers and got only loose text
+            # matches was not answered.
+            "answered": has_evidence and (not asked_for_numbers or bool(metrics))}
+
+
+def _sort_key(item: dict, cfg: Config) -> tuple:
+    if item["tier"] == "observed":
+        return (item["date"], item.get("local_time") or "", 1)
+    t = ""
+    if item.get("occurred_at") and "T" in item["occurred_at"]:
+        try:
+            dt = datetime.fromisoformat(item["occurred_at"].replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(ZoneInfo(cfg.timezone))
+            t = dt.strftime("%H:%M")
+        except ValueError:
+            t = ""
+    return (item["date"], t, 0)
+
+
+def _latest_contact(ids: list[str], E: _Ids, O: _Ids, cfg: Config) -> dict | None:
+    """Of the newest text, call, calendar event and journal mention, which
+    came last. On the same minute a record with an exact timestamp wins."""
+    if not ids:
+        return None
+    pool = {i: (O.items if i.startswith("O") else E.items)[int(i[1:]) - 1] for i in ids}
+    ordered = sorted(ids, key=lambda i: _sort_key(pool[i], cfg), reverse=True)
+    return {"latest": ordered[0], "items": ordered,
+            "date": pool[ordered[0]]["date"]}
 
 
 # ---------------------------------------------------------------- rendering
@@ -433,83 +1733,373 @@ def fmt_value(value, unit: str) -> str:
         else f"{text}{unit}"
 
 
+_CURRENCY = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def fmt_money(value, unit: str | None, signed: bool = False) -> str:
+    if value is None:
+        return "-"
+    cur = (unit or "").upper()
+    sign = "-" if signed and value < 0 else ""
+    amount = f"{abs(value):,.2f}"
+    return f"{sign}{_CURRENCY[cur]}{amount}" if cur in _CURRENCY \
+        else f"{sign}{amount} {cur}".strip()
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)} s"
+    minutes = int(seconds / 60 + 0.5)
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
+def _obs_value(o: dict) -> str | None:
+    """The record's own quantity, rendered the way an answer would say it."""
+    d, v = o["detail"], o["value"]
+    if o["kind"] == "call":
+        if v is not None and v <= 0 or d.get("missed") or d.get("type") == "missed":
+            return "missed"
+        return _duration(v) if v is not None else None
+    if o["kind"] == "transaction":
+        return fmt_money(v, o["unit"], signed=True) if v is not None else None
+    if o["kind"] in ("photo", "place visit"):
+        lat = d.get("lat", d.get("latitude"))
+        lon = d.get("lon", d.get("lng", d.get("longitude")))
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            return f"at {lat:.4f}, {lon:.4f}"
+        return None
+    if o["kind"] == "calendar":
+        loc = d.get("location")
+        return f"at {loc}" if loc else None
+    if v is not None and o["kind"] not in ("text", "AI chat", "contact card", "note"):
+        return f"{v:g} {o['unit'] or ''}".strip()
+    return None
+
+
+def _obs_line(o: dict) -> str:
+    head = f"[{o['id']}] {o['date']}"
+    if o["local_time"] and o["kind"] not in _UNTIMED:
+        head += f" {o['local_time']}"
+    bits = [head, o["kind"] if o["kind"] == o["stream"] else f"{o['kind']} ({o['stream']})"]
+    if o["who"]:
+        bits.append(o["who"])
+    if o["title"]:
+        bits.append(f'in "{o["title"]}"' if o["kind"] in ("text", "AI chat")
+                    else f'"{o["title"]}"')
+    extra = _obs_value(o)
+    if extra:
+        bits.append(extra)
+    line = " ".join(bits)
+    if o["snippet"] and o["kind"] != "call":
+        line += f": {o['snippet']}"
+    return line + " (observed, not confirmed)"
+
+
+def _metric_line(m: dict) -> str:
+    if m["metric"] == "txn_spend":
+        span = m["span"]
+        line = (f"[{m['id']}] {m['label']} — {m['count']} transaction(s), "
+                f"{span['label']} ({span['start']} to {span['end']}): "
+                f"total spent {fmt_money(m['total'], m['unit'])}")
+        if m["received"]:
+            line += f", received {fmt_money(m['received'], m['unit'])}"
+        if m["largest"]:
+            line += f"; largest {fmt_money(m['largest'], m['unit'])}"
+        line += f" (source: {m['origin']})"
+        if m["transactions"]:
+            line += f"; listed: {', '.join(m['transactions'])}"
+        return line
+    agg = "per-day total" if m["per_day_agg"] == "sum" else "per-day average"
+    line = (f"[{m['id']}] {m['label']} — {m['days']} day(s), {agg}: "
+            f"mean {fmt_value(m['mean'], m['unit'])}, "
+            f"min {fmt_value(m['min'], m['unit'])} on {m['min_date']}, "
+            f"max {fmt_value(m['max'], m['unit'])} on {m['max_date']}, "
+            f"latest {fmt_value(m['latest'], m['unit'])} on {m['latest_date']}")
+    if m["per_day_agg"] == "sum":
+        line += f", total {fmt_value(m['total'], m['unit'])}"
+    if m.get("trend_pct"):
+        line += (f", trend {'up' if m['trend_pct'] > 0 else 'down'} "
+                 f"{abs(m['trend_pct'])}% (second half vs first)")
+    if m.get("span"):
+        line += f", over {m['span']['label']}"
+    line += f" (source: {m['origin']})"
+    if m.get("multi_origin_days"):
+        line += (f"; {len(m['origins'])} apps recorded it on {m['multi_origin_days']} "
+                 f"day(s), each day counts one app, never both")
+    return line
+
+
+def _entry_line(e: dict) -> str:
+    cats = f" ({', '.join(e['categories'])})" if e["categories"] else ""
+    line = f"[{e['id']}] {e['date']} {e['kind']}{cats}: {_clean(e['title'], 160)}"
+    if e.get("snippet"):
+        line += f" — {_clean(e['snippet'], 200)}"
+    if e["kind"] in ("task", "plan"):
+        if e.get("closure"):
+            line += f" (closed {e['closure']} {str(e['closed_at'])[:10]})"
+        else:
+            line += " (open" + (f", due {str(e['due_at'])[:10]}" if e.get("due_at") else "") + ")"
+    return line
+
+
+def _window_line(bundle: dict) -> str:
+    w = bundle["window"]
+    line = (f"WINDOW: {w['label']} ({w['start']} to {w['end']}); "
+            f"{bundle['days_with_entries_in_window']} day(s) with entries")
+    if w.get("ignored"):
+        line += "; ignored: " + "; ".join(w["ignored"])
+    return line
+
+
+def _evidence_lines(bundle: dict) -> tuple[list[str], dict[str, str]]:
+    """(context lines, {id: line}). Context lines carry no id: the window,
+    entity summaries, gaps."""
+    context = [_window_line(bundle)]
+    by_id: dict[str, str] = {}
+    for m in bundle["metrics"]:
+        by_id[m["id"]] = _metric_line(m)
+    for e in bundle["entries"]:
+        by_id[e["id"]] = _entry_line(e)
+    for p in bundle["passages"]:
+        by_id[p["id"]] = (f"[{p['id']}] {p['date']} transcript (source "
+                          f"{p['source_id']}): {_clean(p['snippet'], 300)}")
+    for o in bundle.get("observations", []):
+        by_id[o["id"]] = _obs_line(o)
+    if bundle.get("loops") is not None and bundle.get("intent", {}).get("loops"):
+        context.append(f"OPEN LOOPS: {bundle['loops_total']} open task(s)/plan(s) "
+                       f"in total; listed: {', '.join(bundle['loops']) or 'none'}")
+    for ent in bundle["entities"]:
+        bits = [f"ENTITY: {ent['name']} ({ent['type']}), named as \"{ent['matched']}\" "
+                f"by {ent['via']}"]
+        if ent.get("handles_linked"):
+            bits.append(f"{ent['handles_linked']} linked handle(s)")
+        lc = ent.get("last_contact")
+        if lc:
+            what = "last contact" if ent["type"] == "person" else "last mentioned"
+            bits.append(f"{what} {lc['latest']} ({lc['date']})")
+        if ent.get("cards"):
+            bits.append(f"contact card {', '.join(ent['cards'])}")
+        if ent.get("facts"):
+            bits.append(f"entries {', '.join(ent['facts'])}")
+        context.append("; ".join(bits))
+    for amb in bundle.get("ambiguous", []):
+        context.append(f"AMBIGUOUS: \"{amb['matched']}\" fits "
+                       + ", ".join(c["name"] for c in amb["candidates"])
+                       + " — not used to narrow the search")
+    for missing in bundle["no_data"]:
+        if "none imported" in missing:
+            context.append(f"NO DATA: {missing}")
+        elif missing.endswith(f"({ALL_RECORDS})"):
+            context.append(f"NO DATA: {missing}: nothing recorded at any date")
+        else:
+            context.append(f"NO DATA: {missing}: nothing recorded in this window")
+    if not bundle["has_evidence"]:
+        context.append("NO DATA: nothing in the database matches this question")
+    return context, by_id
+
+
 def render_evidence(bundle: dict, max_series: int = 14) -> str:
     """The evidence as compact text: what a model is allowed to use, and what
     a person sees when there is no model."""
-    w = bundle["window"]
-    lines = [f"WINDOW: {w['label']} ({w['start']} to {w['end']})"]
+    context, by_id = _evidence_lines(bundle)
+    lines = [context[0]]
     for m in bundle["metrics"]:
-        agg = "per-day total" if m["per_day_agg"] == "sum" else "per-day average"
-        head = (f"[{m['id']}] {m['label']} — {m['days']} day(s), {agg}: "
-                f"mean {fmt_value(m['mean'], m['unit'])}, "
-                f"min {fmt_value(m['min'], m['unit'])} on {m['min_date']}, "
-                f"max {fmt_value(m['max'], m['unit'])} on {m['max_date']}, "
-                f"latest {fmt_value(m['latest'], m['unit'])} on {m['latest_date']}"
-                f" (source: {m['origin']})")
-        lines.append(head)
+        lines.append(by_id[m["id"]])
         series = m["series"][-max_series:]
-        lines.append("     " + "; ".join(
-            f"{s['date']} {fmt_value(s['value'], m['unit'])}" for s in series))
-    for e in bundle["entries"]:
-        cats = f" [{', '.join(e['categories'])}]" if e["categories"] else ""
-        lines.append(f"[{e['id']}] {e['date']} ({e['kind']}){cats} {e['title']}"
-                     + (f" — {e['snippet']}" if e["snippet"] else ""))
-    for p in bundle["passages"]:
-        lines.append(f"[{p['id']}] {p['date']} transcript (source "
-                     f"{p['source_id']}): {p['snippet']}")
-    for ent in bundle["entities"]:
-        recent = "; ".join(f"{x['date']} {x['title']}" for x in ent["entries"])
-        lines.append(f"[ENTITY] {ent['name']} ({ent['type']}) — recent: "
-                     f"{recent or 'no entries'}")
-    for missing in bundle["no_data"]:
-        lines.append(f"[NO DATA] {missing}: nothing recorded in this window")
-    if not bundle["has_evidence"]:
-        lines.append("[NO DATA] nothing in the database matches this question")
+        fmt = (lambda v: fmt_money(v, m["unit"])) if m["metric"] == "txn_spend" \
+            else (lambda v: fmt_value(v, m["unit"]))
+        lines.append("     " + "; ".join(f"{s['date']} {fmt(s['value'])}" for s in series))
+    for key in ("entries", "passages", "observations"):
+        for item in bundle.get(key, []):
+            lines.append(by_id[item["id"]])
+    lines += context[1:]
     return "\n".join(lines)
 
 
+def _obs_phrase(o: dict) -> str:
+    """One observed record as an answer would say it — what the record says,
+    attributed, never restated as fact."""
+    kind, ex = o["kind"], _plain(o["snippet"])
+    others = _names([p for p in o["participants"] if not p["is_owner"]])
+    senders = _names([p for p in o["participants"]
+                      if not p["is_owner"] and p["role"] in ("sender", "organizer")])
+    if kind == "AI chat":
+        bot = AI_NAMES.get(o["stream"], "the assistant")
+        verb = f"you asked {bot}" if o["direction"] == "out" else f"{bot} answered"
+        title = f' (in "{o["title"]}")' if o["title"] else ""
+        return f'{verb}{title}: "{ex}"'
+    if kind == "text":
+        who = (f"you texted {others or 'someone'}" if o["direction"] == "out"
+               else f"{senders or others or 'someone'} texted you")
+        group = f' in "{o["title"]}"' if o["title"] else ""
+        return f'{who}{group}: "{ex}"'
+    if kind == "call":
+        dur = _obs_value(o)
+        if dur == "missed":
+            return (f"missed call from {others or 'someone'}" if o["direction"] != "out"
+                    else f"unanswered call to {others or 'someone'}")
+        verb = (f"you called {others or 'someone'}" if o["direction"] == "out"
+                else f"{others or 'someone'} called you")
+        return verb + (f" ({dur})" if dur else "")
+    if kind == "calendar":
+        loc = _obs_value(o)
+        return (f'calendar "{o["title"] or "event"}"'
+                + (f" with {others}" if others else "") + (f" {loc}" if loc else ""))
+    if kind == "transaction":
+        return f'transaction "{o["title"] or "?"}" {_obs_value(o) or ""}'.strip()
+    extra = _obs_value(o)
+    text = f'{kind} "{o["title"]}"' if o["title"] else kind
+    if extra:
+        text += f" {extra}"
+    return text + (f': "{ex}"' if ex else "")
+
+
+def _entry_phrase(e: dict) -> str:
+    return f'journal entry "{e["title"]}"'
+
+
 def deterministic_answer(bundle: dict) -> str:
-    """A useful answer with no model involved: the statistics, stated plainly,
-    each pointing at its evidence id."""
+    """A useful answer with no model involved: the statistics and records,
+    stated plainly, each pointing at its evidence id. Everything numeric in
+    it appears in the evidence it cites — it passes its own citation check."""
     w = bundle["window"]
+    intent = bundle.get("intent") or {}
+    items = {x["id"]: x for key in ("metrics", "entries", "passages", "observations")
+             for x in bundle.get(key, [])}
+    used: set[str] = set()
     out: list[str] = []
+
+    def phrase(i: str) -> str:
+        used.add(i)
+        x = items[i]
+        return _obs_phrase(x) if i.startswith("O") else _entry_phrase(x)
+
     for m in bundle["metrics"]:
+        used.add(m["id"])
+        if m["metric"] == "txn_spend":
+            span = m["span"]
+            text = (f"You spent {fmt_money(m['total'], m['unit'])} across "
+                    f"{m['count']} transaction(s)"
+                    + (f' matching "{m["terms_display"]}"' if m["terms"] else "")
+                    + f" ({span['label']}, {span['start']} to {span['end']})")
+            if m["received"]:
+                text += f" and received {fmt_money(m['received'], m['unit'])}"
+            text += f" [{m['id']}]"
+            listed = m["transactions"][:5]
+            if listed:
+                text += ": " + "; ".join(
+                    f"{items[i]['date']} {items[i]['title'] or ''} "
+                    f"{fmt_money(items[i]['value'], items[i]['unit'], signed=True)} [{i}]"
+                    for i in listed)
+                used.update(listed)
+            out.append(text + ".")
+            continue
         trend = ""
-        if len(m["series"]) >= 4:
-            half = len(m["series"]) // 2
-            first = sum(s["value"] for s in m["series"][:half]) / half
-            second = (sum(s["value"] for s in m["series"][half:])
-                      / (len(m["series"]) - half))
-            if first:
-                change = (second - first) / abs(first) * 100
-                if abs(change) >= 5:
-                    trend = (f", trending {'up' if change > 0 else 'down'} "
-                             f"{abs(change):.0f}% across the window")
+        if m.get("trend_pct"):
+            trend = (f", trending {'up' if m['trend_pct'] > 0 else 'down'} "
+                     f"{abs(m['trend_pct'])}% across the window")
         word = "totalled" if m["per_day_agg"] == "sum" else "averaged"
         out.append(f"{m['label'].capitalize()} {word} "
                    f"{fmt_value(m['mean'], m['unit'])} per day over {m['days']} "
                    f"day(s) (min {fmt_value(m['min'], m['unit'])} {m['min_date']}, "
                    f"max {fmt_value(m['max'], m['unit'])} {m['max_date']}){trend} "
                    f"[{m['id']}].")
-    if bundle["entries"]:
-        out.append("Related entries: " + "; ".join(
-            f"{e['date']} {e['title']} [{e['id']}]" for e in bundle["entries"][:5])
-            + ".")
+
+    if intent.get("loops"):
+        listed = [i for i in bundle.get("loops", [])]
+        if listed:
+            used.update(listed)
+            out.append("Open tasks and plans: " + "; ".join(
+                f"{items[i]['date']} {items[i]['title']} ({items[i]['kind']}"
+                + (f", due {str(items[i]['due_at'])[:10]}" if items[i].get("due_at") else "")
+                + f") [{i}]" for i in listed) + ".")
+        else:
+            out.append("You have no open tasks or plans.")
+
+    people = [e for e in bundle["entities"] if e["type"] == "person"]
+    later: list[str] = []
+    for ent in bundle["entities"]:
+        name, lc = ent["name"], ent.get("last_contact")
+        if ent["type"] != "person":
+            if intent.get("recency") and lc:
+                out.append(f"You last mentioned {name} on {lc['date']}: "
+                           f"{phrase(lc['latest'])} [{lc['latest']}].")
+            continue
+        no_hits = not ent.get("hits")
+        want_contact = intent.get("recency")
+        want_profile = intent.get("profile")
+        fallback = no_hits and not want_contact and not want_profile
+        sentences = []
+        if want_contact or fallback:
+            if lc:
+                sentences.append(f"Last contact with {name}: {lc['date']}, "
+                                 f"{phrase(lc['latest'])} [{lc['latest']}].")
+                before = [i for i in lc["items"] if i != lc["latest"]]
+                if before and want_contact:
+                    sentences.append("Before that: " + "; ".join(
+                        f"{items[i]['date']} {phrase(i)} [{i}]" for i in before) + ".")
+            elif want_contact:
+                sentences.append(f"Nothing recorded shows contact with {name}.")
+        if want_profile or fallback:
+            for c in ent.get("cards", []):
+                used.add(c)
+                sentences.append(f"{name}'s contact card: "
+                                 f'"{_plain(items[c]["snippet"], 300)}" [{c}].')
+            facts = [i for i in ent.get("facts", []) if i not in used][:4]
+            if facts:
+                used.update(facts)
+                sentences.append(f"Recorded about {name}: " + "; ".join(
+                    f"{items[i]['date']} {items[i]['title']} [{i}]" for i in facts) + ".")
+        (later if fallback else out).extend(sentences)
+
+    hits = [i for e in people for i in e.get("hits", [])] + bundle.get("obs_hits", [])
+    hits = [i for i in dict.fromkeys(hits) if i not in used][:4]
+    observed = []
+    if hits:
+        observed.append("Imported records (observed, not confirmed): " + "; ".join(
+            f"{items[i]['date']} {phrase(i)} [{i}]" for i in hits) + ".")
+
+    # Text-search hits in rank order first, then whatever else was gathered.
+    order = list(dict.fromkeys(bundle.get("entry_hits", []) + list(items)))
+    related = [items[i] for i in order if i.startswith("E") and i not in used][:5]
+    confirmed = []
+    if related:
+        used.update(e["id"] for e in related)
+        confirmed.append("Related entries: " + "; ".join(
+            f"{e['date']} {e['title']} [{e['id']}]" for e in related) + ".")
+    # What the owner confirmed leads — unless the question asked about the
+    # records themselves ('what did I ask Claude', 'what did Jake text me').
+    asked_for_records = bool(intent.get("streams") or intent.get("direction"))
+    out.extend(observed + confirmed if asked_for_records else confirmed + observed)
+    out.extend(later)
     if bundle["passages"] and not bundle["entries"]:
         out.append("Mentioned in transcripts: " + "; ".join(
             f"{p['date']} [{p['id']}]" for p in bundle["passages"]) + ".")
     for ent in bundle["entities"]:
-        out.append(f"{ent['name']} appears in "
-                   f"{len(ent['entries'])} recent entr(y/ies).")
+        if not (ent.get("facts") or ent.get("cards") or ent.get("last_contact")
+                or ent.get("hits")):
+            out.append(f"{ent['name']} is known, but nothing recorded mentions them.")
+    for amb in bundle.get("ambiguous", []):
+        out.append(f"\"{amb['matched']}\" could be "
+                   + " or ".join(c["name"] for c in amb["candidates"])
+                   + " — name them in full to narrow it down.")
     if bundle["no_data"]:
         # One keyword can fire many metrics; naming every empty one buries the
         # answer. The full list stays in the evidence and in --json.
-        shown = bundle["no_data"][:3]
-        rest = len(bundle["no_data"]) - len(shown)
-        out.append("No data for: " + ", ".join(shown)
-                   + (f" (and {rest} more)" if rest > 0 else "")
-                   + f" in {w['label']}.")
-    if not out:
+        anytime = [x for x in bundle["no_data"] if x.endswith(f"({ALL_RECORDS})")]
+        windowed = [x for x in bundle["no_data"] if x not in anytime]
+        parts = []
+        if windowed:
+            shown = windowed[:3]
+            parts.append(", ".join(shown)
+                         + (", and more (see the evidence)" if len(windowed) > 3 else "")
+                         + f" in {w['label']}")
+        parts += anytime
+        out.append("No data for: " + "; ".join(parts) + ".")
+    if w.get("ignored"):
+        out.append("Ignored: " + "; ".join(w["ignored"]) + ".")
+    if not out or (not bundle["has_evidence"] and not bundle["no_data"]
+                   and not intent.get("loops")):
         out.append(f"Nothing in the database matches that question for "
                    f"{w['label']} ({w['start']} to {w['end']}). "
                    f"{bundle['days_with_entries_in_window']} day(s) in that "
@@ -519,25 +2109,202 @@ def deterministic_answer(bundle: dict) -> str:
 
 # ---------------------------------------------------------------- citations
 
-CITE_RE = re.compile(r"\[([MEP]\d+)\]")
+CITE_RE = re.compile(r"\[([MEPO]\d+)\]")
+# Anything bracketed that is shaped like an id counts — [m1], [M1, E2] and
+# an invented [X2] included — so a citation can never slip past the check
+# by being spelled differently.
+_BRACKET_RE = re.compile(r"\[([^\[\]\n]{1,60})\]")
+_ID_SHAPE = re.compile(r"[A-Za-z]{1,3}\d{1,5}")
+_ID_REF = re.compile(r"\b[MEPO]\d+\b")
+
+_F_ISO = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
+_MONTH_ALT = "|".join(_MONTH_WORDS)
+_F_MD = re.compile(rf"\b({_MONTH_ALT})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?:,?\s+(\d{{4}})\b)?",
+                   re.IGNORECASE)
+_F_DM = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_MONTH_ALT})\b\.?(?:,?\s+(\d{{4}})\b)?",
+                   re.IGNORECASE)
+_F_TIME = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2})?(?![\d:])(?:\s*([ap])\.?m\b\.?)?",
+                     re.IGNORECASE)
+_F_NUM = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)")
+_F_WORDNUM = re.compile(r"\b(" + "|".join(
+    ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+     "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "hundred"])
+    + r")\b", re.IGNORECASE)
+_WORDNUM_VALUES = {w: v for v, w in enumerate(
+    ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+     "seventeen", "eighteen", "nineteen"])} | {"twenty": 20, "thirty": 30,
+                                               "forty": 40, "fifty": 50,
+                                               "hundred": 100}
+
+
+def _cited(text: str) -> list[str]:
+    out = []
+    for m in _BRACKET_RE.finditer(text):
+        for part in re.split(r"[,;/\s]+", m.group(1).strip()):
+            if _ID_SHAPE.fullmatch(part):
+                out.append(part.upper())
+    return out
+
+
+def _month_number(token: str) -> int:
+    t = token.lower()
+    return MONTHS.get(t) or MONTH_ABBR[t]
+
+
+def _facts(text: str, *, evidence: bool = False) -> dict:
+    """The checkable content of a text: full dates, month-days, clock times
+    and plain numbers (dates and times are taken out first, so a day-of-month
+    never passes for a quantity)."""
+    dates, md, times, nums = set(), set(), set(), []
+    t = text
+    for m in _F_ISO.finditer(t):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        dates.add((y, mo, d))
+        md.add((mo, d))
+        nums.append((float(y), 0))
+    t = _F_ISO.sub(" ", t)
+    for rx, mi, di in ((_F_MD, 1, 2), (_F_DM, 2, 1)):
+        for m in rx.finditer(t):
+            md.add((_month_number(m.group(mi)), int(m.group(di))))
+            if m.group(3):
+                nums.append((float(m.group(3)), 0))
+        t = rx.sub(" ", t)
+    for m in _F_TIME.finditer(t):
+        times.add((int(m.group(1)), int(m.group(2)), (m.group(3) or "").lower()))
+    t = _F_TIME.sub(" ", t)
+    for m in _F_NUM.finditer(t):
+        s = m.group(1).replace(",", "")
+        if s.endswith("."):
+            s = s[:-1]
+        try:
+            nums.append((float(s), len(s.split(".")[1]) if "." in s else 0))
+        except ValueError:
+            continue
+    if evidence:
+        for m in _F_WORDNUM.finditer(t):
+            nums.append((float(_WORDNUM_VALUES[m.group(1).lower()]), 0))
+    return {"dates": dates, "md": md, "times": times, "nums": nums}
+
+
+def _merge(facts: list[dict]) -> dict:
+    out = {"dates": set(), "md": set(), "times": set(), "nums": set()}
+    for f in facts:
+        out["dates"] |= f["dates"]
+        out["md"] |= f["md"]
+        out["times"] |= {(h, m) for h, m, _ in f["times"]}
+        out["nums"] |= {abs(v) for v, _ in f["nums"]}
+    return out
+
+
+def _num_ok(value: float, decimals: int, pool: set[float]) -> bool:
+    scale = 10 ** decimals
+    for e in pool:
+        if abs(e - value) < 1e-9:
+            return True
+        # 7.19 may be said as 7.2 or 7 — rounded or cut to the stated
+        # precision — but never as 9.
+        if abs(math.floor(e * scale + 0.5) / scale - value) < 1e-9 \
+                or abs(math.floor(e * scale) / scale - value) < 1e-9:
+            return True
+    return False
+
+
+def _supported(f: dict, pool: dict) -> bool:
+    if any(d not in pool["dates"] for d in f["dates"]):
+        return False
+    if any(md not in pool["md"] for md in f["md"]):
+        return False
+    for h, mi, ampm in f["times"]:
+        cands = {(h, mi)}
+        if ampm == "p" and h < 12:
+            cands = {(h + 12, mi)}
+        elif ampm == "a" and h == 12:
+            cands = {(0, mi)}
+        elif not ampm and h < 12:
+            cands.add((h + 12, mi))
+        if not cands & pool["times"]:
+            return False
+    return all(_num_ok(abs(v), dec, pool["nums"]) for v, dec in f["nums"])
+
+
+def _sentences(answer: str) -> list[str]:
+    """Split on sentence ends outside quotes: a quoted message ("Veracruz
+    tonight? you know it's my favorite") is part of the sentence quoting it."""
+    pieces, buf, quoted = [], [], False
+    text = answer.strip()
+    for i, ch in enumerate(text):
+        buf.append(ch)
+        if ch == '"':
+            quoted = not quoted
+        elif ch == "“":
+            quoted = True
+        elif ch == "”":
+            quoted = False
+        elif ch == "\n" or (ch in ".!?" and not quoted
+                            and (i + 1 == len(text) or text[i + 1].isspace())):
+            pieces.append("".join(buf))
+            buf = []
+    pieces.append("".join(buf))
+    out: list[str] = []
+    for piece in pieces:
+        piece = piece.strip()
+        if not piece:
+            continue
+        # "...7 hours. [M1]" — a trailing citation belongs to its sentence.
+        if out and _BRACKET_RE.sub("", piece).strip(" .,;") == "":
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
+    return out
 
 
 def evidence_ids(bundle: dict) -> set[str]:
-    return ({m["id"] for m in bundle["metrics"]}
-            | {e["id"] for e in bundle["entries"]}
-            | {p["id"] for p in bundle["passages"]})
+    return {x["id"] for key in ("metrics", "entries", "passages", "observations")
+            for x in bundle.get(key, [])}
 
 
 def check_citations(answer: str, bundle: dict) -> dict:
-    """Which evidence the answer actually cites, and any id it invented.
+    """Which evidence the answer cites, any id it invented, and any sentence
+    whose numbers or dates the evidence does not contain.
 
-    An unknown citation means the model referenced evidence that does not
-    exist — the caller surfaces that rather than printing it as fact.
+    A sentence that states a number or a date must get it from the evidence
+    it cites (or from the window and no-data lines, which every sentence may
+    use): one valid citation elsewhere in the answer no longer vouches for
+    the rest. A context line that points at ids ("last contact O3
+    (2026-10-12)") lends its facts only to sentences citing one of them —
+    "you last talked to Mom on 2026-10-12" with no citation is unsupported.
+    The caller surfaces failures rather than printing them as fact.
     """
-    cited = set(CITE_RE.findall(answer))
+    cited = set(_cited(answer))
     known = evidence_ids(bundle)
+    context, by_id = _evidence_lines(bundle)
+    shared, attached = [], {}
+    for line in context:
+        refs = [r for r in _ID_REF.findall(line) if r in known]
+        for r in refs:
+            attached.setdefault(r, []).append(line)
+        if not refs:
+            shared.append(line)
+    base = _facts("\n".join(shared), evidence=True)
+    per_id: dict[str, dict] = {}
+    unsupported = []
+    for sentence in _sentences(answer):
+        ids = [i for i in _cited(sentence) if i in known]
+        f = _facts(_BRACKET_RE.sub(" ", sentence))
+        if not (f["dates"] or f["md"] or f["times"] or f["nums"]):
+            continue
+        for i in ids:
+            if i not in per_id:
+                per_id[i] = _facts("\n".join([by_id[i], *attached.get(i, [])]),
+                                   evidence=True)
+        pool = _merge([base, *(per_id[i] for i in ids)])
+        if not _supported(f, pool):
+            unsupported.append(sentence[:300])
     return {"cited": sorted(cited & known), "unknown": sorted(cited - known),
-            "uncited": bool(known) and not (cited & known)}
+            "uncited": bool(known) and not (cited & known),
+            "unsupported": unsupported}
 
 
 # ---------------------------------------------------------------- the whole pipeline
@@ -549,53 +2316,92 @@ def evidence_index(bundle: dict) -> dict:
     not produce is simply absent."""
     index = {}
     for m in bundle.get("metrics", []):
-        index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
-                          f"over {m['days']} day(s), {m['origin']}")
+        if m.get("metric") == "txn_spend":
+            index[m["id"]] = (f"{m['label']}: {fmt_money(m['total'], m['unit'])} over "
+                              f"{m['count']} transaction(s), {m['origin']}")
+        else:
+            index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
+                              f"over {m['days']} day(s), {m['origin']}")
     for e in bundle.get("entries", []):
         index[e["id"]] = f"{e['date']} entry: {e['title']}"
     for p in bundle.get("passages", []):
         index[p["id"]] = f"{p['date']} transcript (source {p['source_id']})"
     for o in bundle.get("observations", []):
-        index[o["id"]] = (f"{o['date']} {o['stream']} (observed, import "
-                          f"{str(o.get('import_uuid') or '')[:8]})")
+        what = o.get("kind") or o.get("stream")
+        who = f" {o['who']}" if o.get("who") else ""
+        title = f' "{o["title"]}"' if o.get("title") else ""
+        index[o["id"]] = (f"{o['date']} {what}{who}{title} (observed, import "
+                          f"{str(o.get('import_uuid') or '')[:8]}"
+                          + (f", {o['source_file']}" if o.get("source_file") else "")
+                          + ")")
     return index
 
 
 def answer(conn: sqlite3.Connection, cfg: Config, question: str, *,
            days: int | None = None, use_llm: bool = True,
-           model: str | None = None, warn=None) -> dict:
+           model: str | None = None, warn=None, today: date | None = None) -> dict:
     """Everything `lifecrm ask` does short of logging the question.
 
     Returns exactly the `ask --json` shape: {question, answer, answer_source,
-    citations, evidence, evidence_text, model}. `conn` should be read-only;
-    sqlite3 errors from retrieval propagate to the caller. `warn(msg)` hears
-    about a local model that failed mid-answer (the deterministic answer is
-    used instead). The CLI, the web UI and the voice loop all call this, so
-    they can never disagree about what the data says.
+    citations, evidence, evidence_text, model, model_rejected}. `conn` should
+    be read-only; sqlite3 errors from retrieval propagate to the caller, as
+    does ValueError for an unusable `days`. `warn(msg)` hears about anything
+    the person should know that is not the answer: a local model that failed,
+    a model answer that was set aside, an endpoint that is not this machine.
+    The CLI, the web UI and the voice loop all call this, so they can never
+    disagree about what the data says.
+
+    A model's answer is used only if every id it cites exists and every
+    number and date it states is in the evidence it cited; otherwise the
+    deterministic answer stands and `model_rejected` says why.
     """
     from . import llm as llm_mod
 
     bundle = build_evidence(
-        conn, cfg, question, days=days,
-        max_entries=int(cfg.ask.get("max_entries", 8)),
-        max_passages=int(cfg.ask.get("max_passages", 4)))
+        conn, cfg, question, days=days, today=today,
+        max_entries=ask_setting(cfg, "max_entries", 8),
+        max_passages=ask_setting(cfg, "max_passages", 4),
+        max_observations=ask_setting(cfg, "max_observations", 6))
     evidence_text = render_evidence(bundle)
     answer_text = deterministic_answer(bundle)
     source = "deterministic"
-    llm_state = ({"available": False, "reason": "--no-llm"} if not use_llm
-                 else llm_mod.status(cfg))
+    rejected = None
+    if not use_llm:
+        llm_state = {"available": False, "reason": "--no-llm"}
+    else:
+        llm_state = llm_mod.status(cfg) if model is None \
+            else llm_mod.status(cfg, model=model)
+        if llm_state.get("warning") and warn:
+            warn(llm_state["warning"])
 
-    if use_llm and llm_state["available"] and bundle["has_evidence"]:
+    if use_llm and llm_state["available"] and evidence_ids(bundle):
+        name = model or llm_state["model"]
         try:
-            phrased = llm_mod.answer(cfg, evidence_text, question,
-                                     model=model or llm_state["model"])
+            phrased = llm_mod.answer(cfg, evidence_text, question, model=name)
         except Exception as e:                      # transport, timeout, 404
             if warn:
                 warn(f"local model unavailable ({e}) — deterministic answer")
             phrased = ""
         if phrased:
-            answer_text = phrased
-            source = f"model:{model or llm_state['model']}"
+            check = check_citations(phrased, bundle)
+            if check["unknown"] or check["unsupported"]:
+                rejected = {"model": name, "answer": phrased,
+                            "unknown": check["unknown"],
+                            "unsupported": check["unsupported"]}
+                if warn:
+                    why = []
+                    if check["unknown"]:
+                        why.append(f"the model cited evidence that does not exist "
+                                   f"({', '.join(check['unknown'])})")
+                    if check["unsupported"]:
+                        why.append(f"{len(check['unsupported'])} sentence(s) state "
+                                   f"numbers or dates its citations do not contain")
+                    warn("; ".join(why) + " — its answer was set aside for one "
+                         "built from the evidence alone")
+            else:
+                answer_text, source = phrased, f"model:{name}"
+                if check["uncited"] and warn:
+                    warn("the model cited no evidence — verify it against --evidence")
 
     # Both paths cite evidence ids, so both get checked the same way — the
     # printed sources are what the answer actually used, never everything
@@ -604,4 +2410,4 @@ def answer(conn: sqlite3.Connection, cfg: Config, question: str, *,
     return {"question": question, "answer": answer_text,
             "answer_source": source, "citations": citations,
             "evidence": bundle, "evidence_text": evidence_text,
-            "model": llm_state}
+            "model": llm_state, "model_rejected": rejected}
