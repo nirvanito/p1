@@ -198,8 +198,13 @@ def _number(text: str) -> int:
 
 def _period(which: str, unit: str, today: date) -> tuple[date, date, str] | None:
     """this/last/next week|month|year. 'last week' is the 7 days before
-    today (rolling); months and years are calendar ones."""
-    which = "last" if which in ("past", "previous") else which
+    today (rolling); months and years are calendar ones. 'past week|month|
+    year' is a rolling span ending today, like 'past 1 year' — 'how much
+    did I spend over the past year' means the last twelve months, never
+    only the previous calendar year."""
+    if which == "past":
+        return today - timedelta(days=UNIT_DAYS[unit] - 1), today, f"past {unit}"
+    which = "last" if which == "previous" else which
     if unit == "week":
         monday = today - timedelta(days=today.weekday())
         if which == "this":
@@ -221,15 +226,27 @@ def _period(which: str, unit: str, today: date) -> tuple[date, date, str] | None
     return date(year, 1, 1), date(year, 12, 31), f"{which} year"
 
 
+def _period_end(unit: str, today: date) -> date:
+    """The last day of this week|month|year — where a forward-looking
+    question ('what's on my calendar this week') stops."""
+    if unit == "week":
+        return today + timedelta(days=6 - today.weekday())
+    if unit == "month":
+        return _month_span(today.year, today.month)[1]
+    return date(today.year, 12, 31)
+
+
 def _month_point(token: str, after: str, today: date,
                  year_hint: int | None, ignored: list[str]
-                 ) -> tuple[date, date, str] | None:
-    """A month name, optionally with a day and/or a year after it."""
+                 ) -> tuple[date, date, str, int] | None:
+    """A month name, optionally with a day and/or a year after it. The
+    fourth value is how much of `after` the day and year used."""
     month = MONTHS.get(token) or MONTH_ABBR[token]
     dm = re.match(r"\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?", after)
     ym = re.match(r"\.?,?\s+(\d{4})\b", after)
     year = (int(dm.group(2)) if dm and dm.group(2)
             else int(ym.group(1)) if ym else year_hint)
+    used = dm.end() if dm else ym.end() if ym else 0
     if dm:
         n = int(dm.group(1))
         y = year or today.year
@@ -240,41 +257,45 @@ def _month_point(token: str, after: str, today: date,
         except ValueError:
             ignored.append(f"{MONTH_NAMES[month]} {n} is not a real date")
             return None
-        return d, d, f"{MONTH_NAMES[month]} {d.day}, {d.year}"
+        return d, d, f"{MONTH_NAMES[month]} {d.day}, {d.year}", used
     if year is None:
         # In July, 'December' means last December — not one five months away.
         year = today.year if month <= today.month else today.year - 1
     start, end = _month_span(year, month)
-    return start, end, f"{MONTH_NAMES[month]} {year}"
+    return start, end, f"{MONTH_NAMES[month]} {year}", used
 
 
-def _point(text: str, today: date) -> tuple[date, date, str] | None:
+def _point(text: str, today: date) -> tuple[date, date, str, int] | None:
     """One time expression at the very start of `text` — the X in 'since X'
     or 'between X and Y'. Anchored, so 'from Jake in July' is not 'since
-    July'."""
-    t = re.sub(r"^(?:the\s+)", "", text.strip())
+    July'. The fourth value is how many characters of `text` it used."""
+    stripped = text.lstrip()
+    lead = re.match(r"the\s+", stripped)
+    skip = len(text) - len(stripped) + (lead.end() if lead else 0)
+    t = text[skip:]
     m = _ISO_DATE.match(t)
     if m:
         try:
             d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             return None
-        return d, d, d.isoformat()
+        return d, d, d.isoformat(), skip + m.end()
     m = re.match(r"(today|yesterday|tomorrow)\b", t)
     if m:
         d = today + timedelta(days={"today": 0, "yesterday": -1,
                                     "tomorrow": 1}[m.group(1)])
-        return d, d, m.group(1)
+        return d, d, m.group(1), skip + m.end()
     m = re.match(r"(last|this|next|past|previous)\s+(week|month|year)\b", t)
     if m:
-        return _period(m.group(1), m.group(2), today)
+        return *_period(m.group(1), m.group(2), today), skip + m.end()
     m = _MONTH_RE.match(t)
     if m:
-        return _month_point(m.group(1), t[m.end():], today, None, [])
+        p = _month_point(m.group(1), t[m.end():], today, None, [])
+        return (*p[:3], skip + m.end() + p[3]) if p else None
     m = re.match(r"((?:19|20)\d{2})\b(?![-\d])", t)
     if m:
         y = int(m.group(1))
-        return date(y, 1, 1), date(y, 12, 31), str(y)
+        return date(y, 1, 1), date(y, 12, 31), str(y), skip + m.end()
     return None
 
 
@@ -293,71 +314,93 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
     person called June is never read as the month. Something that looks like
     a date but is not one ('2026-13', 'Feb 30') is ignored, never a crash,
     and listed under `ignored` so the answer can say so.
+
+    An explicit window lists the character `spans` of the question it was
+    read from. Those words are the window, not the topic: 'how much did I
+    spend in September' searches every transaction in September, never ones
+    whose text says "September" (`without_window_words`). A 'this week|
+    month|year' window also carries `through`, the period's last day, for
+    questions that look forward (`build_evidence`).
     """
     q = question.lower().replace("’", "'")
     today = today or local_today(cfg)
     ignored: list[str] = []
 
-    def win(start: date | str, end: date | str, label: str) -> dict:
+    def win(start: date | str, end: date | str, label: str, *spans,
+            through: date | None = None) -> dict:
         w = {"start": start if isinstance(start, str) else start.isoformat(),
              "end": end if isinstance(end, str) else end.isoformat(),
-             "label": label, "explicit": True}
+             "label": label, "explicit": True,
+             "spans": [list(_lead_in(q, s)) for s in spans]}
+        if through is not None and through.isoformat() > w["end"]:
+            w["through"] = through.isoformat()
         if ignored:
             w["ignored"] = list(ignored)
         return w
 
-    def since_before(pos: int) -> bool:
-        return bool(re.search(r"\b(?:since|after|from)\s+$", q[:pos]))
+    def since_start(pos: int) -> int | None:
+        found = re.search(r"\b(?:since|after|from)\s+$", q[:pos])
+        return found.start() if found else None
 
     # ---- ISO dates and months, validated
-    dates: list[tuple[date, int]] = []
+    dates: list[tuple[date, tuple[int, int]]] = []
     for m in _ISO_DATE.finditer(q):
         try:
             dates.append((date(int(m.group(1)), int(m.group(2)),
-                               int(m.group(3))), m.start()))
+                               int(m.group(3))), m.span()))
         except ValueError:
             ignored.append(f"{m.group(0)} is not a real date")
     if len(dates) >= 2:
         lo, hi = sorted(d for d, _ in dates[:2])
-        return win(lo, hi, f"{lo} to {hi}")
+        return win(lo, hi, f"{lo} to {hi}", *(s for _, s in dates[:2]))
     if dates:
-        d, pos = dates[0]
-        if since_before(pos):
-            return win(d, max(d, today), f"since {d}")
-        return win(d, d, d.isoformat())
+        d, (pos, end) = dates[0]
+        since = since_start(pos)
+        if since is not None:
+            return win(d, max(d, today), f"since {d}", (since, end))
+        return win(d, d, d.isoformat(), (pos, end))
     for m in _ISO_MONTH.finditer(q):
         try:
             start, end = _month_span(int(m.group(1)), int(m.group(2)))
         except ValueError:
             ignored.append(f"{m.group(0)} is not a real month")
             continue
-        if since_before(m.start()):
-            return win(start, max(start, today), f"since {m.group(0)}")
-        return win(start, end, m.group(0))
+        since = since_start(m.start())
+        if since is not None:
+            return win(start, max(start, today), f"since {m.group(0)}",
+                       (since, m.end()))
+        return win(start, end, m.group(0), m.span())
 
     # ---- ranges in words: between X and Y, since X
     m = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+)$", q)
     if m:
         a, b = _point(m.group(1), today), _point(m.group(2), today)
         if a and b:
-            return win(min(a[0], b[0]), max(a[1], b[1]), f"{a[2]} to {b[2]}")
+            return win(min(a[0], b[0]), max(a[1], b[1]), f"{a[2]} to {b[2]}",
+                       (m.start(), m.start(1) + a[3]),
+                       (m.end(1), m.start(2) + b[3]))
     for m in re.finditer(r"\b(?:since|after|from)\s+(.+)$", q):
         p = _point(m.group(1), today)
         if p:
-            return win(p[0], max(p[0], today), f"since {p[2]}")
+            return win(p[0], max(p[0], today), f"since {p[2]}",
+                       (m.start(), m.start(1) + p[3]))
 
     # ---- days
-    if re.search(r"\b(?:today|tonight|this (?:morning|afternoon|evening))\b", q):
-        return win(today, today, "today")
-    if re.search(r"\byesterday\b", q):
+    m = re.search(r"\b(?:today|tonight|this (?:morning|afternoon|evening))\b", q)
+    if m:
+        return win(today, today, "today", m.span())
+    m = re.search(r"\byesterday\b", q)
+    if m:
         y = today - timedelta(days=1)
-        return win(y, y, "yesterday")
-    if re.search(r"\btomorrow\b", q):
+        return win(y, y, "yesterday", m.span())
+    m = re.search(r"\btomorrow\b", q)
+    if m:
         t = today + timedelta(days=1)
-        return win(t, t, "tomorrow")
-    if re.search(r"\blast night\b", q):
+        return win(t, t, "tomorrow", m.span())
+    m = re.search(r"\blast night\b", q)
+    if m:
         # Sleep is filed under the day you woke up, so last night == today.
-        return win(today, today, "last night")
+        return win(today, today, "last night", m.span())
 
     # ---- N units ago / last N units
     m = _AGO.search(q)
@@ -367,21 +410,21 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
         if n >= 1 and n * UNIT_DAYS[unit] <= MAX_SPAN_DAYS:
             if unit == "day":
                 d = today - timedelta(days=n)
-                return win(d, d, label)
+                return win(d, d, label, m.span())
             if unit == "week":
                 d = today - timedelta(days=7 * n)
                 monday = d - timedelta(days=d.weekday())
-                return win(monday, monday + timedelta(days=6), label)
+                return win(monday, monday + timedelta(days=6), label, m.span())
             if unit == "month":
                 y, mo = divmod(today.year * 12 + today.month - 1 - n, 12)
-                return win(*_month_span(y, mo + 1), label)
+                return win(*_month_span(y, mo + 1), label, m.span())
             # 'four years ago' is fuzzy: the year centred on that date.
             try:
                 d = today.replace(year=today.year - n)
             except ValueError:                  # Feb 29
                 d = today.replace(year=today.year - n, day=28)
             return win(d - timedelta(days=182), d + timedelta(days=182),
-                       f"around {label}")
+                       f"around {label}", m.span())
         ignored.append(f"'{m.group(0)}' is not a usable span")
     m = _LAST_N.search(q)
     if m:
@@ -394,22 +437,26 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
             if span > MAX_SPAN_DAYS:
                 ignored.append(f"'{m.group(0)}' capped at {MAX_SPAN_DAYS} days")
                 span = MAX_SPAN_DAYS
-            return win(today - timedelta(days=span - 1), today, label)
+            return win(today - timedelta(days=span - 1), today, label, m.span())
 
     # ---- weekends and weeks
     monday = today - timedelta(days=today.weekday())
-    if re.search(r"\blast weekend\b", q):
+    m = re.search(r"\blast weekend\b", q)
+    if m:
         return win(monday - timedelta(days=2), monday - timedelta(days=1),
-                   "last weekend")
-    if re.search(r"\bthis weekend\b", q):
+                   "last weekend", m.span())
+    m = re.search(r"\bthis weekend\b", q)
+    if m:
         return win(monday + timedelta(days=5), monday + timedelta(days=6),
-                   "this weekend")
-    if re.search(r"\bnext weekend\b", q):
+                   "this weekend", m.span())
+    m = re.search(r"\bnext weekend\b", q)
+    if m:
         return win(monday + timedelta(days=12), monday + timedelta(days=13),
-                   "next weekend")
+                   "next weekend", m.span())
     m = re.search(r"\b(this|last|past|previous|next) week\b", q)
     if m:
-        return win(*_period(m.group(1), "week", today))
+        return win(*_period(m.group(1), "week", today), m.span(),
+                   through=_period_end("week", today) if m.group(1) == "this" else None)
 
     # ---- month names (before 'last year', so 'July last year' is July)
     year_hint = (today.year - 1 if re.search(r"\b(?:last|previous) year\b", q)
@@ -428,19 +475,21 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
                 continue
         p = _month_point(token, after, today, year_hint, ignored)
         if p:
-            return win(*p)
+            return win(*p[:3], (m.start(), m.end() + p[3]))
 
     m = re.search(r"\b(this|last|past|previous|next) month\b", q)
     if m:
-        return win(*_period(m.group(1), "month", today))
+        return win(*_period(m.group(1), "month", today), m.span(),
+                   through=_period_end("month", today) if m.group(1) == "this" else None)
     m = re.search(r"\b(this|last|past|previous|next) year\b", q)
     if m:
-        return win(*_period(m.group(1), "year", today))
+        return win(*_period(m.group(1), "year", today), m.span(),
+                   through=_period_end("year", today) if m.group(1) == "this" else None)
     m = _YEAR.search(q)
     if m:
         y = int(m.group(1))
         return win(date(y, 1, 1), min(date(y, 12, 31), max(today, date(y, 1, 1))),
-                   str(y))
+                   str(y), m.span())
 
     m = _WEEKDAY_RE.search(q)
     if m:
@@ -451,7 +500,7 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
             delta = (today.weekday() - wd) % 7
             d = today - timedelta(days=delta or (7 if which == "last" else 0))
         label = f"{which + ' ' if which in ('last', 'next') else ''}{m.group(2).capitalize()}"
-        return win(d, d, f"{label} ({d})")
+        return win(d, d, f"{label} ({d})", m.span())
 
     start = today - timedelta(days=default_days - 1)
     w = {"start": start.isoformat(), "end": today.isoformat(),
@@ -461,18 +510,54 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
     return w
 
 
+# A word that only qualifies the time after it ('during September', 'early
+# October', 'until Friday') goes with it: once that time is the window, the
+# word is no topic either.
+_LEAD_IN = re.compile(r"\b(?:during|until|till|through|throughout|before|after|"
+                      r"around|early|late|mid|since)[\s-]+$")
+
+
+def _lead_in(q: str, span: tuple[int, int]) -> tuple[int, int]:
+    m = _LEAD_IN.search(q[:span[0]])
+    return (m.start(), span[1]) if m else (span[0], span[1])
+
+
+def without_window_words(question: str, window: dict) -> str:
+    """The question with the words its window was read from blanked out.
+
+    They said WHEN, so they are never also WHAT to search for: left in,
+    'September', 'weekend', 'next' or the 'two' of 'past two weeks' became
+    required search terms, and a question whose window was right still
+    found nothing. Only the words the window actually used go — a person or
+    a topic called June stays a word when June was not read as the month.
+    """
+    spans = window.get("spans") or ()
+    if not spans:
+        return question
+    # The spans index the lowercased question; when lowercasing changes a
+    # length (rare non-ASCII letters), blank that form instead.
+    chars = list(question if len(question.lower()) == len(question)
+                 else question.lower())
+    for start, end in spans:
+        for i in range(max(start, 0), min(end, len(chars))):
+            chars[i] = " "
+    return "".join(chars)
+
+
 # ---------------------------------------------------------------- words
 
 STOPWORDS = {
     "a", "about", "all", "also", "am", "an", "and", "any", "anything", "are",
     "as", "at", "average", "back", "be", "been", "being", "between", "but",
     "by", "can", "could", "day", "days", "did", "do", "does", "doing", "done",
-    "each", "ever", "for", "from", "get", "go", "had", "has", "have", "he",
+    "each", "ever", "for", "from", "get", "go", "had", "happen", "happened",
+    "happening", "happens", "has", "have", "he",
     "her", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its",
     "just", "last", "like", "long", "many", "me", "month", "months", "more",
     "most", "much", "my", "night", "of", "often", "on", "or", "our", "over",
-    "past", "really", "recent", "recently", "she", "should", "show", "so",
-    "some", "something", "still", "than", "that", "the", "their", "them",
+    "past", "really", "recap", "recent", "recently", "she", "should", "show",
+    "so", "some", "something", "still", "summarise", "summarize", "summary",
+    "than", "that", "the", "their", "them",
     "then", "there", "these", "they", "this", "those", "time", "times", "to",
     "today", "up", "very", "was", "we", "week", "weeks", "were", "what",
     "when", "where", "which", "who", "why", "will", "with", "would", "year",
@@ -490,10 +575,13 @@ INTENT_WORDS = frozenset({
     "calling", "write", "wrote", "written", "reply", "replied", "mention",
     "mentioned", "mentions", "see", "saw", "seen", "meet", "met", "went",
     "goes", "going", "gone", "give", "gave", "given", "got", "know", "knew",
-    "remember", "discuss", "discussed", "email", "emailed",
+    "remember", "discuss", "discussed", "email", "emailed", "e-mail", "e-mailed",
 })
 
-_WORD_RE = re.compile(r"\w+(?:['’]\w+)*")
+# A hyphenated word is one word: 'H-E-B' split into h, e and b left nothing
+# long enough to search for. Quoted, FTS5 reads "h-e-b" as the phrase h e b,
+# which is exactly how it indexed "H-E-B #742 AUSTIN TX".
+_WORD_RE = re.compile(r"\w+(?:['’-]\w+)*")
 _HONORIFICS = frozenset({"dr", "mr", "mrs", "ms", "mx", "prof", "sir"})
 
 
@@ -521,11 +609,22 @@ def _words(question: str) -> list[dict]:
     return out
 
 
-def _terms(words: list[dict], drop: frozenset[str] = frozenset()) -> list[str]:
+# Two-letter words that are never a merchant.
+_SHORT_NOISE = frozenset({"us", "no", "ok", "oh", "um", "uh", "ah", "eh", "hi", "ya"})
+
+
+def _terms(words: list[dict], drop: frozenset[str] = frozenset(),
+           keep_short: bool = False) -> list[str]:
+    """Search terms: no stopwords, numbers or very short words. With
+    `keep_short`, a two-letter word stays — in a money question it is a
+    merchant ('BP', 'TJ'), and dropping it would answer with every
+    transaction instead of that merchant's."""
     seen, keep = set(), []
     for w in words:
         t = w["term"].strip("'")
-        if (len(t) <= 2 or t in STOPWORDS or t.isdigit() or t in drop
+        short = len(t) <= 2 and not (keep_short and len(t) == 2 and t.isalpha()
+                                     and t not in _SHORT_NOISE)
+        if (short or t in STOPWORDS or t.replace("-", "").isdigit() or t in drop
                 or w["key"] in drop):
             continue
         if t not in seen:
@@ -536,11 +635,27 @@ def _terms(words: list[dict], drop: frozenset[str] = frozenset()) -> list[str]:
 
 def _fts_expr(terms: list[str], op: str = " OR ", prefix: bool = False) -> str | None:
     """Every term re-quoted as a phrase: FTS5 operators, quotes and
-    punctuation in a question can never reach the parser as syntax."""
+    punctuation in a question can never reach the parser as syntax. A
+    hyphenated term is a phrase and is matched whole ('h-e-b' never as a
+    prefix of 'h e bakery')."""
     if not terms:
         return None
-    return op.join(f'"{t}"' + ("*" if prefix and len(t) >= 4 else "")
+    return op.join(f'"{t}"' + ("*" if prefix and len(t) >= 4 and "-" not in t else "")
                    for t in terms)
+
+
+def _phrase(label: str) -> str:
+    """A name as one FTS5 phrase body: its words, lowercased, no syntax."""
+    return " ".join(w["term"].strip("'") for w in _words(label))
+
+
+def _match_expr(terms: list[str], groups: list[list[str]] = (),
+                prefix: bool = True) -> str | None:
+    """Terms AND-ed, each group of alternatives (a merchant's name and
+    aliases) OR-ed inside and AND-ed with the rest."""
+    parts = [_fts_expr(terms, " ", prefix=prefix)] if terms else []
+    parts += [f"({_fts_expr(g)})" for g in groups if g]
+    return " AND ".join(parts) or None
 
 
 def fts_query(question: str, drop: set[str] | frozenset[str] | None = None) -> str | None:
@@ -808,28 +923,36 @@ def search_passages(conn: sqlite3.Connection, match: str, window: dict,
 
 def open_loops(conn: sqlite3.Connection, window: dict, *,
                entity_ids: list[int] | None = None, limit: int = 10
-               ) -> tuple[list[dict], int]:
+               ) -> tuple[list[dict], int, int]:
     """Open tasks and plans — closed_at NULL — soonest due first, then the
-    most recently recorded. Returns (items, how many are open in total)."""
-    where = ["e.status='active'", "e.closed_at IS NULL",
-             "k.name IN ('task', 'plan')"]
-    args: list = []
+    most recently recorded. Returns (items, how many match, how many are
+    open in all).
+
+    A named window keeps what is still open then, not what was RECORDED
+    then: a loop due by the window's end (overdue ones included), or one
+    with no due date that already existed. Filtering on the day a task was
+    noted made 'what do I need to do this week' forget every task from last
+    week, and a future 'this weekend' empty by construction."""
+    base = ["e.status='active'", "e.closed_at IS NULL", "k.name IN ('task', 'plan')"]
+    where, args = list(base), []
     if window["explicit"]:
-        where.append("e.journal_date BETWEEN ? AND ?")
-        args += [window["start"], window["end"]]
+        where.append("(CASE WHEN e.due_at IS NOT NULL THEN substr(e.due_at, 1, 10) <= ? "
+                     "ELSE e.journal_date <= ? END)")
+        args += [window["end"], window["end"]]
     if entity_ids:
         marks = ",".join("?" for _ in entity_ids)
         where.append(f"e.id IN (SELECT entry_id FROM mentions WHERE entity_id IN ({marks}))")
         args += entity_ids
     w = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) AS c FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
-        f"WHERE {w}", args).fetchone()["c"]
+    count = ("SELECT COUNT(*) AS c FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+             "WHERE {}")
+    total = conn.execute(count.format(w), args).fetchone()["c"]
+    open_all = conn.execute(count.format(" AND ".join(base))).fetchone()["c"]
     rows = conn.execute(
         f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
         f"WHERE {w} ORDER BY e.due_at IS NULL, e.due_at, e.journal_date DESC, e.id DESC "
         f"LIMIT ?", [*args, limit]).fetchall()
-    return _entry_items(conn, rows, "loop"), total
+    return _entry_items(conn, rows, "loop"), total, open_all
 
 
 # ---------------------------------------------------------------- entities
@@ -849,18 +972,22 @@ def _resolve_entities(conn: sqlite3.Connection, question: str,
     ents = {r["id"]: dict(r) for r in conn.execute(
         "SELECT id, name, type FROM entities WHERE status='active'")}
     labels: dict[str, dict[int, str]] = {}
+    raw_labels: list[tuple[str, int]] = []
     for e in ents.values():
         labels.setdefault(_key(e["name"]), {})[e["id"]] = "name"
+        raw_labels.append((e["name"], e["id"]))
     for r in conn.execute(
             "SELECT a.alias, a.entity_id FROM entity_aliases a "
             "JOIN entities e ON e.id = a.entity_id WHERE e.status='active'"):
         labels.setdefault(_key(r["alias"]), {}).setdefault(r["entity_id"], "alias")
+        raw_labels.append((r["alias"], r["entity_id"]))
     first_names: dict[str, set[int]] = {}
-    for label, hits in labels.items():
-        parts = [p for p in label.split() if p not in _HONORIFICS]
-        for eid in hits:
-            if parts and ents[eid]["type"] == "person":
-                first_names.setdefault(parts[0], set()).add(eid)
+    for label, eid in raw_labels:
+        # Word by word as the question is read: a hyphenated first name
+        # ('Jean-Luc') is one word there too.
+        parts = [w["key"] for w in _words(label) if w["key"] not in _HONORIFICS]
+        if parts and ents[eid]["type"] == "person":
+            first_names.setdefault(parts[0], set()).add(eid)
 
     keys = [w["key"] for w in words]
     consumed = [False] * len(words)
@@ -957,21 +1084,33 @@ def _relationships(conn: sqlite3.Connection, entity_id: int) -> list[dict]:
 
 
 def _last_mention(conn: sqlite3.Connection, entity_id: int, window: dict,
-                  today: date, participant_only: bool) -> list[dict]:
+                  today: date, participant_only: bool,
+                  match: str | None = None) -> list[dict]:
     """The newest entry naming the entity — for a person, only one they took
     part in (a fact about them is not contact): the confirmed side of 'when
-    did I last talk to X'."""
+    did I last talk to X'. `match` (an FTS expression) keeps only entries
+    that say what kind of contact it was, for 'when did I last call X'."""
     clause = "AND e.journal_date BETWEEN ? AND ? " if window["explicit"] else ""
     role = " AND role = 'participant'" if participant_only else ""
+    fts = ("AND e.id IN (SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?) "
+           if match else "")
     rows = conn.execute(
         f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
         f"WHERE e.status='active' AND e.journal_date <= ? AND e.id IN "
         f"(SELECT entry_id FROM mentions WHERE entity_id = ?{role}) "
-        f"{clause}ORDER BY e.journal_date DESC, COALESCE(e.occurred_at, '') DESC, "
+        f"{clause}{fts}ORDER BY e.journal_date DESC, COALESCE(e.occurred_at, '') DESC, "
         f"e.id DESC LIMIT 1",
         [today.isoformat(), entity_id,
-         *([window["start"], window["end"]] if window["explicit"] else [])]).fetchall()
+         *([window["start"], window["end"]] if window["explicit"] else []),
+         *([match] if match else [])]).fetchall()
     return _entry_items(conn, rows, "contact")
+
+
+def _labels(conn: sqlite3.Connection, ent: dict) -> list[str]:
+    """An entity's name and aliases — every way a record may spell it."""
+    return [ent["name"]] + [r["alias"] for r in conn.execute(
+        "SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY alias",
+        (ent["id"],))]
 
 
 def find_entities(conn: sqlite3.Connection, question: str) -> list[dict]:
@@ -1011,6 +1150,19 @@ STREAM_LABELS = {s: label for label, streams in STREAM_GROUPS.items()
 AI_NAMES = {"claude_chat": "Claude", "chatgpt_chat": "ChatGPT"}
 # What 'when did I last talk to X' counts as contact.
 CONTACT_GROUPS = ("text", "call", "calendar")
+# Where a place's visits are: a Timeline visit there, an event held there.
+_VISIT_STREAMS = ("place_visit", "calendar_event")
+# What a recap of a day lists beside its entries: where you were and what
+# you did there, not every message and web page.
+_RECAP_STREAMS = ("calendar_event", "place_visit", "photo", "txn") + CALL_STREAMS
+# What a journal entry says when it was a call or a text — the confirmed
+# side of 'when did I last CALL Mom'.
+_CHANNEL_WORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (CALL_STREAMS, ("call", "called", "calls", "calling", "phone", "phoned",
+                    "rang", "facetime", "facetimed")),
+    (TEXT_STREAMS, ("text", "texted", "texts", "texting", "message", "messaged",
+                    "messages", "whatsapp", "imessage", "sms", "dm", "dms")),
+)
 # The span of a search that was not clipped to the window.
 ALL_RECORDS = "all records"
 _UNTIMED = ("contact card", "note", "transaction")
@@ -1043,6 +1195,9 @@ _OUT_VERBS = frozenset({"ask", "asked", "tell", "told", "say", "said", "text",
 _IN_VERBS = _OUT_VERBS | {"says", "tells", "texts", "suggest", "suggested",
                           "recommend", "recommended", "reply", "replied",
                           "answer", "answered"}
+# May stand between who and the verb: 'when did Maya last text me'.
+_VERB_ADVERBS = frozenset({"last", "ever", "recently", "first", "most", "just",
+                           "also", "finally", "actually", "really"})
 _CONTACT_VERBS = frozenset({"talk", "talked", "spoke", "speak", "spoken",
                             "text", "texted", "message", "messaged", "call",
                             "called", "see", "saw", "seen", "hear", "heard",
@@ -1051,16 +1206,19 @@ _CONTACT_VERBS = frozenset({"talk", "talked", "spoke", "speak", "spoken",
                             "contact", "contacted"})
 _RECENT_RE = re.compile(r"\b(?:last|latest|most recent(?:ly)?|recently)\b")
 _PROFILE_RE = re.compile(
-    r"\b(?:favou?rites?|birthday|born|hometown|phone|number|email|address|"
+    r"\b(?:favou?rites?|birthday|born|hometown|phone|number|email|e-mail|address|"
     r"lives?|living|grew|grow|raised|from)\b|\bwho(?:'s| is)\b|\btell me about\b")
+# A question after someone's numbers: their card's phones and emails lead.
+_NUMBERS_RE = re.compile(r"\b(?:phone|number|numbers|cell|mobile|e-?mail|emails|"
+                         r"contact (?:info|details))\b", re.IGNORECASE)
 _LOOPS_RE = re.compile(
     r"\bopen (?:tasks?|loops?|items?|plans?|to-?dos?)\b|\bto-?dos?\b"
     r"|\bon my (?:list|plate)\b|\b(?:need|have) to do\b|\bunfinished\b"
     r"|\boutstanding (?:tasks?|items?)\b|\bpending (?:tasks?|items?)\b"
     r"|\bmy (?:tasks|plans)\b")
-LOOP_WORDS = frozenset({"open", "task", "tasks", "todo", "todos", "list",
-                        "plate", "loop", "loops", "outstanding", "unfinished",
-                        "pending", "plans", "items", "need"})
+LOOP_WORDS = frozenset({"open", "task", "tasks", "todo", "todos", "to-do",
+                        "to-dos", "list", "plate", "loop", "loops", "outstanding",
+                        "unfinished", "pending", "plans", "items", "need"})
 
 
 def has_observed_tier(conn: sqlite3.Connection) -> bool:
@@ -1081,8 +1239,12 @@ def stream_label(stream: str) -> str:
 
 
 def parse_intent(question: str, words: list[dict], entities: list[dict],
-                 health: list[str], journal: list[str]) -> dict:
-    """What kind of record the question is after, by rule."""
+                 health: list[str], journal: list[str],
+                 topic_words: list[dict] | None = None) -> dict:
+    """What kind of record the question is after, by rule. `topic_words`
+    are the words the topic is taken from — the question minus its time
+    words (`without_window_words`); `words` keep every position, because
+    that is where the names were found."""
     q = question.lower().replace("’", "'")
     keys = [w["key"] for w in words]
     persons = [e for e in entities if e["type"] == "person"]
@@ -1098,11 +1260,19 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
                 streams += [s for s in group if s not in streams]
 
     def followed_by(pos: int, verbs: frozenset[str]) -> bool:
-        return pos + 1 < len(keys) and keys[pos + 1] in verbs
+        # 'Maya texted me', and with an adverb between: 'when did Maya last
+        # text me', 'did I ever tell Jake'.
+        nxt = pos + 1
+        while nxt < len(keys) and nxt - pos <= 2 and keys[nxt] in _VERB_ADVERBS:
+            nxt += 1
+        return nxt < len(keys) and keys[nxt] in verbs
 
     out = any(k == "i" and followed_by(i, _OUT_VERBS) for i, k in enumerate(keys))
+    # "Jake's email" is a thing Jake has, not something Jake sent.
     senders = [e["id"] for e in persons
-               if any(followed_by(p, _IN_VERBS) for p in e["positions"])]
+               if any(followed_by(p, _IN_VERBS)
+                      and not re.search(r"'s$", words[p]["raw"], re.IGNORECASE)
+                      for p in e["positions"])]
     ai_in = any(k in ("claude", "chatgpt", "gpt") and i not in person_pos
                 and followed_by(i, _IN_VERBS) for i, k in enumerate(keys))
     direction = None
@@ -1119,14 +1289,16 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
         drop |= LOOP_WORDS
     if money:
         drop |= set(MONEY_WORDS)
-    topic = _terms(words, frozenset(drop))
-    display = {w["term"].strip("'"): w["raw"] for w in words}
+    topic_words = words if topic_words is None else topic_words
+    topic = _terms(topic_words, frozenset(drop), keep_short=money)
+    display = {w["term"].strip("'"): w["raw"] for w in topic_words}
     return {
         "streams": streams,
         "direction": direction,
         "senders": senders if direction == "in" else [],
         "recency": bool(_RECENT_RE.search(q) and set(keys) & _CONTACT_VERBS)
-        or "last time" in q,
+        or "last time" in q
+        or bool(re.search(r"\b(?:was|were) (?:i|we) (?:last|most recently)\b", q)),
         "profile": bool(_PROFILE_RE.search(q)),
         "loops": loops,
         "money": money,
@@ -1240,13 +1412,26 @@ def _names(ps: list[dict]) -> str:
     return ", ".join(seen[:4]) + (f" and {len(seen) - 4} more" if len(seen) > 4 else "")
 
 
+def _people(o: dict) -> list[dict]:
+    """Who took part besides the owner. A 'location' participant is the
+    place an event or a visit was at — said with 'at', never 'with'."""
+    return [p for p in o["participants"] if not p["is_owner"] and p["role"] != "location"]
+
+
+def _places(o: dict) -> list[dict]:
+    return [p for p in o["participants"] if p["role"] == "location" and p["entity"]]
+
+
 def _who(o: dict) -> str | None:
     if o["stream"] in AI_STREAMS:
         bot = AI_NAMES.get(o["stream"], "the assistant")
         return f"you → {bot}" if o["direction"] == "out" else f"{bot} → you"
     if o["kind"] in ("contact card", "note", "photo", "transaction", "web visit"):
         return None
-    others = [p for p in o["participants"] if not p["is_owner"]]
+    if o["kind"] == "place visit":
+        places = _places(o)
+        return f"at {_names(places)}" if places else None
+    others = _people(o)
     senders = [p for p in others if p["role"] in ("sender", "organizer")]
     rest = [p for p in others if p not in senders]
     if o["direction"] == "out":
@@ -1256,6 +1441,74 @@ def _who(o: dict) -> str | None:
     return ("with " + _names(others)) if others else None
 
 
+_owner_cache: list = [None, None, None]        # [conn, version, identity]
+
+
+def _owner_identity(conn: sqlite3.Connection) -> tuple[set[str], set[tuple[str, str]],
+                                                         set[int]]:
+    """Who 'you' are across every import: (accounts, handles, entity ids).
+
+    An import's own account is not enough. The iPhone calendar export's
+    account is 'calendar:Home', so the owner's address on its events read as
+    a third party ('with Alex Rivera, Dr. Rebecca Ellis'). Any import's
+    account, any handle that sent an outgoing record, and every confirmed
+    handle of the entity those belong to are the owner — the rule
+    review.py's people list uses. Cached per connection until the data
+    changes, because every evidence list asks."""
+    version = (conn.total_changes, conn.execute("PRAGMA data_version").fetchone()[0])
+    if _owner_cache[0] is conn and _owner_cache[1] == version:
+        return _owner_cache[2]
+    accounts = {r[0].lower() for r in conn.execute(
+        "SELECT DISTINCT account FROM imports WHERE account IS NOT NULL AND account != ''")}
+    handles = {(r[0], r[1].lower()) for r in conn.execute(
+        "SELECT DISTINCT p.handle_kind, p.handle_value FROM observation_participants p "
+        "JOIN observations o ON o.id = p.observation_id "
+        "WHERE o.direction = 'out' AND p.role = 'sender'")}
+    live = _LiveNames(conn)
+    owners: set[int] = set()
+    for r in conn.execute(
+            "SELECT kind, value, entity_id FROM entity_handles WHERE entity_id IS NOT NULL "
+            "AND confirmed_at IS NOT NULL AND ignored = 0"):
+        if (r["kind"], r["value"].lower()) in handles or r["value"].lower() in accounts:
+            ent = live.get(r["entity_id"])
+            if ent:
+                owners.add(ent[0])
+    identity = (accounts, handles, owners)
+    _owner_cache[:] = [conn, version, identity]
+    return identity
+
+
+def _card_details(r, participants: list[dict]) -> dict:
+    """A contact card's phone numbers and email addresses — as written on
+    the card when the export kept that, else the handles themselves. They
+    are evidence like any other field: 'what's Maya's phone number' must be
+    answerable, and a model quoting the number must find it to cite."""
+    try:
+        data = json.loads(r["value_json"]) if r["value_json"] else {}
+    except (TypeError, ValueError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+
+    def listed(key: str, field: str) -> list[str]:
+        out = []
+        for x in data.get(key) or ():
+            value = x.get(field) if isinstance(x, dict) else x
+            if isinstance(value, str) and value.strip():
+                label = x.get("label") if isinstance(x, dict) else None
+                text = _clean(value, 80)
+                out.append(f"{text} ({_clean(label, 30)})" if label else text)
+        return out
+
+    phones, emails = listed("phones", "number"), listed("emails", "address")
+    if not phones:
+        phones = [p["handle"].split(":", 1)[1] for p in participants
+                  if p["handle"].startswith("phone:")]
+    if not emails:
+        emails = [p["handle"].split(":", 1)[1] for p in participants
+                  if p["handle"].startswith("email:")]
+    return {"phones": phones[:4], "emails": emails[:4]}
+
+
 def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
                via: str, cap: int = 280) -> list[dict]:
     """Observation rows as evidence items: participants resolved through
@@ -1263,6 +1516,7 @@ def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
     owner shown as 'you', provenance down to the import and file."""
     if not rows:
         return []
+    owner_accounts, owner_handles, owner_entities = _owner_identity(conn)
     marks = ",".join("?" for _ in rows)
     parts: dict[int, list] = {}
     for p in conn.execute(
@@ -1281,16 +1535,18 @@ def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
     live = _LiveNames(conn)
     items = []
     for r in rows:
-        account = (r["account"] or "").lower()
         participants = []
         for p in parts.get(r["id"], []):
             value = p["handle_value"]
-            owner = (bool(account) and value.lower() in (account,)
-                     or bool(account) and value.lower().endswith(":" + account)
-                     or (p["display_name"] or "").lower().startswith("you (")
-                     or (r["direction"] == "out" and p["role"] == "sender"))
+            low = value.lower()
             ent = (live.get(p["entity_id"]) if p["entity_id"] is not None
                    and p["confirmed_at"] and not p["ignored"] else None)
+            owner = (low in owner_accounts
+                     or any(low.endswith(":" + a) for a in owner_accounts)
+                     or (p["handle_kind"], low) in owner_handles
+                     or bool(ent and ent[0] in owner_entities)
+                     or (p["display_name"] or "").lower().startswith("you (")
+                     or (r["direction"] == "out" and p["role"] == "sender"))
             participants.append({
                 "role": p["role"], "handle": f"{p['handle_kind']}:{value}",
                 "display_name": _clean(p["display_name"], 80) or None,
@@ -1314,6 +1570,8 @@ def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
                 "value": r["value"], "unit": r["unit"],
                 "detail": _detail(r["value_json"]), "origin_app": r["origin_app"],
                 "via": via}
+        if r["stream"] == "contact_card":
+            item["card"] = _card_details(r, participants)
         item["who"] = _who(item)
         items.append(item)
     return items
@@ -1325,7 +1583,7 @@ def search_observations(conn: sqlite3.Connection, cfg: Config, *,
                         direction: str | None = None,
                         family: list[int] | None = None, sender_only: bool = False,
                         limit: int = 6, recency: bool = False,
-                        via: str = "search") -> list[dict]:
+                        via: str = "search", around: str | None = None) -> list[dict]:
     """Full-text search over the observed tier (status active only).
 
     Terms are AND-ed first and the result topped up with an OR search, so a
@@ -1336,7 +1594,10 @@ def search_observations(conn: sqlite3.Connection, cfg: Config, *,
     outrank the one message that is actually about the lake. `family`
     restricts to observations an entity took part in; `sender_only` to
     ones it sent. The window clips only when the question named a time —
-    the same rule as entries.
+    the same rule as entries. With no terms, `around` (today) lists what is
+    coming first, soonest first, then what has passed, newest first: a
+    window reaching into the future (a calendar's week) would otherwise
+    lead with its furthest day.
     """
     where = ["o.status = 'active'"]
     args: list = []
@@ -1359,11 +1620,16 @@ def search_observations(conn: sqlite3.Connection, cfg: Config, *,
     w = " AND ".join(where)
     rows: list = []
     if not terms:
+        order, oargs = _RECENT_FIRST, []
+        if around:
+            order = ("o.journal_date < ?, CASE WHEN o.journal_date >= ? THEN "
+                     "o.journal_date END, o.journal_date DESC, o.started_at, o.id")
+            oargs = [around, around]
         rows = conn.execute(
             f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
             f"JOIN imports i ON i.id = o.import_id WHERE {w} "
             f"AND (o.body IS NOT NULL OR o.title IS NOT NULL OR o.value IS NOT NULL) "
-            f"ORDER BY {_OFF_PATH}, {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
+            f"ORDER BY {_OFF_PATH}, {order} LIMIT ?", [*args, *oargs, limit]).fetchall()
         return _obs_items(conn, cfg, rows, via=via)
     order = _RECENT_FIRST if recency else "bm25(observations_fts, 0.5, 1.0), o.id"
     exprs = [_fts_expr(list(terms), " ", prefix=True)]
@@ -1398,25 +1664,70 @@ def search_observations(conn: sqlite3.Connection, cfg: Config, *,
 
 def last_contact(conn: sqlite3.Connection, cfg: Config, family: list[int],
                  window: dict, today: date, *, streams: list[str] | None = None,
-                 direction: str | None = None) -> list[dict]:
+                 direction: str | None = None, sender_only: bool = False
+                 ) -> list[dict]:
     """The newest text, call and calendar event the entity took part in —
     one of each at most, nothing dated after today. A missed (zero-second)
     call is an attempt, not contact. `streams` narrows it ('when did I last
-    CALL Mom'), and so does `direction` ('when did I last text Jake')."""
+    CALL Mom'), and so does `direction` ('when did I last text Jake').
+
+    A text counts as contact with someone only when it passed between you
+    and them: one they sent you, or one you sent them. A group message
+    Jake sent, which Maya merely received, is not Maya texting you —
+    `sender_only` ('when did Maya last text me') keeps only what they sent.
+    Calls and events are left alone: an iPhone call names the other party
+    as a plain participant."""
     items: list[dict] = []
     groups = [g for g in CONTACT_GROUPS
               if streams and set(STREAM_GROUPS[g]) & set(streams)] or CONTACT_GROUPS
     for group in groups:
         group_streams = STREAM_GROUPS[group]
         clause, fargs = _party_clause(family)
+        if group == "text":
+            sent, sargs = _party_clause(family, sender_only=True)
+            if sender_only:
+                clause, fargs = sent, sargs
+            else:
+                clause = f"((o.direction = 'out' AND {clause}) OR {sent})"
+                fargs = [*fargs, *sargs]
         where = [f"o.stream IN ({','.join('?' for _ in group_streams)})",
                  "o.status = 'active'", "o.journal_date <= ?", clause]
         args = [*group_streams, today.isoformat(), *fargs]
         if group == "call":
             where.append("(o.value IS NULL OR o.value > 0)")
+        if window.get("explicit"):
+            where.append("o.journal_date BETWEEN ? AND ?")
+            args += [window["start"], window["end"]]
+        query = (f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+                 f"JOIN imports i ON i.id = o.import_id WHERE {{}} "
+                 f"ORDER BY {_RECENT_FIRST} LIMIT 1")
+        rows = []
         if direction and group != "calendar":
-            where.append("o.direction = ?")
-            args.append(direction)
+            rows = conn.execute(query.format(" AND ".join(where + ["o.direction = ?"])),
+                                [*args, direction]).fetchall()
+        # 'when did I last call Jake' when only Jake ever called: the call
+        # is still the answer, and it says who called whom.
+        if not rows and (not direction or group == "call"):
+            rows = conn.execute(query.format(" AND ".join(where)), args).fetchall()
+        items += _obs_items(conn, cfg, rows, via="contact")
+    return items
+
+
+def last_visit(conn: sqlite3.Connection, cfg: Config, family: list[int],
+               window: dict, today: date) -> list[dict]:
+    """The newest place visit and calendar event AT a place — through the
+    place handles linked to it ('location' participants), one of each at
+    most, nothing dated after today. A place's phone number (a restaurant's)
+    is not a visit: calls and texts are never counted here."""
+    items: list[dict] = []
+    marks = ",".join("?" for _ in family)
+    at = ("EXISTS (SELECT 1 FROM observation_participants p "
+          "JOIN entity_handles h ON h.kind = p.handle_kind AND h.value = p.handle_value "
+          f"WHERE p.observation_id = o.id AND p.role = 'location' AND h.entity_id IN ({marks}) "
+          "AND h.confirmed_at IS NOT NULL AND h.ignored = 0)")
+    for stream in ("place_visit", "calendar_event"):
+        where = ["o.stream = ?", "o.status = 'active'", "o.journal_date <= ?", at]
+        args = [stream, today.isoformat(), *family]
         if window.get("explicit"):
             where.append("o.journal_date BETWEEN ? AND ?")
             args += [window["start"], window["end"]]
@@ -1424,7 +1735,7 @@ def last_contact(conn: sqlite3.Connection, cfg: Config, family: list[int],
             f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
             f"JOIN imports i ON i.id = o.import_id WHERE {' AND '.join(where)} "
             f"ORDER BY {_RECENT_FIRST} LIMIT 1", args).fetchall()
-        items += _obs_items(conn, cfg, rows, via="contact")
+        items += _obs_items(conn, cfg, rows, via="visit")
     return items
 
 
@@ -1451,31 +1762,38 @@ def contact_cards(conn: sqlite3.Connection, cfg: Config, family: list[int],
 
 
 def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
-             display: str, window: dict, limit: int = 10
-             ) -> tuple[list[dict], list[dict]]:
+             display: str, window: dict, limit: int = 10,
+             groups: list[list[str]] = ()) -> tuple[list[dict], list[dict]]:
     """Transaction totals (stream txn: value = amount, negative = money out,
     unit = currency) — one M-item per currency, plus the transactions
     themselves as O-items.
 
     Named merchant terms search every record unless the question named a
     time (the text-search rule: 'how much did I spend at Veracruz' means all
-    of it); a general 'how much did I spend' uses the window."""
+    of it); a general 'how much did I spend' uses the window. `groups` are
+    a named place's or organisation's name and aliases ('H-E-B Mueller',
+    'H-E-B', 'HEB'): any one of them is that merchant. A question that named
+    a merchant is never answered with everyone's total — no match is no
+    data."""
     where = ["o.stream = 'txn'", "o.status = 'active'", "o.value IS NOT NULL"]
     args: list = []
-    all_records = bool(terms) and not window["explicit"]
+    named = bool(terms or any(groups))
+    all_records = named and not window["explicit"]
     if not all_records:
         where.append("o.journal_date BETWEEN ? AND ?")
         args += [window["start"], window["end"]]
-    if terms:
+    if named:
         source = ("FROM observations_fts JOIN observations o ON o.id = observations_fts.rowid "
                   "JOIN imports i ON i.id = o.import_id")
         where.insert(0, "observations_fts MATCH ?")
-        args.insert(0, _fts_expr(terms, " ", prefix=True))
+        args.insert(0, _match_expr(terms, groups))
     else:
         source = "FROM observations o JOIN imports i ON i.id = o.import_id"
     w = " AND ".join(where)
     totals = conn.execute(
         f"SELECT UPPER(COALESCE(o.unit, '')) AS cur, COUNT(*) AS n, "
+        f"SUM(CASE WHEN o.value < 0 THEN 1 ELSE 0 END) AS n_spent, "
+        f"SUM(CASE WHEN o.value > 0 THEN 1 ELSE 0 END) AS n_received, "
         f"SUM(CASE WHEN o.value < 0 THEN -o.value ELSE 0 END) AS spent, "
         f"SUM(CASE WHEN o.value > 0 THEN o.value ELSE 0 END) AS received, "
         f"MIN(CASE WHEN o.value < 0 THEN o.value END) AS largest, "
@@ -1494,7 +1812,7 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
     rows = conn.execute(
         f"SELECT {_OBS_COLS}, NULL AS snippet {source} WHERE {w} "
         f"ORDER BY {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
-    label = f'spending matching "{display}"' if terms else "spending"
+    label = f'spending matching "{display}"' if named else "spending"
     metrics = []
     for t in totals:
         series = [{"date": d["day"], "value": round(d["spent"], 2), "records": d["n"]}
@@ -1509,6 +1827,9 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
             "metric": "txn_spend", "label": label, "unit": t["cur"],
             "origin": "transactions, observed", "tier": "observed",
             "table": "observations", "count": t["n"],
+            # 'You spent $X across N transaction(s)': N counts money out
+            # only; a paycheck in the window is not a purchase.
+            "spent_count": t["n_spent"], "received_count": t["n_received"],
             "days": len(spent_days), "total": round(t["spent"], 2),
             "received": round(t["received"], 2),
             "largest": round(-t["largest"], 2) if t["largest"] is not None else None,
@@ -1518,7 +1839,8 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
             "latest": series[-1]["value"], "latest_date": series[-1]["date"],
             "per_day_agg": "sum", "series": series,
             "source_files": sorted(set((t["sources"] or "").split(",")) - {""}),
-            "span": span, "terms": list(terms), "terms_display": display,
+            "span": span, "terms": list(terms) + [g[0] for g in groups if g],
+            "terms_display": display,
             "transactions": [],
             "trend_pct": None})
     return metrics, _obs_items(conn, cfg, rows, via="spending")
@@ -1574,8 +1896,18 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         default_days=days or ask_setting(cfg, "default_days", 30),
         names=frozenset(t for e in entities for t in e["tokens"]))
     health, journal = detect_metrics(question)
-    intent = parse_intent(question, words, entities, health, journal)
+    # The window's own words said WHEN; the topic is what is left.
+    topic_question = without_window_words(question, window)
+    topic_words = words if topic_question == question else _words(topic_question)
+    intent = parse_intent(question, words, entities, health, journal,
+                          topic_words=topic_words)
     terms = intent["topic_terms"]
+    # 'What's on my calendar this week', 'what do I need to do this month':
+    # the rest of the period counts. Nothing else is dated in the future, so
+    # metrics and entries are unchanged by it.
+    if window.get("through") and ("calendar_event" in intent["streams"]
+                                  or intent["loops"]):
+        window = {**window, "end": window["through"]}
 
     E, O = _Ids("E"), _Ids("O")
     metrics: list[dict] = []
@@ -1586,11 +1918,23 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         # don't produce "sleep (journal) (journal)".
         return label if "(" in label else f"{label} ({origin})"
 
+    # A named place or organisation in a money question is the merchant:
+    # any of its names matches ('HEB' finds "H-E-B #742"), and its words
+    # are not also required as plain terms.
+    merchants = ([e for e in entities if e["type"] in ("place", "organization")]
+                 if intent["money"] else [])
+    merchant_keys = {t for e in merchants for t in e["tokens"]}
+    groups = [sorted({_phrase(label) for label in _labels(conn, e)} - {""})
+              for e in merchants]
+    money_terms = [t for t in terms if _key(t) not in merchant_keys]
+    money_display = intent["topic_display"] or ", ".join(e["matched"] for e in merchants)
+    named_merchant = bool(money_terms or any(groups))
+
     # ---- money: transactions first, then what the journal says was spent
     if intent["money"]:
         if observed:
-            found, txns = spending(conn, cfg, terms=terms,
-                                   display=intent["topic_display"], window=window,
+            found, txns = spending(conn, cfg, terms=money_terms, groups=groups,
+                                   display=money_display, window=window,
                                    limit=ask_setting(cfg, "max_transactions", 10))
             ids = [O.add(t) for t in txns]
             for m in found:
@@ -1598,10 +1942,10 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
                                      if (t["unit"] or "").upper() == m["unit"]]
                 metrics.append(m)
             if not found:
-                what = (f'transactions matching "{intent["topic_display"]}"'
-                        if terms else "transactions")
+                what = (f'transactions matching "{money_display}"'
+                        if named_merchant else "transactions")
                 no_data.append(f"{what} ({ALL_RECORDS})"
-                               if terms and not window["explicit"] else what)
+                               if named_merchant and not window["explicit"] else what)
         else:
             no_data.append("transactions (no observed tier in this database)")
 
@@ -1612,9 +1956,9 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             missing_label(HEALTH_METRICS[name]["label"], "sensor import")))
     for name in journal:
         spec, match, span = JOURNAL_METRICS[name], None, None
-        if name == "money" and terms:
-            spec = {**spec, "label": f'money (journal) matching "{intent["topic_display"]}"'}
-            match = _fts_expr(terms, " ", prefix=True)
+        if name == "money" and named_merchant:
+            spec = {**spec, "label": f'money (journal) matching "{money_display}"'}
+            match = _match_expr(money_terms, groups)
             if not window["explicit"]:
                 span = {"start": "0001-01-01", "end": "9999-12-31",
                         "label": ALL_RECORDS}
@@ -1633,14 +1977,25 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         m["id"] = f"M{i}"
 
     # ---- open loops
-    loops, loops_total = [], 0
+    loops, loops_total, loops_open = [], 0, 0
     if intent["loops"]:
         named = [e["id"] for e in entities]
-        rows, loops_total = open_loops(conn, window, entity_ids=named or None,
-                                       limit=ask_setting(cfg, "max_loops", 10))
+        rows, loops_total, loops_open = open_loops(
+            conn, window, entity_ids=named or None,
+            limit=ask_setting(cfg, "max_loops", 10))
         loops = [E.add(r) for r in rows]
 
     # ---- the people and places it names
+    # A question narrowed to calls or texts is answered by calls or texts:
+    # 'Tacos at Veracruz with Jake' is not when Jake last called. A journal
+    # entry still counts when it says it was one ('Called Mom on the way').
+    channel = set(intent["streams"]) & set(TEXT_STREAMS + CALL_STREAMS)
+    channel_words = ([w for streams, ws in _CHANNEL_WORDS if channel & set(streams)
+                      for w in ws] if channel else [])
+    # A place's visits answer a question about the place, unless it asked
+    # for another kind of record ('what did I ask Claude about Bled').
+    visits_wanted = (tuple(s for s in _VISIT_STREAMS if s in intent["streams"])
+                     if intent["streams"] else _VISIT_STREAMS)
     for ent in entities:
         ent_entries = _entity_entries(conn, ent["id"], window)
         ent["entries"] = [{"uuid": e["uuid"], "date": e["date"], "title": e["title"],
@@ -1650,20 +2005,23 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
                                  "other": r["other"], "id": E.add(r["entry"])}
                                 for r in _relationships(conn, ent["id"])]
         ent["handles_linked"], ent["cards"], ent["hits"] = 0, [], []
+        if ent["type"] != "person":
+            ent["visits"] = []
         contact = [E.add(e) for e in _last_mention(
-            conn, ent["id"], window, today, participant_only=ent["type"] == "person")]
-        if observed and ent["type"] == "person":
+            conn, ent["id"], window, today, participant_only=ent["type"] == "person",
+            match=_fts_expr(channel_words) if channel else None)]
+        if observed:
             family = _entity_family(conn, ent["id"])
             handles = _linked_handles(conn, family)
             ent["handles_linked"] = len(handles)
-            labels = [ent["name"]] + [r["alias"] for r in conn.execute(
-                "SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY alias",
-                (ent["id"],))]
-            ent["cards"] = [O.add(c) for c in contact_cards(conn, cfg, family, labels)]
+        if observed and ent["type"] == "person":
+            ent["cards"] = [O.add(c) for c in contact_cards(
+                conn, cfg, family, _labels(conn, ent))]
             if handles:
                 contact += [O.add(o) for o in last_contact(
                     conn, cfg, family, window, today,
-                    streams=intent["streams"] or None, direction=intent["direction"])]
+                    streams=intent["streams"] or None, direction=intent["direction"],
+                    sender_only=ent["id"] in intent["senders"])]
                 if (terms or intent["streams"]) and not intent["metric_only"] \
                         and not intent["money"]:
                     ent["hits"] = [O.add(o) for o in search_observations(
@@ -1672,12 +2030,22 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
                         direction=intent["direction"], family=family,
                         sender_only=ent["id"] in intent["senders"],
                         limit=max_obs, recency=intent["recency"])]
+        elif observed and handles and visits_wanted:
+            # A place's linked handles are its visits: every Timeline visit
+            # and calendar event held there, past and future, is attributed
+            # once the place_id is linked. Only those two streams — a
+            # restaurant's linked phone number makes no call a visit.
+            contact += [O.add(o) for o in last_visit(conn, cfg, family, window, today)]
+            if not intent["metric_only"] and not intent["money"]:
+                ent["visits"] = [O.add(o) for o in search_observations(
+                    conn, cfg, window=window, streams=visits_wanted, family=family,
+                    limit=max_obs, recency=True)]
         ent["last_contact"] = _latest_contact(contact, E, O, cfg)
 
     # ---- full-text: entries, transcripts, and the observed tier
     entry_drop = set(INTENT_WORDS) | (LOOP_WORDS if intent["loops"] else set()) \
         | (set(MONEY_WORDS) if intent["money"] else set())
-    match = fts_query(question, drop=entry_drop)
+    match = fts_query(topic_question, drop=entry_drop)
     entry_hits = ([E.add(e) for e in search_entries(conn, match, window, max_entries)]
                   if match else [])
     passages = search_passages(conn, match, window, max_passages) if match else []
@@ -1689,12 +2057,42 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     obs_hits: list[str] = []
     person_filtered = any(e["handles_linked"] for e in entities
                           if e["type"] == "person")
+    # A window reaching past today ('next week', the rest of 'this week')
+    # lists what is nearest today first, not what is furthest away.
+    around = today.isoformat() if window["end"] > today.isoformat() else None
     if observed and not intent["metric_only"] and not intent["money"] \
             and not person_filtered and (terms or intent["streams"]):
         obs_hits = [O.add(o) for o in search_observations(
             conn, cfg, terms=terms, window=window,
             streams=intent["streams"] or None, direction=intent["direction"],
-            limit=max_obs, recency=intent["recency"])]
+            limit=max_obs, recency=intent["recency"], around=around)]
+    elif observed and intent["loops"] and window["explicit"] and not terms:
+        # 'What are my plans this weekend': what the calendar holds then is
+        # part of the answer, next to the open tasks.
+        obs_hits = [O.add(o) for o in search_observations(
+            conn, cfg, window=window, streams=("calendar_event",),
+            limit=max_obs, around=around)]
+
+    # ---- a recap: 'what did I do yesterday', 'how was last weekend'
+    # A named time and nothing else to narrow it — no topic, person, metric,
+    # record kind, loop or money — asks what that time holds. Its entries
+    # (and a few of its records) are the answer, cited; without this the
+    # question found nothing although the day was logged.
+    recap = bool(window["explicit"] and not match and not terms and not entities
+                 and not ambiguous and not health and not journal
+                 and not intent["streams"] and not intent["loops"]
+                 and not intent["money"])
+    if recap:
+        rows = conn.execute(
+            f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+            f"WHERE e.status='active' AND e.journal_date BETWEEN ? AND ? "
+            f"ORDER BY e.journal_date DESC, COALESCE(e.occurred_at, '') DESC, e.id DESC "
+            f"LIMIT ?", (window["start"], window["end"], max_entries)).fetchall()
+        entry_hits = [E.add(e) for e in _entry_items(conn, rows[::-1], "window")]
+        if observed:
+            obs_hits = [O.add(o) for o in search_observations(
+                conn, cfg, window=window, streams=_RECAP_STREAMS, limit=max_obs,
+                around=around)]
     if observed and intent["streams"]:
         counts = _stream_counts(conn, intent["streams"])
         for label, streams in STREAM_GROUPS.items():
@@ -1713,8 +2111,8 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             "entries": E.items, "passages": passages, "observations": O.items,
             "entities": entities, "ambiguous": ambiguous, "no_data": no_data,
             "match": match, "intent": intent, "loops": loops,
-            "loops_total": loops_total, "obs_hits": obs_hits,
-            "entry_hits": entry_hits,
+            "loops_total": loops_total, "loops_open": loops_open,
+            "obs_hits": obs_hits, "entry_hits": entry_hits, "recap": recap,
             "observed_tier": observed,
             "days_with_entries_in_window": covered,
             "has_evidence": has_evidence,
@@ -1818,16 +2216,28 @@ def _obs_line(o: dict) -> str:
     extra = _obs_value(o)
     if extra:
         bits.append(extra)
+    card = _card_text(o)
+    if card:
+        bits.append(card)
     line = " ".join(bits)
     if o["snippet"] and o["kind"] != "call":
         line += f": {o['snippet']}"
     return line + " (observed, not confirmed)"
 
 
+def _card_text(o: dict) -> str | None:
+    """A contact card's numbers and addresses, as one clause."""
+    card = o.get("card") or {}
+    bits = [f"phone {p}" for p in card.get("phones", ())]
+    bits += [f"email {e}" for e in card.get("emails", ())]
+    return "; ".join(bits) or None
+
+
 def _metric_line(m: dict) -> str:
     if m["metric"] == "txn_spend":
         span = m["span"]
-        line = (f"[{m['id']}] {m['label']} — {m['count']} transaction(s), "
+        line = (f"[{m['id']}] {m['label']} — {m['count']} transaction(s) "
+                f"({m['spent_count']} out, {m['received_count']} in), "
                 f"{span['label']} ({span['start']} to {span['end']}): "
                 f"total spent {fmt_money(m['total'], m['unit'])}")
         if m["received"]:
@@ -1895,8 +2305,14 @@ def _evidence_lines(bundle: dict) -> tuple[list[str], dict[str, str]]:
     for o in bundle.get("observations", []):
         by_id[o["id"]] = _obs_line(o)
     if bundle.get("loops") is not None and bundle.get("intent", {}).get("loops"):
-        context.append(f"OPEN LOOPS: {bundle['loops_total']} open task(s)/plan(s) "
-                       f"in total; listed: {', '.join(bundle['loops']) or 'none'}")
+        # 'In total' must be the real total: a person or a window that
+        # filters every loop out does not mean nothing is open.
+        open_all = bundle.get("loops_open", bundle["loops_total"])
+        line = (f"OPEN LOOPS: {bundle['loops_total']} open task(s)/plan(s) in total"
+                if open_all == bundle["loops_total"] else
+                f"OPEN LOOPS: {bundle['loops_total']} open task(s)/plan(s) match the "
+                f"question, {open_all} open in total")
+        context.append(f"{line}; listed: {', '.join(bundle['loops']) or 'none'}")
     for ent in bundle["entities"]:
         bits = [f"ENTITY: {ent['name']} ({ent['type']}), named as \"{ent['matched']}\" "
                 f"by {ent['via']}"]
@@ -1904,7 +2320,8 @@ def _evidence_lines(bundle: dict) -> tuple[list[str], dict[str, str]]:
             bits.append(f"{ent['handles_linked']} linked handle(s)")
         lc = ent.get("last_contact")
         if lc:
-            what = "last contact" if ent["type"] == "person" else "last mentioned"
+            what = ("last contact" if ent["type"] == "person"
+                    else "last visit" if lc["latest"].startswith("O") else "last mentioned")
             bits.append(f"{what} {lc['latest']} ({lc['date']})")
         if ent.get("cards"):
             bits.append(f"contact card {', '.join(ent['cards'])}")
@@ -1949,9 +2366,8 @@ def _obs_phrase(o: dict) -> str:
     """One observed record as an answer would say it — what the record says,
     attributed, never restated as fact."""
     kind, ex = o["kind"], _plain(o["snippet"])
-    others = _names([p for p in o["participants"] if not p["is_owner"]])
-    senders = _names([p for p in o["participants"]
-                      if not p["is_owner"] and p["role"] in ("sender", "organizer")])
+    others = _names(_people(o))
+    senders = _names([p for p in _people(o) if p["role"] in ("sender", "organizer")])
     if kind == "AI chat":
         bot = AI_NAMES.get(o["stream"], "the assistant")
         verb = f"you asked {bot}" if o["direction"] == "out" else f"{bot} answered"
@@ -1976,6 +2392,14 @@ def _obs_phrase(o: dict) -> str:
                 + (f" with {others}" if others else "") + (f" {loc}" if loc else ""))
     if kind == "transaction":
         return f'transaction "{o["title"] or "?"}" {_obs_value(o) or ""}'.strip()
+    if kind == "place visit":
+        # The linked place's name; else a Timeline label ('Home'), never
+        # its "Place at <lat>, <lon>" placeholder next to the same numbers.
+        title = o["title"] if o["title"] and not o["title"].startswith("Place at ") else None
+        where = _names(_places(o)) or (f'"{title}"' if title else "")
+        coords = (_obs_value(o) or "").removeprefix("at ")
+        return ("place visit" + (f" at {where}" if where else "")
+                + (f" ({coords})" if coords else ""))
     extra = _obs_value(o)
     text = f'{kind} "{o["title"]}"' if o["title"] else kind
     if extra:
@@ -2007,12 +2431,14 @@ def deterministic_answer(bundle: dict) -> str:
         used.add(m["id"])
         if m["metric"] == "txn_spend":
             span = m["span"]
+            spent_n = m.get("spent_count", m["count"])
             text = (f"You spent {fmt_money(m['total'], m['unit'])} across "
-                    f"{m['count']} transaction(s)"
+                    f"{spent_n} transaction(s)"
                     + (f' matching "{m["terms_display"]}"' if m["terms"] else "")
                     + f" ({span['label']}, {span['start']} to {span['end']})")
             if m["received"]:
-                text += f" and received {fmt_money(m['received'], m['unit'])}"
+                text += (f" and received {fmt_money(m['received'], m['unit'])}"
+                         f" in {m.get('received_count', 0)} transaction(s)")
             text += f" [{m['id']}]"
             listed = m["transactions"][:5]
             if listed:
@@ -2028,7 +2454,8 @@ def deterministic_answer(bundle: dict) -> str:
             trend = (f", trending {'up' if m['trend_pct'] > 0 else 'down'} "
                      f"{abs(m['trend_pct'])}% across the window")
         word = "totalled" if m["per_day_agg"] == "sum" else "averaged"
-        out.append(f"{m['label'].capitalize()} {word} "
+        # Only the first letter: 'matching "H-E-B"' keeps the merchant's case.
+        out.append(f"{m['label'][:1].upper()}{m['label'][1:]} {word} "
                    f"{fmt_value(m['mean'], m['unit'])} per day over {m['days']} "
                    f"day(s) (min {fmt_value(m['min'], m['unit'])} {m['min_date']}, "
                    f"max {fmt_value(m['max'], m['unit'])} {m['max_date']}){trend} "
@@ -2036,23 +2463,37 @@ def deterministic_answer(bundle: dict) -> str:
 
     if intent.get("loops"):
         listed = [i for i in bundle.get("loops", [])]
+        open_all = bundle.get("loops_open", bundle.get("loops_total", 0))
         if listed:
             used.update(listed)
             out.append("Open tasks and plans: " + "; ".join(
                 f"{items[i]['date']} {items[i]['title']} ({items[i]['kind']}"
                 + (f", due {str(items[i]['due_at'])[:10]}" if items[i].get("due_at") else "")
                 + f") [{i}]" for i in listed) + ".")
+        elif open_all:
+            # Something is open; the filter is what left nothing — say which.
+            named = [e["name"] for e in bundle["entities"]]
+            why = (f" mention {' or '.join(named)}" if named else "") \
+                + (f" for {w['label']}" if w.get("explicit") else "")
+            out.append(f"No open tasks or plans{why} ({open_all} open in total).")
         else:
             out.append("You have no open tasks or plans.")
 
-    people = [e for e in bundle["entities"] if e["type"] == "person"]
     later: list[str] = []
+    wants_numbers = bool(_NUMBERS_RE.search(bundle.get("question") or ""))
     for ent in bundle["entities"]:
         name, lc = ent["name"], ent.get("last_contact")
         if ent["type"] != "person":
             if intent.get("recency") and lc:
-                out.append(f"You last mentioned {name} on {lc['date']}: "
-                           f"{phrase(lc['latest'])} [{lc['latest']}].")
+                latest = lc["latest"]
+                lead = (f"Last visit to {name} on record: {lc['date']}, "
+                        if latest.startswith("O") else
+                        f"You last mentioned {name} on {lc['date']}: ")
+                out.append(f"{lead}{phrase(latest)} [{latest}].")
+                before = [i for i in lc["items"] if i != latest]
+                if before:
+                    out.append("Before that: " + "; ".join(
+                        f"{items[i]['date']} {phrase(i)} [{i}]" for i in before) + ".")
             continue
         no_hits = not ent.get("hits")
         want_contact = intent.get("recency")
@@ -2082,8 +2523,10 @@ def deterministic_answer(bundle: dict) -> str:
                 sentences.append(rel_line)
             for c in ent.get("cards", []):
                 used.add(c)
+                numbers = _card_text(items[c]) if wants_numbers else None
                 sentences.append(f"{name}'s contact card: "
-                                 f'"{_plain(items[c]["snippet"], 300)}" [{c}].')
+                                 + (f"{numbers}; " if numbers else "")
+                                 + f'"{_plain(items[c]["snippet"], 300)}" [{c}].')
             if rel_line and not asks_origin:
                 sentences.append(rel_line)
             facts = [i for i in ent.get("facts", []) if i not in used][:4]
@@ -2093,7 +2536,11 @@ def deterministic_answer(bundle: dict) -> str:
                     f"{items[i]['date']} {items[i]['title']} [{i}]" for i in facts) + ".")
         (later if fallback else out).extend(sentences)
 
-    hits = [i for e in people for i in e.get("hits", [])] + bundle.get("obs_hits", [])
+    # What a named person sent or received first, then a named place's
+    # visits, then whatever else the search found.
+    hits = [i for e in bundle["entities"] for i in e.get("hits", [])] \
+        + [i for e in bundle["entities"] for i in e.get("visits", [])] \
+        + bundle.get("obs_hits", [])
     hits = [i for i in dict.fromkeys(hits) if i not in used][:4]
     observed = []
     if hits:
@@ -2102,11 +2549,14 @@ def deterministic_answer(bundle: dict) -> str:
 
     # Text-search hits in rank order first, then whatever else was gathered.
     order = list(dict.fromkeys(bundle.get("entry_hits", []) + list(items)))
-    related = [items[i] for i in order if i.startswith("E") and i not in used][:5]
+    recap = bundle.get("recap")
+    related = [items[i] for i in order if i.startswith("E") and i not in used][
+        :8 if recap else 5]
     confirmed = []
     if related:
         used.update(e["id"] for e in related)
-        confirmed.append("Related entries: " + "; ".join(
+        confirmed.append((f"Journal entries for {w['label']}: " if recap
+                          else "Related entries: ") + "; ".join(
             f"{e['date']} {e['title']} [{e['id']}]" for e in related) + ".")
     # What the owner confirmed leads — unless the question asked about the
     # records themselves ('what did I ask Claude', 'what did Jake text me').
@@ -2118,7 +2568,7 @@ def deterministic_answer(bundle: dict) -> str:
             f"{p['date']} [{p['id']}]" for p in bundle["passages"]) + ".")
     for ent in bundle["entities"]:
         if not (ent.get("facts") or ent.get("cards") or ent.get("last_contact")
-                or ent.get("hits")):
+                or ent.get("hits") or ent.get("visits")):
             out.append(f"{ent['name']} is known, but nothing recorded mentions them.")
     for amb in bundle.get("ambiguous", []):
         out.append(f"\"{amb['matched']}\" could be "
@@ -2270,9 +2720,22 @@ def _supported(f: dict, pool: dict) -> bool:
     return all(_num_ok(abs(v), dec, pool["nums"]) for v, dec in f["nums"])
 
 
+# A period after these ends a word, not a sentence: 'you saw Dr. Ellis on
+# 2026-10-10' split at 'Dr.' left the date in a fragment with no citation.
+# Not 'etc', which usually does end one.
+_ABBREVIATIONS = _HONORIFICS | {"st", "jr", "sr", "vs", "e.g", "i.e", "a.m", "p.m"}
+_ABBREV_BEFORE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
+
+
+def _abbreviation_before(text: str, i: int) -> bool:
+    m = _ABBREV_BEFORE.search(text[:i])
+    return bool(m) and m.group(1).lower().rstrip(".") in _ABBREVIATIONS
+
+
 def _sentences(answer: str) -> list[str]:
     """Split on sentence ends outside quotes: a quoted message ("Veracruz
-    tonight? you know it's my favorite") is part of the sentence quoting it."""
+    tonight? you know it's my favorite") is part of the sentence quoting it,
+    and so is the period of an abbreviation ('Dr. Ellis')."""
     pieces, buf, quoted = [], [], False
     text = answer.strip()
     for i, ch in enumerate(text):
@@ -2284,7 +2747,8 @@ def _sentences(answer: str) -> list[str]:
         elif ch == "”":
             quoted = False
         elif ch == "\n" or (ch in ".!?" and not quoted
-                            and (i + 1 == len(text) or text[i + 1].isspace())):
+                            and (i + 1 == len(text) or text[i + 1].isspace())
+                            and not (ch == "." and _abbreviation_before(text, i))):
             pieces.append("".join(buf))
             buf = []
     pieces.append("".join(buf))
@@ -2359,7 +2823,8 @@ def evidence_index(bundle: dict) -> dict:
     for m in bundle.get("metrics", []):
         if m.get("metric") == "txn_spend":
             index[m["id"]] = (f"{m['label']}: {fmt_money(m['total'], m['unit'])} over "
-                              f"{m['count']} transaction(s), {m['origin']}")
+                              f"{m.get('spent_count', m['count'])} transaction(s), "
+                              f"{m['origin']}")
         else:
             index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
                               f"over {m['days']} day(s), {m['origin']}")

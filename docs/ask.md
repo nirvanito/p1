@@ -115,14 +115,52 @@ ambiguous and never used to narrow the search: retrieval does not guess.
   ```
 
   "When did I last *call* Jake" and "when did I last *text* Jake" narrow it
-  to that kind of contact.
+  to that kind of contact. A journal entry then counts only when it says it
+  was one ("Called Mom on the drive home"); "Tacos at Veracruz with Jake" is
+  not when Jake last called. If only Jake ever called, "when did I last call
+  Jake" still finds that call, and says who called whom.
+
+  A text counts as contact with someone only when it passed between you and
+  them: one they sent you, or one you sent them (a group message you sent
+  counts for everyone in the group). A group message Jake sent, which Maya
+  merely received, is not contact with Maya. "When did Maya last text me"
+  and "when was the last time Maya texted me" keep only what Maya sent.
 - **"Where is Jake from?", "What's Jake's favorite restaurant?"** Their
   contact card (matched by a linked handle or by their exact name) comes
   first. Then the entries that mention them, with facts before everything
   else.
+- **"What's Maya's phone number?", "What's Jake's email?"** The card's phone
+  numbers and email addresses are part of its evidence line, as written on
+  the card (the handles themselves when the export kept nothing else), so
+  the answer can quote them and a model's answer that does is not set aside.
 - **"What did Jake text me about the lake?"** Searches only the records Jake
   took part in. "Jake texted" means messages Jake *sent*; "what did I text
   Jake" means yours.
+
+You are recognised on a record by any import's account, by any handle that
+sent an outgoing record, and by every confirmed handle of the entity those
+are linked to. An iPhone calendar export's account is `calendar:Home`, not
+your address, so your own address on its events would otherwise read as a
+third party ("with Alex Rivera, Dr. Rebecca Ellis").
+
+## Questions about places
+
+A place you linked a handle to (`handles link` on a Timeline `place_id`, or
+on a calendar location such as `place_id:calendar:uchi, ...`) has visits:
+every place visit and every calendar event held there. **"When was I last at
+Zilker Park?"** takes the newest of those and the newest journal entry
+naming the place, and the latest leads:
+
+```
+Last visit to Zilker Park on record: 2026-10-18, place visit at Zilker Park
+(30.2669, -97.7729) [O1]. Before that: 2026-09-25 journal entry "5k run at
+Zilker Park" [E1].
+```
+
+Only those two streams count. A restaurant's phone number linked to the
+restaurant does not make a call from it a visit. A question that asks for
+another kind of record ("what did I ask Claude about Bled") is not given the
+place's visits.
 
 ## Questions about money
 
@@ -143,12 +181,43 @@ You spent $150.45 across 3 transaction(s) matching "Veracruz" (all records,
 What the journal says you spent (`money` measurements, including ones that
 belong to an entry like "dinner, $40") is a separate, confirmed line.
 
+"Across N transaction(s)" counts money out only. Money in is stated with its
+own count ("and received $8,400.00 in 2 transaction(s)").
+
+A place or organisation you know is the merchant when you name it, under any
+of its names: "at HEB" and "at H-E-B" both find "H-E-B #742 AUSTIN TX",
+because H-E-B Mueller has both as aliases. A hyphenated word stays one word,
+so "H-E-B" is searched as the phrase h e b, the way the bank's text was
+indexed. In a money question a two-letter word stays a search term ("at
+BP"). A question that names a merchant is never answered with everything you
+spent: when nothing matches, the answer says there is no data for that
+merchant.
+
 ## Open loops
 
 **"What are my open tasks?", "What's on my list?", "What do I have to do?"**
 list every task and plan that is not closed yet (`closed_at` is empty). The
 soonest due come first. Each one is cited as an entry. Name a person ("open
 tasks with Mom") to list only the ones that mention them.
+
+Name a time ("what do I need to do this week", "my plans this weekend") and
+you get what is still open then: a loop due by the end of that time (overdue
+ones included), or one with no due date that already existed by then. A task
+written down before the window began still counts. "This week" and "this
+month" run to the end of the week or month here, and what the calendar holds
+in that time is listed too.
+
+When the person or the time leaves nothing, the answer says so and gives the
+real total: "No open tasks or plans mention Priya Natarajan (4 open in
+total)." It says "You have no open tasks or plans" only when nothing is open.
+
+## A day, a weekend, a week
+
+**"What did I do yesterday?", "What happened on Tuesday?", "Give me a recap
+of last week"** name a time and nothing else: no topic, person, metric, kind
+of record, task or money. The answer lists that time's journal entries, with
+up to `max_observations` of its calendar events, place visits, photos, calls
+and transactions, all cited.
 
 ## Time windows
 
@@ -158,12 +227,13 @@ The window is printed with every answer. Rolling definitions:
 |---|---|
 | today / this morning / tonight / yesterday | that journal date (05:00 rollover applies) |
 | last night | today — sleep is filed under the day you woke up |
-| this week | Monday through today |
+| this week | Monday through today; through Sunday for the calendar and open loops |
 | last week | the 7 days before today |
+| past week / past month / past year | the 7 / 30 / 365 days up to and including today |
 | this weekend / last weekend | that Saturday and Sunday |
 | last 10 days / past three months | rolling back from today |
 | three days ago / a week ago | that day / that Monday-to-Sunday week |
-| this month / last month | calendar months |
+| this month / last month / previous month | calendar months (this month runs to its end for the calendar and open loops) |
 | this year / last year / in 2025 | calendar years |
 | in July / June 2025 / July last year | that calendar month (a bare month means the most recent one) |
 | March 3 / 2026-07-04 / last Monday | that day |
@@ -174,6 +244,18 @@ The window is printed with every answer. Rolling definitions:
 That last row matters: "when did I last see Jake" searches all of history,
 because defaulting to 30 days would answer "never" for something that
 happened in March.
+
+The words a window was read from are the window, not the topic. "How much did
+I spend in September" sums every transaction in September. It does not look
+for ones whose text says "September". The same goes for "weekend", "next",
+"since", a weekday, the "two" of "past two weeks", and a word such as
+"during" or "early" in front of them. Only the words the window used are
+taken out, so "may" that is not the month, or a person called June, is
+still searched for.
+
+A window that reaches past today ("next week", or the rest of this week for a
+calendar question) lists what is coming first, soonest first, then what has
+already passed.
 
 Words that only look like dates are not dates. "What *may* have happened" and
 "did I *march*" have no month in them. A month name counts only next to
@@ -226,6 +308,9 @@ The deterministic answer must pass them too, and the tests hold it to that.
    no-data lines are shared, so any sentence may use those dates. A summary
    line such as "last contact O3 (2026-10-12)" counts only for a sentence
    that cites O3. A sentence that fails is listed under `unsupported`.
+   Sentences end at `.`, `!` or `?` outside quotes, but not at the period of
+   an abbreviation ("Dr.", "Mr.", "Mrs.", "Jr.", "St.", "e.g.", "p.m.").
+   "On 2026-10-10 you saw Dr. Ellis [O3]." is one sentence citing O3.
 3. **An answer that cites nothing** is flagged `uncited`.
 
 When a model's answer breaks rule 1 or 2, it is set aside. You get the
@@ -339,9 +424,16 @@ It returns:
   - `entries`: each with its UUID and `tier`.
   - `passages`: each with its source id and UUID.
   - `observations`: each with uuid, stream, participants, connector, import
-    uuid, source file, value and unit.
+    uuid, source file, value and unit. A contact card also has `card`: its
+    `phones` and `emails`.
   - `entities`: each with `last_contact`, `cards` and `facts` (all as ids),
-    plus `ambiguous`, `no_data`, `loops` and the parsed `intent`.
+    and for a place, `visits`. Then `ambiguous`, `no_data`, `loops` and the
+    parsed `intent`. `loops_total` counts the open loops that match the
+    question and `loops_open` every open one. `recap` is true when the
+    question named only a time.
+  - `window`: its `start`, `end` and `label`. An explicit window also has
+    `spans`, the parts of the question it was read from, and a "this week /
+    month / year" window has `through`, the period's last day.
 - `evidence_text`: the evidence as the model saw it.
 
 Wrapping that as an MCP tool or an OpenAPI tool server for Open WebUI is the
