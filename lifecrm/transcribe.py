@@ -4,11 +4,17 @@ phone-dictated text. Both feed the same source/transcript/segment tables.
 - OneDrive Files On-Demand guard: placeholder files are hydrated (read) with
   retries before processing; files modified in the last 60 seconds are
   skipped as possibly still uploading.
-- Date resolution: filename date (YYYY-MM-DD / YYYYMMDD) wins; otherwise the
-  file mtime mapped through the per-source timezone and rollover hour. The
-  filename also carries the *clock* time (HH.mm.ss, optional UTC offset) —
-  the phone knows the recording instant; a OneDrive round trip can make
-  mtime the upload time instead.
+- Date resolution: filename date (YYYY-MM-DD / YYYYMMDD / Samsung's yyMMdd)
+  wins; otherwise the file mtime mapped through the per-source timezone and
+  rollover hour. The filename also carries the *clock* time (HH.mm.ss,
+  HHmmss, HH-mm-ss, optional UTC offset) — the phone knows the recording
+  instant; a OneDrive round trip can make mtime the upload time instead.
+- Two filename conventions, told apart by shape: the iPhone Shortcut writes
+  the JOURNAL date (already rolled back) with a dotted time and a UTC offset;
+  every Android recorder writes the CALENDAR date. The rollover is undone for
+  the first and applied for the second, so a 00:30 note lands on the same
+  journal day with the same instant either way. [time] filename_date
+  overrides the guess for a phone that breaks it.
 - Recoverability: rows are committed BEFORE the file leaves the inbox. A
   crash between commit and archive leaves the file in the inbox, where the
   next run recognizes its content hash and archives it without re-ingesting.
@@ -28,6 +34,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from .config import Config
@@ -35,63 +42,200 @@ from .domain import days, sources
 from .domain.util import DomainError, is_iso_date
 from .importer import _write_transcript_copy, import_text, normalize_text
 
-AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".aac", ".flac", ".wma", ".amr", ".mp4"}
+# Every container here decodes through PyAV's bundled FFmpeg, which is what
+# faster-whisper opens — checked by encoding a tone into each and decoding it
+# back (tests/test_android_filenames.py). .3ga/.3gp: older Samsung recorders
+# and call recordings (AAC or AMR-NB in a 3GPP box); .webm: Opus from browser
+# and open-source recorders; .caf: Apple's Core Audio container.
+AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".ogg", ".opus", ".aac", ".flac", ".wma",
+              ".amr", ".mp4", ".3ga", ".3gp", ".webm", ".caf"}
 TEXT_EXTS = {".txt", ".md"}
 FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
 MIN_FILE_AGE_SEC = 60
 
+# No digit may precede the year: a date inside a longer digit run is a phone
+# number or a counter ("+12020101234" holds a valid-looking 2020-10-12).
 _DATE_RES = [
-    re.compile(r"(20\d{2})-(\d{2})-(\d{2})"),
-    re.compile(r"(20\d{2})_(\d{2})_(\d{2})"),
-    re.compile(r"(20\d{2})(\d{2})(\d{2})"),
+    re.compile(r"(?<!\d)(20\d{2})-(\d{2})-(\d{2})"),
+    re.compile(r"(?<!\d)(20\d{2})_(\d{2})_(\d{2})"),
+    re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})"),
 ]
+# Samsung's call recorder: "Call recording Mom_261020_200512" — yyMMdd_HHmmss
+# after an underscore. Tried first, and only with its time attached: a bare
+# six-digit run is as often a counter as a date.
+_CALL_RE = re.compile(
+    r"(?:^|(?<=_))(\d{2})(\d{2})(\d{2})_([01]\d|2[0-3])([0-5]\d)([0-5]\d)(?!\d)")
 # Clock time as the Shortcut writes it: "21.30.05" or "21.30", optionally
 # followed by a UTC offset like "-0500". Dots, not colons — colons are illegal
 # in filenames on every platform involved.
 _TIME_RE = re.compile(r"(?<![\d.])([01]\d|2[0-3])\.([0-5]\d)(?:\.([0-5]\d))?(?![\d.])")
 _OFFSET_RE = re.compile(r"(?<![\d])([+-])(\d{2})(\d{2})(?![\d])")
+# Clock time as Android recorders write it, directly after the date:
+# "_213005", " 213005", "T213005" (compact — seconds required, since a bare
+# four-digit run is as likely a counter), or "_21-30-05", " 21-30",
+# "-21_30_05" (one separator, used consistently). No offset is read after
+# these: no Android recorder writes one, and what follows is often a counter
+# or a hex id ("20260727 213005-1234ABCD", Voice Memos on the Mac) that
+# would read as -12:34.
+_ADJ_TIME_RE = re.compile(
+    r"[ _T-]?(?:([01]\d|2[0-3])([0-5]\d)([0-5]\d)"
+    r"|([01]\d|2[0-3])([-_])([0-5]\d)(?:\5([0-5]\d))?)(?!\d)")
+
+FILENAME_CONVENTIONS = ("journal", "calendar")
 
 
-def date_from_filename(name: str) -> str | None:
+class FilenameStamp(NamedTuple):
+    """What a filename says about when it was recorded."""
+    date: str                               # YYYY-MM-DD exactly as written
+    clock: tuple[int, int, int] | None      # (hour, minute, second) local
+    offset: timezone | None                 # a UTC offset written in the name
+    shortcut: bool                          # dotted time + offset: iPhone Shortcut
+
+    @property
+    def convention(self) -> str:
+        """'journal' — the name's date is the journal day, rolled back on the
+        phone (the iPhone Shortcut) — or 'calendar' — the date the phone's
+        clock showed (every Android recorder, Voice Memos renamed by hand)."""
+        return "journal" if self.shortcut else "calendar"
+
+
+def _offset_tz(m: re.Match | None) -> timezone | None:
+    """A UTC offset no clock on Earth shows (past ±14:00) is a counter or a
+    phone-number fragment, not a zone — read as none, never a crash."""
+    if not m:
+        return None
+    hours, minutes = int(m.group(2)), int(m.group(3))
+    if hours > 14 or minutes > 59:
+        return None
+    sign = 1 if m.group(1) == "+" else -1
+    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+
+def _dotted_clock(stem: str):
+    """The Shortcut's dotted time anywhere in the stem, and an offset anywhere
+    after it — the original parse, unchanged for the names it already read."""
+    m = _TIME_RE.search(stem)
+    if not m:
+        return None, None, False
+    clock = (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+    tz = _offset_tz(_OFFSET_RE.search(stem[m.end():]))
+    return clock, tz, tz is not None
+
+
+def filename_stamp(name: str) -> FilenameStamp | None:
+    """Parse the date, clock time and UTC offset a filename carries; None when
+    it carries no valid date. An invalid date is skipped, never guessed at."""
+    stem = Path(name).stem
+    m = _CALL_RE.search(stem)
+    if m:
+        yy, mo, d, hh, mi, ss = (int(g) for g in m.groups())
+        try:
+            day = datetime(2000 + yy, mo, d).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        else:
+            return FilenameStamp(day, (hh, mi, ss), None, False)
     for rx in _DATE_RES:
         m = rx.search(name)
-        if m:
-            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            try:
-                return datetime(y, mo, d).strftime("%Y-%m-%d")
-            except ValueError:
-                continue
+        if not m:
+            continue
+        try:
+            day = datetime(int(m.group(1)), int(m.group(2)),
+                           int(m.group(3))).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+        adj = _ADJ_TIME_RE.match(name, m.end())
+        if adj:
+            if adj.group(1):
+                clock = (int(adj.group(1)), int(adj.group(2)), int(adj.group(3)))
+            else:
+                clock = (int(adj.group(4)), int(adj.group(6)), int(adj.group(7) or 0))
+            return FilenameStamp(day, clock, None, False)
+        return FilenameStamp(day, *_dotted_clock(stem))
     return None
 
 
-def recorded_at_from_filename(name: str, journal_date: str, tz_name: str,
-                              rollover_hour: int) -> str | None:
-    """Reconstruct the recording instant from a Shortcut-style filename.
+def date_from_filename(name: str) -> str | None:
+    """The date written in the name — a journal or a calendar date depending
+    on who wrote it (see FilenameStamp.convention)."""
+    stamp = filename_stamp(name)
+    return stamp.date if stamp else None
 
-    The filename carries the JOURNAL date (already rolled back for
-    early-morning notes) plus the real CLOCK time. So a clock time before the
-    rollover hour means the recording actually happened on the calendar day
-    AFTER the journal date — undo the rollover to get the true instant.
+
+def _convention(stamp: FilenameStamp, mode: str) -> str:
+    if mode == "auto":
+        return stamp.convention
+    if mode not in FILENAME_CONVENTIONS:
+        raise ValueError(f"filename date mode must be auto, journal or calendar, "
+                         f"got {mode!r}")
+    return mode
+
+
+def _stamp_times(stamp: FilenameStamp, tz_name: str, rollover_hour: int,
+                 mode: str) -> tuple[str, str | None]:
+    """(journal_date, recorded_at_utc or None) for a parsed name.
+
+    Journal convention: the date is the journal day; a clock time before the
+    rollover hour happened on the calendar day AFTER it, so undo the rollover
+    for the instant. Calendar convention: the date and clock are the instant;
+    a clock time before the rollover hour belongs to the PREVIOUS journal day.
+    Both read the day boundary off the clock in the name — the phone's own
+    wall clock, as the Shortcut's subtraction does — not the config zone.
+    """
+    if stamp.clock is None:
+        return stamp.date, None
+    hour, minute, second = stamp.clock
+    written = datetime.strptime(stamp.date, "%Y-%m-%d")
+    early = hour < rollover_hour
+    if _convention(stamp, mode) == "journal":
+        journal, real = written, written + timedelta(days=1 if early else 0)
+    else:
+        journal, real = written - timedelta(days=1 if early else 0), written
+    tz = stamp.offset if stamp.offset is not None else ZoneInfo(tz_name)
+    local = real.replace(hour=hour, minute=minute, second=second, tzinfo=tz)
+    return (journal.strftime("%Y-%m-%d"),
+            local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def journal_date_from_filename(name: str, rollover_hour: int,
+                               mode: str = "auto") -> str | None:
+    """The journal day a filename puts its note on, or None without a date.
+    mode: 'auto' (decide from the name's shape), 'journal' or 'calendar'."""
+    stamp = filename_stamp(name)
+    if stamp is None:
+        return None
+    # The zone only moves the instant, never the day — any valid zone will do.
+    return _stamp_times(stamp, "UTC", rollover_hour, mode)[0]
+
+
+def recorded_at_from_filename(name: str, file_date: str, tz_name: str,
+                              rollover_hour: int, mode: str = "auto") -> str | None:
+    """Reconstruct the recording instant from the clock time in a filename,
+    anchored on file_date (the date the name carries).
+
+    A Shortcut-style name carries the JOURNAL date (already rolled back for
+    early-morning notes) plus the real CLOCK time, so a clock time before the
+    rollover hour actually happened on the calendar day AFTER the journal
+    date; an Android-style name carries the calendar date itself. The UTC
+    offset in the name, when present, wins over tz_name.
     Returns UTC ISO, or None when the name carries no parseable time.
     """
-    stem = Path(name).stem
-    m = _TIME_RE.search(stem)
-    if not m:
+    stamp = filename_stamp(name)
+    if stamp is None:   # no date in the name: only the Shortcut's time can be read
+        clock, tz, shortcut = _dotted_clock(Path(name).stem)
+        stamp = FilenameStamp(file_date, clock, tz, shortcut)
+    return _stamp_times(stamp._replace(date=file_date), tz_name, rollover_hour,
+                        mode)[1]
+
+
+def filename_times(name: str, cfg: Config) -> tuple[str, str | None] | None:
+    """(journal_date, recorded_at_utc or None) from a filename under cfg's
+    zone, rollover hour and [time] filename_date; None without a date."""
+    stamp = filename_stamp(name)
+    if stamp is None:
         return None
-    hour, minute = int(m.group(1)), int(m.group(2))
-    second = int(m.group(3) or 0)
-    real_date = datetime.strptime(journal_date, "%Y-%m-%d")
-    if hour < rollover_hour:
-        real_date += timedelta(days=1)
-    om = _OFFSET_RE.search(stem[m.end():])
-    if om:
-        sign = 1 if om.group(1) == "+" else -1
-        tz = timezone(sign * timedelta(hours=int(om.group(2)),
-                                       minutes=int(om.group(3))))
-    else:
-        tz = ZoneInfo(tz_name)
-    local = real_date.replace(hour=hour, minute=minute, second=second, tzinfo=tz)
-    return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _stamp_times(stamp, cfg.timezone, cfg.day_rollover_hour,
+                        cfg.filename_date)
 
 
 def is_placeholder(path: Path) -> bool:
@@ -149,13 +293,13 @@ def resolve_file_times(path: Path, cfg: Config) -> tuple[str, str]:
     Filename clock time likewise wins over mtime for recorded_at.
     """
     mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-    file_date = date_from_filename(path.name)
-    journal_date = file_date or days.journal_date_for(
-        mtime_utc, cfg.timezone, cfg.day_rollover_hour)
-    recorded_at = None
-    if file_date:
-        recorded_at = recorded_at_from_filename(
-            path.name, file_date, cfg.timezone, cfg.day_rollover_hour)
+    from_name = filename_times(path.name, cfg)
+    if from_name is None:
+        journal_date = days.journal_date_for(
+            mtime_utc, cfg.timezone, cfg.day_rollover_hour)
+        recorded_at = None
+    else:
+        journal_date, recorded_at = from_name
     if recorded_at is None:
         recorded_at = mtime_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     return journal_date, recorded_at

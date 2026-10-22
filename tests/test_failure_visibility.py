@@ -219,12 +219,12 @@ def test_doctor_names_files_stuck_in_the_inbox(tmp_path, monkeypatch):
 def test_doctor_names_files_intake_will_never_read(tmp_path, monkeypatch):
     root = _setup(tmp_path, monkeypatch)
     inbox = root / "onedrive" / "inbox"
-    (inbox / "voice memo.caf").write_bytes(b"x")          # iPhone's own format
+    (inbox / "Notes 1.sdocx").write_bytes(b"x")           # Samsung Notes' own format
     (inbox / "desktop.ini").write_text("[.ShellClassInfo]")  # litter: ignored
     checks = _doctor(root)
     assert checks["inbox_unrecognized"]["status"] == "warn"
     detail = checks["inbox_unrecognized"]["detail"]
-    assert "inbox_dir/voice memo.caf" in detail and "desktop.ini" not in detail
+    assert "inbox_dir/Notes 1.sdocx" in detail and "desktop.ini" not in detail
     assert checks["inbox_stuck"]["status"] == "ok"          # not double-reported
 
 

@@ -22,6 +22,9 @@ DEFAULT_KINDS = [
     "event", "observation", "thought", "idea", "decision", "task", "plan",
     "fact", "reflection",
 ]
+# [time] filename_date: whose date a recording's filename carries. "auto"
+# tells them apart by shape (transcribe.FilenameStamp.convention).
+FILENAME_DATE_MODES = ("auto", "journal", "calendar")
 TIME_OF_DAY = ["morning", "afternoon", "evening", "night"]
 CONFIDENCE = ["high", "medium", "low"]
 ENTITY_TYPES = [
@@ -45,6 +48,7 @@ class Config:
     onedrive_backups_dir: Path | None
     timezone: str = "America/Chicago"
     day_rollover_hour: int = 5
+    filename_date: str = "auto"
     whisper: dict = field(default_factory=dict)
     ingest: dict = field(default_factory=dict)
     ask: dict = field(default_factory=dict)
@@ -133,6 +137,10 @@ def load_config(root: Path | None = None) -> Config:
         raise ConfigError(
             f"{cfg_file}: [paths] sets both cloud_backups_dir ('{cloud}') and "
             f"onedrive_backups_dir ('{legacy}') — keep cloud_backups_dir only")
+    filename_date = time_cfg.get("filename_date", "auto")
+    if filename_date not in FILENAME_DATE_MODES:
+        raise ConfigError(f"{cfg_file}: [time] filename_date must be \"auto\", "
+                          f"\"journal\" or \"calendar\", got {filename_date!r}")
     return Config(
         root=root,
         data_dir=_resolve(root, paths.get("data_dir", "data")),
@@ -143,6 +151,7 @@ def load_config(root: Path | None = None) -> Config:
         onedrive_backups_dir=_optional_path(cloud or legacy),
         timezone=str(tz),
         day_rollover_hour=rollover,
+        filename_date=filename_date,
         whisper=raw.get("whisper", {}),
         ingest=raw.get("ingest", {}),
         ask=raw.get("ask", {}),
