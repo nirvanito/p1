@@ -861,39 +861,55 @@ app.add_typer(health_app, name="health")
 
 @health_app.command("import")
 def health_import(
-    file: str = typer.Argument(..., help="Health Connect export (.zip or .db)"),
+    file: str = typer.Argument(
+        None, help="Android Health Connect export (.zip or .db) or iPhone Apple "
+                   "Health export (export.zip, the unzipped apple_health_export "
+                   "folder, or export.xml). Omit to use the newest one in "
+                   "Downloads / iCloud Drive / OneDrive"),
     apply_changes: bool = typer.Option(False, "--apply",
                                        help="Write; default is a dry-run report"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Import an Android Health Connect export. Dry-run by default: review the
+    """Import a phone's health export — Android Health Connect or iPhone Apple
+    Health, told apart by the file's contents. Dry-run by default: review the
     per-metric counts, date spans, and sample values (a wrong unit or date is
     visible there), then re-run with --apply. Re-importing is always safe —
-    records dedupe on the source system's own record ids."""
-    from . import health_connect as hc
+    records dedupe on the source's own record ids (Health Connect) or on a
+    stable hash of type, device and time (Apple Health)."""
+    from . import health_import as hi
     cfg = _cfg()
-    p = Path(file)
+    if file is None:
+        search = hi.find_exports()
+        if not search["found"]:
+            _fail(hi.not_found_message(search))
+        p = search["found"][0]
+        others = len(search["found"]) - 1
+        typer.echo(f"using {p}" + (f" (newest of {others + 1} found)" if others
+                                   else ""), err=as_json)
+    else:
+        p = Path(file)
     if not p.exists():
         _fail(f"file not found: {p}")
     try:
-        scan = hc.read_export(p, cfg)
+        reader = hi.reader_for(p)
+        scan = reader.read_export(p, cfg)
     except DomainError as e:
         _fail(str(e))
     conn = _conn(cfg)
     try:
-        plan = hc.build_plan(conn, scan["records"])
+        plan = reader.build_plan(conn, scan["records"])
         if not apply_changes:
             conn.rollback()
             if as_json:
-                _echo_json(hc.plan_summary(scan, plan))
+                _echo_json(reader.plan_summary(scan, plan))
             else:
-                for line in hc.report_lines(scan, plan):
+                for line in reader.report_lines(scan, plan):
                     typer.echo(line)
                 typer.echo("dry run — nothing written. Re-run with --apply "
                            "to write.")
             return
         try:
-            summary = hc.apply_plan(conn, plan)
+            summary = reader.apply_plan(conn, plan)
             conn.commit()
         except DomainError as e:
             conn.rollback()
@@ -901,9 +917,9 @@ def health_import(
     finally:
         conn.close()
     if as_json:
-        _echo_json({**hc.plan_summary(scan, plan), "applied": summary})
+        _echo_json({**reader.plan_summary(scan, plan), "applied": summary})
         return
-    for line in hc.report_lines(scan, plan):
+    for line in reader.report_lines(scan, plan):
         typer.echo(line)
     typer.echo(f"applied: {summary['added']} added, {summary['updated']} "
                f"updated, {summary['refreshed']} refreshed; "
