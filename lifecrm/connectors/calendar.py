@@ -31,7 +31,9 @@ rrule text, the calendar's name, status, url, geo and each attendee's RSVP.
 Participants are **handles, never names**: ORGANIZER -> role `organizer`,
 ATTENDEE -> role `participant`, both `email` handles with the invite's CN as
 display_name. The owner's own address is kept — it is a handle like any
-other, and linking it to the owner once is what says "I was there". Rooms and
+other. Listing it under `[owner] handles` in config.toml is what says "I was
+there" when the export itself does not (an iPhone Home calendar's account is
+'calendar:Home'): the report prints the line to add. Rooms and
 resources are not people and are skipped, counted. A physical LOCATION also
 becomes a `place_id` handle (`calendar:<location, normalized>`, role
 `location`): linking it to a place entity once attributes every event held
@@ -931,6 +933,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         (organizers.most_common(1)[0][0] if organizers else None)
 
     per_cal = Counter({c.name: 0 for c in cals})
+    owner_status = _owner_status(cfg, owner, account) if owner else None
     per_cal.update(cal_name for cal_name, _ in kept)
     facts = {
         "calendars": [{"name": n, "events": per_cal[n]} for n in per_cal],
@@ -939,6 +942,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         "series": out.series,
         "occurrences": out.occurrences,
         "owner": owner,
+        "owner_status": owner_status,
         "account_from": account_how,
     }
     extra = {}
@@ -962,6 +966,45 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         today=today.isoformat(),
         owner=owner,
         **extra)
+
+
+def _owner_status(cfg: Config, owner: str, account: str | None) -> str:
+    """Whether the address the scan takes for the owner's is already known
+    to be the owner's (lifecrm/owner.py): 'account' (it is this import's
+    account), 'configured' (listed under [owner] handles), else
+    'missing_handle' ([owner] exists without it) or 'missing_table'."""
+    from .. import owner as owner_mod
+    from ..config import ConfigError
+    if account and account.strip().lower() == owner.strip().lower():
+        return "account"
+    try:
+        _, handles = owner_mod.configured(cfg)
+    except ConfigError:
+        handles = frozenset()
+    if ("email", owner.strip().lower()) in handles:
+        return "configured"
+    return "missing_handle" if (cfg.extra or {}).get("owner") is not None else "missing_table"
+
+
+def owner_hint(address: str, status: str | None) -> list[str]:
+    """What the report says about the owner's own address. Linking it to
+    yourself is not what keeps you out of People, the review pack and ask's
+    participant lists when no import says who you are (an iPhone Home
+    calendar's account is 'calendar:Home'): `[owner] handles` is."""
+    why = "so you are never listed as someone you met (People, the review pack, ask)"
+    if status == "configured":
+        return []
+    if status == "account":
+        return [f"  your own address is likely {address} — this import's account, "
+                f"so it already counts as you"]
+    if status == "missing_handle":
+        return [f'  your own address is likely {address} — add "email:{address}" to '
+                f"[owner] handles in config.toml, {why}"]
+    return [f"  your own address is likely {address} — say so once in config.toml, {why}:",
+            "      [owner]",
+            f'      handles = ["email:{address}"]',
+            f"    and link it to yourself if you like: lifecrm handles link "
+            f"email:{address} --entity <id>"]
 
 
 # ---------------------------------------------------------------- report
@@ -1046,8 +1089,7 @@ def report_lines(scan: base.Scan, plan: dict) -> list[str]:
         lines.append(f"  handles: {len(people)} people ({named} named by their invites), "
                      f"{len(places)} place(s) — review with 'lifecrm handles list --suggest'")
     if scan.get("owner"):
-        lines.append(f"  your own address is likely {scan['owner']} — link it to yourself "
-                     f"once: lifecrm handles link email:{scan['owner']} --entity <id>")
+        lines += owner_hint(scan["owner"], facts.get("owner_status"))
     for c in plan["conflicts"]:
         lines.append(f"  CONFLICT {c['stream']} {c['external_id'][:24]}…: differs "
                      f"from the stored record but is not newer — kept existing "

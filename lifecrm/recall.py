@@ -162,6 +162,40 @@ _MONTH_WORDS = sorted(set(MONTHS) | set(MONTH_ABBR), key=len, reverse=True)
 _MONTH_RE = re.compile(r"\b(" + "|".join(_MONTH_WORDS) + r")\b")
 _WEEKDAY_RE = re.compile(r"\b(?:(last|next|this|on)\s+)?(" + "|".join(WEEKDAYS)
                          + r")s?\b")
+# Counts that are not numbers. Chosen, and shown in the window's label so the
+# answer says what was read: a couple is 2, a few 3, several 7.
+FUZZY_COUNTS = {"couple": 2, "few": 3, "several": 7}
+_FUZZY_WORDS = r"few|couple(?:\s+of)?|several"
+_FUZZY = rf"(?:a\s+)?({_FUZZY_WORDS})"
+_LAST_FUZZY = re.compile(rf"\b(?:last|past|previous)\s+{_FUZZY}\s+(day|week|month|year)s?\b")
+_FUZZY_AGO = re.compile(rf"\b{_FUZZY}\s+(day|week|month|year)s?\s+ago\b")
+# 'the next two weeks', 'over the next few days': from today on.
+_NEXT_N = re.compile(rf"\b(?:next|coming|following)\s+(?:{_FUZZY}|{_NUM})\s+"
+                     r"(day|week|month|year)s?\b")
+# 'so far this month', 'this year so far', 'month to date', 'YTD'
+_SO_FAR = re.compile(r"\bso\s+far\s+(?:this|the)\s+(week|month|quarter|year)\b"
+                     r"|\b(?:this|the)\s+(week|month|quarter|year)\s+so\s+far\b"
+                     r"|\b(?:the\s+)?(week|month|quarter|year)[\s-]+to[\s-]+date\b"
+                     r"|\b([wmqy])td\b")
+_TD_UNITS = {"w": "week", "m": "month", "q": "quarter", "y": "year"}
+_QUARTER_ORD = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3,
+                "fourth": 4, "4th": 4, "last": 4, "final": 4}
+_QUARTER_RE = re.compile(
+    r"\b(?:(?P<which>this|last|next|previous|current|past)\s+quarter(?!\s+of\b)"
+    r"|q(?P<qn>[1-4])(?:,?\s+(?:of\s+)?(?P<qy>(?:19|20)\d{2})\b)?"
+    r"|(?:the\s+)?(?P<ord>" + "|".join(_QUARTER_ORD) + r")\s+quarter"
+    r"(?:\s+of\s+(?:(?:the\s+)?(?P<oyw>this|last|next)\s+year|(?P<oy>(?:19|20)\d{2})))?)\b")
+# Seasons by the month (northern hemisphere): spring March-May, summer
+# June-August, fall September-November, winter December-February (the
+# winter of 2025 runs into 2026). A bare season needs a word that makes it a
+# time ('in the fall', 'last summer', 'winter 2025') — 'fall' is a verb too.
+SEASONS = {"spring": 3, "summer": 6, "fall": 9, "autumn": 9, "winter": 12}
+_SEASON_RE = re.compile(
+    r"\b(?:(?P<which>this|last|next|past|previous)\s+"
+    r"|(?P<lead>in|during|over|since|for|through|throughout|early|late|mid|until)\s+"
+    r"(?:the\s+)?(?:(?:early|late|mid)[\s-]+)?)?"
+    r"(?P<season>spring|summer|fall|autumn|winter)"
+    r"(?:\s+(?:of\s+)?(?P<year>(?:19|20)\d{2})\b)?")
 
 
 def ask_setting(cfg: Config, key: str, default: int) -> int:
@@ -205,6 +239,40 @@ def _month_window(year: int, month: int) -> tuple[str, str]:
 
 def _number(text: str) -> int:
     return int(text) if text.isdigit() else WORD_NUMBERS[text]
+
+
+def _fuzzy(text: str) -> int:
+    """'few' -> 3, 'couple of' -> 2, 'several' -> 7 (FUZZY_COUNTS)."""
+    return FUZZY_COUNTS[text.split()[0]]
+
+
+def _months_ahead(today: date, n: int) -> date:
+    """The day n calendar months after today, clamped to that month's end."""
+    y, m = divmod(today.year * 12 + today.month - 1 + n, 12)
+    return date(y, m + 1, min(today.day, _month_span(y, m + 1)[1].day))
+
+
+def _quarter_span(year: int, q: int) -> tuple[date, date]:
+    return date(year, 3 * q - 2, 1), _month_span(year, 3 * q)[1]
+
+
+def _season_span(season: str, year: int) -> tuple[date, date]:
+    first = SEASONS[season]
+    end_y, end_m = divmod(year * 12 + first - 1 + 2, 12)
+    return date(year, first, 1), _month_span(end_y, end_m + 1)[1]
+
+
+def _nearest(candidates: list[tuple[date, date]], today: date) -> tuple[date, date]:
+    """Of a month's (or a day's) occurrences, the one nearest today — what a
+    forward-looking question means: 'what's on my calendar for November'
+    asked in October is next month, 'for September' is last month. A tie
+    goes to the later one."""
+    def distance(span: tuple[date, date]) -> tuple[int, int]:
+        start, end = span
+        gap = 0 if start <= today <= end else min(abs((start - today).days),
+                                                  abs((end - today).days))
+        return gap, -start.toordinal()
+    return min(candidates, key=distance)
 
 
 def _months_back(today: date, n: int) -> date:
@@ -331,12 +399,26 @@ _PART_WEEKS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3
 _PART_THIRDS = {"start": (1, 10), "beginning": (1, 10), "middle": (11, 20), "end": (21, 31)}
 
 
+def _month_year(month: int, today: date, ahead: bool) -> int:
+    """The year of a bare month name: the last one that has begun ('in July,
+    December means last December'), or — in a question that looks forward —
+    the nearest one (`_nearest`)."""
+    if ahead:
+        spans = [_month_span(y, month) for y in (today.year - 1, today.year, today.year + 1)]
+        return _nearest(spans, today)[0].year
+    return today.year if month <= today.month else today.year - 1
+
+
 def _month_part(m: re.Match, q: str, today: date, year_hint: int | None,
-                names: frozenset[str]) -> tuple[date, date, str, int] | None:
+                names: frozenset[str], ahead: bool = False
+                ) -> tuple[date, date, str, int] | None:
     """A _PART_RE match as (start, end, label, end of span)."""
     week, third = m.group("week"), m.group("third")
+    half, edge = m.group("half"), m.group("edge")
     which, token = m.group("which") or "this", m.group("month")
     used = m.end()
+    if m.group("unit") == "year" or m.group("yearnum"):
+        return _year_part(m, today)
     if token:
         if token in names:
             return None
@@ -344,7 +426,7 @@ def _month_part(m: re.Match, q: str, today: date, year_hint: int | None,
         ym = re.match(r"\.?,?\s+(\d{4})\b", q[m.end():])
         year = int(ym.group(1)) if ym else year_hint
         if year is None:
-            year = today.year if month <= today.month else today.year - 1
+            year = _month_year(month, today, ahead)
         used += ym.end() if ym else 0
     else:
         anchor = today if which == "this" else (
@@ -357,6 +439,21 @@ def _month_part(m: re.Match, q: str, today: date, year_hint: int | None,
         start = last - timedelta(days=6) if n == 0 else first + timedelta(days=7 * (n - 1))
         end = last if n == 0 else start + timedelta(days=6)
         part = f"{'last' if n == 0 else week} week"
+    elif half:
+        # 'the first half of October' is the 1st to the 15th, the second
+        # (latter, back) half the 16th to the month's end.
+        second = half not in ("first", "front")
+        start = first.replace(day=16) if second else first
+        end = last if second else first.replace(day=15)
+        part = f"{'second' if second else 'first'} half"
+    elif edge:
+        # 'the first few days of October': a few is 3 (FUZZY_COUNTS).
+        count = m.group("count")
+        n = min(_fuzzy(count) if count.split()[0] in FUZZY_COUNTS else _number(count),
+                last.day)
+        start = first if edge == "first" else last - timedelta(days=n - 1)
+        end = first + timedelta(days=n - 1) if edge == "first" else last
+        part = f"{'first' if edge == 'first' else 'last'} {n} days"
     else:
         lo, hi = _PART_THIRDS[third]
         start, end = first.replace(day=lo), first.replace(day=min(hi, last.day))
@@ -364,18 +461,52 @@ def _month_part(m: re.Match, q: str, today: date, year_hint: int | None,
     return start, end, f"{part} of {MONTH_NAMES[month]} {year}", used
 
 
+def _year_part(m: re.Match, today: date) -> tuple[date, date, str, int]:
+    """Part of a year: 'the first half of the year' (January-June), 'the
+    end of last year' (its last quarter), 'the start of 2025' (its first),
+    'the middle of the year' (May-August), 'the last week of the year'."""
+    year = (int(m.group("yearnum")) if m.group("yearnum") else
+            today.year + {"this": 0, "last": -1, "previous": -1, "next": 1}[
+                m.group("which") or "this"])
+    first, last = date(year, 1, 1), date(year, 12, 31)
+    if m.group("week"):
+        n = _PART_WEEKS[m.group("week")]
+        start = last - timedelta(days=6) if n == 0 else first + timedelta(days=7 * (n - 1))
+        end, part = start + timedelta(days=6), f"{'last' if n == 0 else m.group('week')} week"
+    elif m.group("half"):
+        second = m.group("half") not in ("first", "front")
+        start, end = (date(year, 7, 1), last) if second else (first, date(year, 6, 30))
+        part = f"{'second' if second else 'first'} half"
+    elif m.group("edge"):
+        count = m.group("count")
+        n = _fuzzy(count) if count.split()[0] in FUZZY_COUNTS else _number(count)
+        start = first if m.group("edge") == "first" else last - timedelta(days=n - 1)
+        end = first + timedelta(days=n - 1) if m.group("edge") == "first" else last
+        part = f"{'first' if m.group('edge') == 'first' else 'last'} {n} days"
+    else:
+        lo, hi = {"start": (1, 3), "beginning": (1, 3), "middle": (5, 8),
+                  "end": (10, 12)}[m.group("third")]
+        start, end, part = date(year, lo, 1), _month_span(year, hi)[1], m.group("third")
+    return start, end, f"{part} of {year}", m.end()
+
+
 _PART_RE = re.compile(
     r"\b(?:the\s+)?(?:(?P<week>" + "|".join(_PART_WEEKS) + r")\s+week|"
+    r"(?P<half>first|second|latter|last|back|front)\s+half|"
+    r"(?P<edge>first|last|final)\s+(?P<count>" + _FUZZY_WORDS
+    + r"|\d{1,2}|two|three|four|five|six|seven|eight|nine|ten)\s+days|"
     r"(?P<third>start|beginning|middle|end))\s+of\s+(?:the\s+)?"
-    r"(?:(?:(?P<which>this|last|next|previous)\s+)?month|(?P<month>"
+    r"(?:(?:(?P<which>this|last|next|previous)\s+)?(?P<unit>month|year)"
+    r"|(?P<yearnum>(?:19|20)\d{2})|(?P<month>"
     + "|".join(_MONTH_WORDS) + r"))\b")
 
 
 def _month_point(token: str, after: str, today: date,
-                 year_hint: int | None, ignored: list[str]
+                 year_hint: int | None, ignored: list[str], ahead: bool = False
                  ) -> tuple[date, date, str, int] | None:
     """A month name, optionally with a day and/or a year after it. The
-    fourth value is how much of `after` the day and year used."""
+    fourth value is how much of `after` the day and year used. Without a
+    year it is the last one — or, `ahead`, the nearest one."""
     month = MONTHS.get(token) or MONTH_ABBR[token]
     dm = re.match(r"\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?", after)
     ym = re.match(r"\.?,?\s+(\d{4})\b", after)
@@ -385,22 +516,32 @@ def _month_point(token: str, after: str, today: date,
     if dm:
         n = int(dm.group(1))
         y = year or today.year
-        try:
-            d = date(y, month, n)
-            if year is None and d > today:
-                d = date(y - 1, month, n)
-        except ValueError:
+        days = []
+        for yy in ((y,) if year else (y - 1, y, y + 1)):
+            try:
+                days.append(date(yy, month, n))
+            except ValueError:              # Feb 29 outside a leap year
+                pass
+        if not days:
             ignored.append(f"{MONTH_NAMES[month]} {n} is not a real date")
             return None
+        if year:
+            d = days[0]
+        elif ahead:
+            d = _nearest([(c, c) for c in days], today)[0]
+        else:
+            d = max(c for c in days if c <= today) if any(c <= today for c in days) \
+                else days[0]
         return d, d, f"{MONTH_NAMES[month]} {d.day}, {d.year}", used
     if year is None:
         # In July, 'December' means last December — not one five months away.
-        year = today.year if month <= today.month else today.year - 1
+        year = _month_year(month, today, ahead)
     start, end = _month_span(year, month)
     return start, end, f"{MONTH_NAMES[month]} {year}", used
 
 
-def _point(text: str, today: date) -> tuple[date, date, str, int] | None:
+def _point(text: str, today: date, ahead: bool = False
+           ) -> tuple[date, date, str, int] | None:
     """One time expression at the very start of `text` — the X in 'since X'
     or 'between X and Y'. Anchored, so 'from Jake in July' is not 'since
     July'. The fourth value is how many characters of `text` it used."""
@@ -429,13 +570,78 @@ def _point(text: str, today: date) -> tuple[date, date, str, int] | None:
         return *_period(m.group(1), m.group(2), today), skip + m.end()
     m = _MONTH_RE.match(t)
     if m:
-        p = _month_point(m.group(1), t[m.end():], today, None, [])
+        p = _month_point(m.group(1), t[m.end():], today, None, [], ahead)
         return (*p[:3], skip + m.end() + p[3]) if p else None
     m = re.match(r"((?:19|20)\d{2})\b(?![-\d])", t)
     if m:
         y = int(m.group(1))
         return date(y, 1, 1), date(y, 12, 31), str(y), skip + m.end()
     return None
+
+
+def _quarter(m: re.Match, today: date, ahead: bool) -> tuple[date, date, str, date | None]:
+    """A _QUARTER_RE match as (start, end, label, through): calendar
+    quarters, Q1 January-March. 'This quarter' runs to today (through its
+    last day for a forward question), 'the past quarter' is the last three
+    months, and a bare 'Q3' is the last one begun — or the nearest, ahead."""
+    current = (today.month - 1) // 3 + 1
+    which = m.group("which")
+    if which == "past":
+        return _months_back(today, 3) + timedelta(days=1), today, "past quarter", None
+    if which:
+        shift = {"last": -1, "previous": -1, "next": 1}.get(which, 0)
+        y, q0 = divmod(today.year * 4 + current - 1 + shift, 4)
+        start, end = _quarter_span(y, q0 + 1)
+        label = f"{'this' if shift == 0 else which} quarter (Q{q0 + 1} {y})"
+        if shift == 0:
+            return start, today, label, end
+        return start, end, label, None
+    q = int(m.group("qn")) if m.group("qn") else _QUARTER_ORD[m.group("ord")]
+    year = m.group("qy") or m.group("oy")
+    if year:
+        y = int(year)
+    elif m.group("oyw"):
+        y = today.year + {"this": 0, "last": -1, "next": 1}[m.group("oyw")]
+    elif ahead:
+        y = _nearest([_quarter_span(c, q) for c in (today.year - 1, today.year,
+                                                     today.year + 1)], today)[0].year
+    else:
+        y = today.year if q <= current else today.year - 1
+    start, end = _quarter_span(y, q)
+    if start <= today <= end and not ahead:
+        return start, today, f"Q{q} {y}", end
+    return start, end, f"Q{q} {y}", None
+
+
+def _season(m: re.Match, today: date, ahead: bool) -> tuple[date, date, str, date | None] | None:
+    """A _SEASON_RE match as (start, end, label, through), or None when
+    nothing made the word a time ('summer camp', 'did I fall')."""
+    which, season, year = m.group("which"), m.group("season"), m.group("year")
+    if not (which or m.group("lead") or year):
+        return None
+    name = "fall" if season == "autumn" else season
+    # The season year of today's own season (January's winter began last year).
+    cur = today.year - 1 if name == "winter" and today.month < 3 else today.year
+    spans = {y: _season_span(name, y) for y in (cur - 2, cur - 1, cur, cur + 1)}
+    if year:
+        y = int(year)
+        spans[y] = _season_span(name, y)
+    elif which == "this":
+        y = cur
+    elif which in ("last", "past", "previous"):
+        # The latest one that is over: in October, last summer is this year's.
+        y = max(y for y, (_, end) in spans.items() if end < today)
+    elif which == "next":
+        y = min(y for y, (start, _) in spans.items() if start > today)
+    elif ahead:
+        y = min(y for y, (_, end) in spans.items() if end >= today)
+    else:
+        y = max(y for y, (start, _) in spans.items() if start <= today)
+    start, end = spans[y]
+    label = f"{name} {y}" + (f"-{(y + 1) % 100:02d}" if name == "winter" else "")
+    if start <= today <= end:
+        return start, today, label, end
+    return start, end, label, None
 
 
 def parse_window(question: str, cfg: Config, today: date | None = None,
@@ -471,6 +677,11 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
     q = question.lower().replace("’", "'")
     today = today or local_today(cfg)
     ignored: list[str] = []
+    # A question that looks forward ('what's on my calendar for November',
+    # 'what's due by Saturday') means the nearest November and the coming
+    # Saturday, never last year's or last week's.
+    ahead = bool((_FUTURE_TENSE.search(q) or re.search(r"\bdue\b", q))
+                 and not _PAST_TENSE.search(q))
 
     def win(start: date | str, end: date | str, label: str, *spans,
             through: date | None = None) -> dict:
@@ -527,26 +738,28 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
     # ---- ranges in words: between X and Y, since X
     m = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+)$", q)
     if m:
-        a, b = _point(m.group(1), today), _point(m.group(2), today)
+        a, b = _point(m.group(1), today, ahead), _point(m.group(2), today, ahead)
         if a and b:
             return win(min(a[0], b[0]), max(a[1], b[1]), f"{a[2]} to {b[2]}",
                        (m.start(), m.start(1) + a[3]),
                        (m.end(1), m.start(2) + b[3]))
-    # 'September and October', 'from September to October', 'Oct 1 - 15':
-    # one window across both, never the first month plus a word to find.
+    # 'September and October', 'from September to October', 'Oct 1 - 15',
+    # 'September or October', 'September, October': one window across both,
+    # never the first month plus a word to find.
     for pos in sorted({m.start() for m in _MONTH_RE.finditer(q) if m.group(1) not in names}):
-        a = _point(q[pos:], today)
+        a = _point(q[pos:], today, ahead)
         if not a:
             continue
         rest = q[pos + a[3]:]
-        joint = re.match(r"\s*[-–—]\s*|\s+(?:and|to|through|thru|until|till)\s+(?:the\s+)?",
+        joint = re.match(r"\s*[-–—,]\s*|\s+(?:and|or|to|through|thru|until|till)\s+(?:the\s+)?",
                          rest)
         if not joint:
             continue
         tail = rest[joint.end():]
-        b = _point(tail, today)
+        b = _point(tail, today, ahead)
         day = re.match(r"(\d{1,2})(?:st|nd|rd|th)?\b(?![/:])", tail)
-        if not b and day and a[0] == a[1]:
+        # 'Oct 1 - 15' is a day range; 'on October 5, 10 people came' is not.
+        if not b and day and a[0] == a[1] and "," not in joint.group(0):
             try:
                 d = a[0].replace(day=int(day.group(1)))
             except ValueError:
@@ -569,6 +782,62 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
     if m:
         d = today + timedelta(days=-2 if m.group(1).startswith("before") else 2)
         return win(d, d, f"the day {' '.join(m.group(1).split())} ({d})", m.span())
+    # 'Last night' is today (below); the night before it is yesterday.
+    m = re.search(r"\b(?:the\s+)?night\s+before\s+last\b", q)
+    if m:
+        d = today - timedelta(days=1)
+        return win(d, d, f"the night before last ({d})", m.span())
+    # 'the other day': some day in the past week, not today.
+    m = re.search(r"\bthe\s+other\s+day\b", q)
+    if m:
+        return win(today - timedelta(days=7), today - timedelta(days=1),
+                   "the other day (the past week)", m.span())
+    # 'so far this month', 'this year so far', 'month to date', 'YTD': the
+    # period's start to today — never past it, whatever the question.
+    m = _SO_FAR.search(q)
+    if m:
+        unit = next(g for g in m.groups() if g)
+        unit = _TD_UNITS.get(unit, unit)
+        start = (_quarter_span(today.year, (today.month - 1) // 3 + 1)[0]
+                 if unit == "quarter" else _period("this", unit, today)[0])
+        return win(start, today, f"this {unit} so far", m.span())
+    # 'the week before last' is the week before 'last week' (rolling, like
+    # it); the month and year before last are calendar ones.
+    m = re.search(r"\b(?:the\s+)?(week|month|year)\s+before\s+last\b", q)
+    if m:
+        unit = m.group(1)
+        if unit == "week":
+            start, end = today - timedelta(days=14), today - timedelta(days=8)
+        elif unit == "month":
+            y, mo = divmod(today.year * 12 + today.month - 1 - 2, 12)
+            start, end = _month_span(y, mo + 1)
+        else:
+            start, end = date(today.year - 2, 1, 1), date(today.year - 2, 12, 31)
+        return win(start, end, f"the {unit} before last", m.span())
+    # 'the week after next' is the calendar week after next week.
+    m = re.search(r"\b(?:the\s+)?(week|weekend|month|year)\s+after\s+next\b", q)
+    if m:
+        unit = m.group(1)
+        monday = today - timedelta(days=today.weekday())
+        if unit == "week":
+            start, end = monday + timedelta(days=14), monday + timedelta(days=20)
+        elif unit == "weekend":
+            start, end = monday + timedelta(days=19), monday + timedelta(days=20)
+        elif unit == "month":
+            y, mo = divmod(today.year * 12 + today.month - 1 + 2, 12)
+            start, end = _month_span(y, mo + 1)
+        else:
+            start, end = date(today.year + 2, 1, 1), date(today.year + 2, 12, 31)
+        return win(start, end, f"the {unit} after next", m.span())
+    # 'the week of October 5' is that Monday-to-Sunday week; 'the weekend of
+    # October 10' that week's Saturday and Sunday.
+    for m in re.finditer(r"\b(?:the\s+)?(week|weekend)\s+of\s+", q):
+        p = _point(q[m.end():], today, ahead)
+        if p and p[0] == p[1]:
+            mon = p[0] - timedelta(days=p[0].weekday())
+            start, end = ((mon + timedelta(days=5), mon + timedelta(days=6))
+                          if m.group(1) == "weekend" else (mon, mon + timedelta(days=6)))
+            return win(start, end, f"the {m.group(1)} of {p[2]}", (m.start(), m.end() + p[3]))
     # 'the rest of the week': today to the period's end.
     m = re.search(r"\b(?:the\s+)?rest\s+of\s+(?:the\s+|this\s+)?(day|today|week|month|year)\b",
                   q)
@@ -593,7 +862,27 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
         # Sleep is filed under the day you woke up, so last night == today.
         return win(today, today, "last night", m.span())
 
-    # ---- N units ago / last N units
+    # ---- part of a month: 'the first week of October', 'the end of September',
+    # 'the second half of September', 'the last few days of October' — before
+    # 'last few days', which is otherwise the last three days up to today.
+    year_hint = (today.year - 1 if re.search(r"\b(?:last|previous) year\b", q)
+                 else today.year if re.search(r"\bthis year\b", q) else None)
+    for m in _PART_RE.finditer(q):
+        p = _month_part(m, q, today, year_hint, names, ahead)
+        if p:
+            return win(*p[:3], (m.start(), p[3]))
+
+    # ---- N units ago / last N units, a few of them, the next N
+    m = _FUZZY_AGO.search(q)
+    if m:
+        # 'a few days ago' is fuzzy: from twice that many units back to one
+        # unit back (a few = 3: six days ago to yesterday).
+        word = " ".join(m.group(1).split())
+        n, unit = _fuzzy(word), m.group(2)
+        start = _rolling_start(2 * n, unit, today) - timedelta(days=1)
+        end = _rolling_start(1, unit, today) - timedelta(days=1)
+        phrase = word if word == "several" else f"a {word}"
+        return win(start, end, f"{phrase} {unit}s ago", m.span())
     m = _AGO.search(q)
     if m:
         n, unit = _number(m.group(1)), m.group(2)
@@ -630,6 +919,26 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
                            m.span())
             # Months and years by the calendar: 'past 12 months' is 'past year'.
             return win(_rolling_start(n, unit, today), today, label, m.span())
+    m = _LAST_FUZZY.search(q)
+    if m:
+        # 'the past few days', 'the last couple of weeks': rolling, a few = 3.
+        word = " ".join(m.group(1).split())
+        n, unit = _fuzzy(word), m.group(2)
+        return win(_rolling_start(n, unit, today), today,
+                   f"past {word} {unit}s ({n} {unit}s)", m.span())
+    m = _NEXT_N.search(q)
+    if m:
+        # 'the next two weeks', 'the next few days': today and what follows.
+        word = " ".join((m.group(1) or "").split())
+        n, unit = (_fuzzy(word) if word else _number(m.group(2))), m.group(3)
+        if 1 <= n and n * UNIT_DAYS[unit] <= MAX_SPAN_DAYS:
+            end = (_months_ahead(today, n * (12 if unit == "year" else 1)) - timedelta(days=1)
+                   if unit in ("month", "year")
+                   else today + timedelta(days=n * UNIT_DAYS[unit] - 1))
+            label = f"next {word} {unit}s ({n} {unit}s)" if word else \
+                f"next {n} {unit}{'s' if n != 1 else ''}"
+            return win(today, end, label, m.span())
+        ignored.append(f"'{m.group(0)}' is not a usable span")
     m = re.search(r"\b(?:last|past|previous)\s+fortnight\b", q)
     if m:
         return win(today - timedelta(days=13), today, "past fortnight", m.span())
@@ -639,13 +948,18 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
         monday = d - timedelta(days=d.weekday())
         return win(monday, monday + timedelta(days=6), "a fortnight ago", m.span())
 
-    # ---- part of a month: 'the first week of October', 'the end of September'
-    year_hint = (today.year - 1 if re.search(r"\b(?:last|previous) year\b", q)
-                 else today.year if re.search(r"\bthis year\b", q) else None)
-    for m in _PART_RE.finditer(q):
-        p = _month_part(m, q, today, year_hint, names)
-        if p:
-            return win(*p[:3], (m.start(), p[3]))
+    # ---- quarters and seasons: 'this quarter', 'Q3 2025', 'last summer'
+    m = next((m for m in _QUARTER_RE.finditer(q)
+              if not (m.group("qn") and f"q{m.group('qn')}" in names)), None)
+    if m:
+        start, end, label, through = _quarter(m, today, ahead)
+        return win(start, end, label, m.span(), through=through)
+    for m in _SEASON_RE.finditer(q):
+        if m.group("season") in names:
+            continue
+        s = _season(m, today, ahead)
+        if s:
+            return win(s[0], s[1], s[2], m.span(), through=s[3])
 
     # ---- weekends and weeks
     monday = today - timedelta(days=today.weekday())
@@ -708,11 +1022,12 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
         if day_first:
             ym = re.match(r"\.?,?\s+(\d{4})\b", after)
             p = _month_point(token, f" {day_first.group(1)}"
-                             + (f" {ym.group(1)}" if ym else ""), today, year_hint, ignored)
+                             + (f" {ym.group(1)}" if ym else ""), today, year_hint, ignored,
+                             ahead)
             if p:
                 return win(*p[:3], (day_first.start(), m.end() + (ym.end() if ym else 0)))
             continue
-        p = _month_point(token, after, today, year_hint, ignored)
+        p = _month_point(token, after, today, year_hint, ignored, ahead)
         if p:
             return win(*p[:3], (m.start(), m.end() + p[3]))
 
@@ -737,12 +1052,17 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
             return win(d, d, f"the {m.group(0).split()[-1]} ({d})", m.span())
         ignored.append(f"'{m.group(0)}' is not a day of the month")
 
-    # A place called Sunday Market is a name, not a day.
+    # A place called Sunday Market is a name, not a day. A bare weekday is
+    # the last one (today counts) — or, in a question that looks forward
+    # ('what's due by Saturday', 'what's on my calendar Friday'), the coming
+    # one (today counts too).
     m = next((m for m in _WEEKDAY_RE.finditer(q) if m.group(2) not in names), None)
     if m:
         which, wd = m.group(1), WEEKDAYS[m.group(2)]
         if which == "next":
             d = today + timedelta(days=(wd - today.weekday()) % 7 or 7)
+        elif ahead and which != "last":
+            d = today + timedelta(days=(wd - today.weekday()) % 7)
         else:
             delta = (today.weekday() - wd) % 7
             d = today - timedelta(days=delta or (7 if which == "last" else 0))
@@ -761,7 +1081,8 @@ def parse_window(question: str, cfg: Config, today: date | None = None,
 # October', 'until Friday') goes with it: once that time is the window, the
 # word is no topic either.
 _LEAD_IN = re.compile(r"\b(?:during|until|till|through|throughout|before|after|"
-                      r"around|early|late|mid|since)[\s-]+$")
+                      r"around|about|early|late|mid|since|towards?|near|nearer|by|"
+                      r"approximately|roughly|within)[\s-]+$")
 
 
 def _lead_in(q: str, span: tuple[int, int]) -> tuple[int, int]:
@@ -789,6 +1110,21 @@ def without_window_words(question: str, window: dict) -> str:
         for i in range(max(start, 0), min(end, len(chars))):
             chars[i] = " "
     return "".join(chars)
+
+
+# A count of time units ('the past two weekends', 'three nights', 'a couple
+# of days') says how long, never what about — whether or not a window read it.
+_TIME_UNIT = (r"(?:days?|nights?|weeks?|weekends?|fortnights?|months?|quarters?|years?|"
+              r"mornings?|afternoons?|evenings?|hours?|hrs?|minutes?|mins?|seasons?)")
+_TIME_COUNT = re.compile(
+    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"twenty|thirty|few|couple|several)(?=\s+(?:of\s+)?(?:the\s+)?(?:more\s+|other\s+)?"
+    + _TIME_UNIT + r"\b)", re.IGNORECASE)
+
+
+def without_time_counts(text: str) -> str:
+    """`text` with the counts of time units blanked (same length)."""
+    return _TIME_COUNT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 # ---------------------------------------------------------------- words
@@ -831,12 +1167,22 @@ INTENT_WORDS = frozenset({
 # terms and a question whose window was right still found nothing. 'May'
 # and 'March' are verbs as often as months: they go only when the window
 # read them. A word a resolved entity is named by stays (`parse_intent`).
-TIME_WORDS = (frozenset(MONTHS) - {"may", "march"}) | frozenset(WEEKDAYS) \
+_HARD_TIME_WORDS = (frozenset(MONTHS) - {"may", "march"}) | frozenset(WEEKDAYS) \
     | frozenset(d + "s" for d in WEEKDAYS) | frozenset({
         "weekend", "weekends", "fortnight", "fortnights", "next", "upcoming", "coming",
         "earlier", "later", "lately", "morning", "mornings", "afternoon", "afternoons",
         "evening", "evenings", "night", "nights", "tonight", "tomorrow", "rest",
         "start", "end", "beginning", "middle", "ago", "previous", "ahead", "soon"})
+# The rest of time's vocabulary: what is left of 'so far this month', 'the
+# past few days', 'the week before last', 'the second half of September',
+# 'Q3', 'in the fall' when a window did not read it. They can also start a
+# merchant's name ('Summer Moon', 'Second Bar'), so they do not end one.
+_SOFT_TIME_WORDS = frozenset({
+    "far", "few", "couple", "several", "half", "halves", "second", "before", "after",
+    "date", "quarter", "quarters", "q1", "q2", "q3", "q4", "ytd", "mtd", "qtd", "wtd",
+    "spring", "summer", "fall", "autumn", "winter", "springs", "summers", "winters",
+    "other", "towards", "toward", "following", "latter", "season", "seasons"})
+TIME_WORDS = _HARD_TIME_WORDS | _SOFT_TIME_WORDS
 # Words that only mean 'what my journal holds': 'what did I log yesterday'
 # is a recap of yesterday, not a search for the word "log".
 RECAP_WORDS = frozenset({"log", "logs", "logged", "logging", "journal", "journals",
@@ -872,7 +1218,8 @@ def _words(question: str) -> list[dict]:
     for m in _WORD_RE.finditer(question):
         raw = m.group(0).replace("’", "'")
         base = re.sub(r"'s$", "", raw, flags=re.IGNORECASE)
-        out.append({"raw": raw, "key": _key(base), "term": base.lower()})
+        out.append({"raw": raw, "key": _key(base), "term": base.lower(),
+                    "start": m.start(), "end": m.end()})
     return out
 
 
@@ -881,23 +1228,64 @@ _SHORT_NOISE = frozenset({"us", "no", "ok", "oh", "um", "uh", "ah", "eh", "hi", 
 
 
 def _terms(words: list[dict], drop: frozenset[str] = frozenset(),
-           keep_short: bool = False) -> list[str]:
+           keep_short: bool = False, numbers: frozenset[str] = frozenset()) -> list[str]:
     """Search terms: no stopwords, numbers or very short words. With
     `keep_short`, a two-letter word stays — in a money question it is a
     merchant ('BP', 'TJ'), and dropping it would answer with every
-    transaction instead of that merchant's."""
+    transaction instead of that merchant's. `numbers` are numeric words
+    that stay for the same reason ('76', '7-11': `_numeric_merchants`)."""
     seen, keep = set(), []
     for w in words:
         t = w["term"].strip("'")
         short = len(t) <= 2 and not (keep_short and len(t) == 2 and t.isalpha()
                                      and t not in _SHORT_NOISE)
-        if (short or t in STOPWORDS or t.replace("-", "").isdigit() or t in drop
+        if t in numbers and t not in drop:
+            pass
+        elif (short or t in STOPWORDS or t.replace("-", "").isdigit() or t in drop
                 or w["key"] in drop or re.fullmatch(r"\d+(?:st|nd|rd|th)", t)):
             continue
         if t not in seen:
             seen.add(t)
             keep.append(t)
     return keep[:12]
+
+
+# What a number in a money question is when it is not a merchant: an amount
+# ('$50', '20 dollars', 'over 100', '3.50'), a count of something, a year.
+_AMOUNT_WORDS = frozenset({"dollar", "dollars", "buck", "bucks", "usd", "eur", "euro",
+                           "euros", "gbp", "pound", "pounds", "quid", "cent", "cents",
+                           "k", "grand", "percent", "pct"})
+_COMPARE_WORDS = frozenset({"over", "under", "above", "below", "than", "least", "most",
+                            "exceeding", "around", "about", "approximately", "roughly",
+                            "nearly", "almost", "upto", "max", "min", "minimum",
+                            "maximum"})
+_UNIT_AFTER = frozenset({"times", "items", "things", "hour", "hours", "hr", "hrs", "minute",
+                         "minutes", "min", "mins", "km", "miles", "mile", "mi", "kg", "lb",
+                         "lbs", "steps", "people", "of"}) | frozenset(UNIT_DAYS) \
+    | frozenset(u + "s" for u in UNIT_DAYS)
+
+
+def _numeric_merchants(words: list[dict], text: str) -> frozenset[str]:
+    """The numeric words of a money question that can only be a merchant —
+    '76' (the gas station), '7-11' — because nothing else reads them: not a
+    year, not an amount ('$50', '20 dollars', 'more than 100', '3.50', '10%'),
+    not a count of something ('3 days', '2 items'). Words a window read are
+    gone from `words` already."""
+    out = set()
+    for i, w in enumerate(words):
+        t = w["term"]
+        if not re.fullmatch(r"\d+(?:-\d+)*", t) or re.fullmatch(r"(?:19|20)\d{2}", t):
+            continue
+        before, after = text[:w["start"]], text[w["end"]:]
+        if re.search(r"[$€£¥]\s*$|[\d.,:/]$", before) \
+                or re.match(r"[.,:/]\d|\s*(?:%|percent\b)", after):
+            continue
+        nxt = words[i + 1]["term"] if i + 1 < len(words) else ""
+        prev = words[i - 1]["term"] if i else ""
+        if nxt in _AMOUNT_WORDS or nxt in _UNIT_AFTER or prev in _COMPARE_WORDS:
+            continue
+        out.add(t)
+    return frozenset(out)
 
 
 def _fts_expr(terms: list[str], op: str = " OR ", prefix: bool = False) -> str | None:
@@ -1191,7 +1579,8 @@ def search_passages(conn: sqlite3.Connection, match: str, window: dict,
 
 def open_loops(conn: sqlite3.Connection, window: dict, *,
                entity_ids: list[int] | None = None, limit: int = 10,
-               due_only: bool = False) -> tuple[list[dict], int, int]:
+               due_only: bool = False, due_before: str | None = None
+               ) -> tuple[list[dict], int, int]:
     """Open tasks and plans — closed_at NULL — soonest due first, then the
     most recently recorded. Returns (items, how many match, how many are
     open in all).
@@ -1201,11 +1590,16 @@ def open_loops(conn: sqlite3.Connection, window: dict, *,
     with no due date that already existed. Filtering on the day a task was
     noted made 'what do I need to do this week' forget every task from last
     week, and a future 'this weekend' empty by construction. `due_only`
-    ('what's due this week') keeps only loops that have a due date."""
+    ('what's due this week') keeps only loops that have a due date, and
+    `due_before` (today, for 'what's overdue') only those due before that
+    day — the overdue rule `review` and the web UI use."""
     base = ["e.status='active'", "e.closed_at IS NULL", "k.name IN ('task', 'plan')"]
     where, args = list(base), []
-    if due_only:
+    if due_only or due_before:
         where.append("e.due_at IS NOT NULL")
+    if due_before:
+        where.append("substr(e.due_at, 1, 10) < ?")
+        args.append(due_before)
     if window["explicit"]:
         where.append("(CASE WHEN e.due_at IS NOT NULL THEN substr(e.due_at, 1, 10) <= ? "
                      "ELSE e.journal_date <= ? END)")
@@ -1509,19 +1903,23 @@ _LOOPS_RE = re.compile(
     r"|\bon my (?:list|plate)\b|\b(?:need|have) to do\b|\bunfinished\b"
     r"|\boutstanding (?:tasks?|items?)\b|\bpending (?:tasks?|items?)\b"
     r"|\bmy (?:tasks|plans)\b"
-    # 'what tasks are open', 'any tasks this week', 'show me my tasks'
+    # 'what tasks are open', 'any tasks this week', 'show me my tasks',
+    # 'what plans do I have this week'
     r"|\b(?:what|which|any|list|show(?:\s+me)?|all)\s+(?:(?:the|my|open|pending|"
-    r"outstanding|remaining|overdue)\s+)*(?:tasks?|loops?)\b"
+    r"outstanding|remaining|overdue|upcoming|late)\s+)*(?:tasks?|loops?|plans?|to-?dos?)\b"
     # 'what tasks are due this week', "what's due", 'anything overdue'
     r"|\b(?:tasks?|to-?dos?|plans?|items?)\b(?:\s+[\w']+){0,4}?\s+(?:over)?due\b"
     r"|\b(?:what(?:'s|\s+is|\s+are)?|anything|is\s+(?:there\s+)?anything)\s+"
     r"(?:[\w']+\s+){0,3}?(?:over)?due\b|\boverdue\b")
 # 'due' asks for what has a due date by then, not every open loop.
 _DUE_RE = re.compile(r"\b(?:over)?due\b")
+# 'overdue' asks for what was due before today — the rule `review` and the
+# web UI use — never merely what has a due date.
+_OVERDUE_RE = re.compile(r"\boverdue\b|\bpast[\s-]+due\b|\blate\s+(?:tasks?|plans?|items?)\b")
 LOOP_WORDS = frozenset({"open", "task", "tasks", "todo", "todos", "to-do",
                         "to-dos", "list", "plate", "loop", "loops", "outstanding",
-                        "unfinished", "pending", "plans", "items", "need", "due",
-                        "overdue", "remaining"})
+                        "unfinished", "pending", "plan", "plans", "items", "need", "due",
+                        "overdue", "remaining", "late"})
 
 
 def has_observed_tier(conn: sqlite3.Connection) -> bool:
@@ -1543,11 +1941,12 @@ def stream_label(stream: str) -> str:
 
 def parse_intent(question: str, words: list[dict], entities: list[dict],
                  health: list[str], journal: list[str],
-                 topic_words: list[dict] | None = None) -> dict:
+                 topic_words: list[dict] | None = None,
+                 topic_text: str | None = None) -> dict:
     """What kind of record the question is after, by rule. `topic_words`
     are the words the topic is taken from — the question minus its time
-    words (`without_window_words`); `words` keep every position, because
-    that is where the names were found."""
+    words (`without_window_words`), read from `topic_text`; `words` keep
+    every position, because that is where the names were found."""
     q = question.lower().replace("’", "'")
     keys = [w["key"] for w in words]
     persons = [e for e in entities if e["type"] == "person"]
@@ -1608,26 +2007,44 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
 
     loops = bool(_LOOPS_RE.search(q))
     money = "money" in journal or "txn" in streams
-    drop = set(INTENT_WORDS) | stream_keys
+    # In a money question a stream's name may be the merchant ('how much did
+    # I spend on ChatGPT', 'on WhatsApp'): only the transaction words go.
+    drop = set(INTENT_WORDS) | (stream_keys & _TXN_WORDS if money else stream_keys)
     drop |= {t for e in persons for t in e["tokens"]}
     # Time words are never the topic — unless a place or a thing is called
     # that ('Sunday Market'), when they are its name.
-    drop |= TIME_WORDS - {t for e in entities for t in e["tokens"]}
+    entity_tokens = {t for e in entities for t in e["tokens"]}
+    drop |= TIME_WORDS - entity_tokens
     if loops:
         drop |= LOOP_WORDS
     if money:
-        drop |= set(MONEY_WORDS)
+        # '$50', 'more than 100 dollars': an amount, never a merchant.
+        drop |= set(MONEY_WORDS) | _AMOUNT_WORDS | _COMPARE_WORDS
     else:
         drop |= RECAP_WORDS
     topic_words = words if topic_words is None else topic_words
-    topic = _terms(topic_words, frozenset(drop), keep_short=money)
+    numbers = (_numeric_merchants(topic_words, question if topic_text is None else topic_text)
+               if money else frozenset())
+    topic = _terms(topic_words, frozenset(drop), keep_short=money, numbers=numbers)
     display = {w["term"].strip("'"): w["raw"] for w in topic_words}
     merchant = None
+    unused: list[str] = []
     if money:
-        slot = _merchant_slot(topic_words, {t for e in persons for t in e["tokens"]})
+        slot = _merchant_slot(topic_words, {t for e in persons for t in e["tokens"]}, numbers)
         if slot:
             merchant = " ".join(w["raw"] for w in slot)
             topic = list(dict.fromkeys([w["term"].strip("'") for w in slot] + topic))[:12]
+        # The guard: every word of a money question is accounted for — the
+        # question's frame, the time, an amount, a name the evidence uses,
+        # or a term searched for. One left over ('how much did I spend at
+        # Q') was something the question named that nothing could use;
+        # answering with everyone's total would hide that.
+        kept = set(topic)
+        unused = [w["raw"] for w in topic_words
+                  if w["term"].strip("'") not in kept
+                  and w["term"].strip("'") not in _MONEY_FRAME
+                  and w["key"] not in entity_tokens
+                  and not re.fullmatch(r"[\d.,:/-]+(?:st|nd|rd|th|s)?", w["term"])]
     channel = set(streams) & set(TEXT_STREAMS + CALL_STREAMS)
     return {
         "streams": streams,
@@ -1643,7 +2060,9 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
         "profile": bool(_PROFILE_RE.search(q)),
         "loops": loops,
         # 'what's due this week': open loops with a due date by then.
-        "due": loops and bool(_DUE_RE.search(q)),
+        "due": loops and bool(_DUE_RE.search(q) or _OVERDUE_RE.search(q)),
+        # 'what's overdue': due before today.
+        "overdue": loops and bool(_OVERDUE_RE.search(q)),
         # 'what's coming up', 'what's next on my calendar': from today on.
         "forward": bool(re.search(r"\b(?:upcoming|coming|ahead|scheduled|planned|next|soon|"
                                   r"later)\b|\brest of\b", q)),
@@ -1651,6 +2070,8 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
         # The merchant a money question named ('spend at AT&T'), kept even
         # when it is short, a number or a stopword ('76', 'H&M').
         "merchant": merchant,
+        # Words of a money question nothing could use (the guard above).
+        "unused": unused,
         "topic_terms": topic,
         "topic_display": " ".join(display.get(t, t) for t in topic),
         # A pure metric question ('how did I sleep') is answered by the
@@ -1662,11 +2083,16 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
 
 # The merchant slot of a money question: the words after 'at' or 'from'
 # ('how much did I spend at AT&T', 'what did I buy from H&M'), up to a word
-# that ends it ('at Uchi in October' -> Uchi).
+# that ends it ('at Uchi in October' -> Uchi); else the words right after
+# pay/paid/charge ('how much did I pay 76'), a number after 'on' ('spend on
+# 76', 'on 7-11' — before a word, 'on' is a topic: 'on groceries'), or the
+# words right before spending/purchases/charges ('76 spending').
 _SLOT_LEAD = frozenset({"at", "from"})
 _SLOT_TRIGGER = frozenset(MONEY_WORDS) | {"transaction", "transactions", "charge",
                                           "charges", "charged"}
-_SLOT_STOP = TIME_WORDS | frozenset({
+_PAY_VERBS = frozenset({"pay", "paid", "pays", "paying", "charge", "charged"})
+_SPEND_NOUNS = frozenset({"spending", "purchases", "charges", "transactions"})
+_SLOT_STOP = _HARD_TIME_WORDS | frozenset({
     "in", "on", "during", "over", "for", "since", "between", "before", "after", "until",
     "till", "by", "last", "this", "next", "past", "and", "or", "with", "when", "while",
     "so", "than", "vs", "versus", "compared", "today", "yesterday", "around", "about",
@@ -1674,30 +2100,68 @@ _SLOT_STOP = TIME_WORDS | frozenset({
 _SLOT_FILLER = frozenset({"the", "a", "an", "my", "our"})
 # 'spend at all', 'at least', 'at night', 'at once': no merchant.
 _NOT_MERCHANT = frozenset({"all", "least", "most", "once", "first", "it", "that", "this",
-                           "them", "there", "times", "any", "some"})
+                           "them", "there", "times", "any", "some", "off", "out"})
+_TXN_WORDS = next(vocab for vocab, group in STREAM_WORDS if group == ("txn",))
+# What a money question is made of besides its subject: what the guard in
+# parse_intent never counts as a word nothing could use.
+_MONEY_FRAME = (frozenset(STOPWORDS) | TIME_WORDS | frozenset(MONEY_WORDS) | _AMOUNT_WORDS
+                | _COMPARE_WORDS | _UNIT_AFTER | INTENT_WORDS | RECAP_WORDS | LOOP_WORDS
+                | _TXN_WORDS | _SLOT_STOP | _SLOT_FILLER | _NOT_MERCHANT | _SLOT_TRIGGER
+                | _SPEND_NOUNS | frozenset({"money", "much", "many", "amount", "total"}))
 
 
-def _merchant_slot(words: list[dict], person_keys: set[str]) -> list[dict]:
+def _merchant_slot(words: list[dict], person_keys: set[str],
+                   numbers: frozenset[str] = frozenset()) -> list[dict]:
     """The words of a money question's merchant slot, or [] when it names
-    none."""
-    money_at = next((i for i, w in enumerate(words) if w["term"] in _SLOT_TRIGGER), None)
+    none. `numbers` are the question's numeric merchant words."""
+    terms = [w["term"].strip("'") for w in words]
+    money_at = next((i for i, t in enumerate(terms) if t in _SLOT_TRIGGER), None)
     if money_at is None:
         return []
-    lead = next((i for i in range(money_at + 1, len(words))
-                 if words[i]["term"] in _SLOT_LEAD), None)
-    if lead is None:
-        return []
-    slot: list[dict] = []
-    for w in words[lead + 1:]:
-        t = w["term"].strip("'")
-        if t in _SLOT_STOP:
-            break
-        if (not slot and t in _SLOT_FILLER) or w["key"] in person_keys:
-            continue
-        slot.append(w)
-    if slot and slot[0]["term"].strip("'") in _NOT_MERCHANT:
-        return []
-    return slot
+
+    def ends(i: int, strict: bool) -> bool:
+        # Loose after 'at': 'at On The Border' keeps its words until a stop.
+        return terms[i] in _SLOT_STOP or (strict and terms[i] in STOPWORDS
+                                          and terms[i] not in numbers)
+
+    def forward(start: int, strict: bool) -> list[dict]:
+        slot: list[dict] = []
+        for i in range(start, len(words)):
+            if ends(i, strict):
+                break
+            if (not slot and terms[i] in _SLOT_FILLER) or words[i]["key"] in person_keys:
+                continue
+            slot.append(words[i])
+        return [] if slot and slot[0]["term"].strip("'") in _NOT_MERCHANT else slot
+
+    lead = next((i for i in range(money_at + 1, len(words)) if terms[i] in _SLOT_LEAD), None)
+    if lead is not None:
+        slot = forward(lead + 1, strict=False)
+        if slot:
+            return slot
+    for i, t in enumerate(terms):
+        if t in _PAY_VERBS:
+            slot = forward(i + 1, strict=True)
+            if slot:
+                return slot
+    for i in range(money_at + 1, len(words)):
+        if terms[i] == "on":
+            j = i + 1
+            while j < len(words) and terms[j] in _SLOT_FILLER:
+                j += 1
+            if j < len(words) and terms[j] in numbers:
+                return forward(j, strict=True)
+    for i, t in enumerate(terms):
+        if t in _SPEND_NOUNS:
+            j, slot = i - 1, []
+            while j >= 0 and len(slot) < 4 and (terms[j] in numbers or not (
+                    ends(j, strict=True) or terms[j] in _SLOT_FILLER
+                    or terms[j] in _SLOT_TRIGGER or words[j]["key"] in person_keys)):
+                slot.insert(0, words[j])
+                j -= 1
+            if slot and slot[0]["term"].strip("'") not in _NOT_MERCHANT:
+                return slot
+    return []
 
 
 _OBS_COLS = ("o.id, o.uuid, o.stream, o.journal_date, o.started_at, o.ended_at, "
@@ -2274,11 +2738,12 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         default_days=days or ask_setting(cfg, "default_days", 30),
         names=frozenset(t for e in entities for t in e["tokens"]))
     health, journal = detect_metrics(question)
-    # The window's own words said WHEN; the topic is what is left.
-    topic_question = without_window_words(question, window)
+    # The window's own words said WHEN; the topic is what is left — and a
+    # count of days or weeks ('the past two weekends') is no topic either.
+    topic_question = without_time_counts(without_window_words(question, window))
     topic_words = words if topic_question == question else _words(topic_question)
     intent = parse_intent(question, words, entities, health, journal,
-                          topic_words=topic_words)
+                          topic_words=topic_words, topic_text=topic_question)
     terms = intent["topic_terms"]
     # 'What's on my calendar this week', 'what do I need to do this month':
     # the rest of the period counts. Nothing else is dated in the future, so
@@ -2308,19 +2773,34 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
 
     # A named place or organisation in a money question is the merchant:
     # any of its names matches ('HEB' finds "H-E-B #742"), and its words
-    # are not also required as plain terms.
+    # are not also required as plain terms. When nothing else names what
+    # was bought, a named person is the payee and searched the same way
+    # ('how much did I pay Jake' finds "ZELLE TO JAKE MORALES", and journal
+    # spending that mentions him) — never the owner, and never ignored for
+    # everyone's total. Beside a merchant ('Jake and I at Uchi') a person is
+    # company, not a filter.
     merchants = ([e for e in entities if e["type"] in ("place", "organization")]
                  if intent["money"] else [])
     merchant_keys = {t for e in merchants for t in e["tokens"]}
+    money_terms = [t for t in terms if _key(t) not in merchant_keys]
+    if intent["money"] and not merchants and not money_terms:
+        owner_ids = _owner_identity(conn, cfg)[2] if observed else frozenset()
+        merchants = [e for e in entities
+                     if e["type"] == "person" and e["id"] not in owner_ids]
+        merchant_keys = {t for e in merchants for t in e["tokens"]}
     groups = [sorted({_phrase(label) for label in _labels(conn, e)} - {""})
               for e in merchants]
-    money_terms = [t for t in terms if _key(t) not in merchant_keys]
-    money_display = (intent["topic_display"] or intent.get("merchant")
-                     or ", ".join(e["matched"] for e in merchants))
+    shown = intent["topic_display"] or intent.get("merchant") or ""
+    money_display = ", ".join([shown] * bool(shown) + [
+        e["matched"] for e in merchants if _key(e["matched"]) not in _key(shown)])
     # A question that named a merchant is never answered with everyone's
     # total: when nothing of the name is left to search for, it is no data.
+    # Nor is one with a word nothing could use (intent "unused").
     searchable = bool(money_terms or any(groups))
-    named_merchant = searchable or bool(intent.get("merchant"))
+    if intent["money"] and not searchable and intent.get("unused"):
+        money_display = money_display or " ".join(intent["unused"])
+    named_merchant = searchable or bool(intent.get("merchant")) \
+        or bool(intent["money"] and intent.get("unused"))
 
     # ---- money: transactions first, then what the journal says was spent
     if intent["money"]:
@@ -2376,7 +2856,8 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         named = [e["id"] for e in entities]
         rows, loops_total, loops_open = open_loops(
             conn, window, entity_ids=named or None,
-            limit=ask_setting(cfg, "max_loops", 10), due_only=intent["due"])
+            limit=ask_setting(cfg, "max_loops", 10), due_only=intent["due"],
+            due_before=today.isoformat() if intent.get("overdue") else None)
         loops = [E.add(r) for r in rows]
 
     # ---- the people and places it names
@@ -2509,7 +2990,7 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             "match": match, "intent": intent, "loops": loops,
             "loops_total": loops_total, "loops_open": loops_open,
             "obs_hits": obs_hits, "entry_hits": entry_hits, "recap": recap,
-            "observed_tier": observed,
+            "observed_tier": observed, "today": today.isoformat(),
             "days_with_entries_in_window": covered,
             "has_evidence": has_evidence,
             # 'answered' feeds recall_log, the build-this-next list: a
@@ -2708,6 +3189,8 @@ def _evidence_lines(bundle: dict) -> tuple[list[str], dict[str, str]]:
                 if open_all == bundle["loops_total"] else
                 f"OPEN LOOPS: {bundle['loops_total']} open task(s)/plan(s) match the "
                 f"question, {open_all} open in total")
+        if bundle["intent"].get("overdue") and bundle.get("today"):
+            line += f" (overdue: due before today, {bundle['today']})"
         context.append(f"{line}; listed: {', '.join(bundle['loops']) or 'none'}")
     for ent in bundle["entities"]:
         bits = [f"ENTITY: {ent['name']} ({ent['type']}), named as \"{ent['matched']}\" "
@@ -2872,10 +3355,11 @@ def deterministic_answer(bundle: dict) -> str:
     if intent.get("loops"):
         listed = [i for i in bundle.get("loops", [])]
         open_all = bundle.get("loops_open", bundle.get("loops_total", 0))
-        due = intent.get("due")
+        due, overdue = intent.get("due"), intent.get("overdue")
         if listed:
             used.update(listed)
-            head = (f"Open tasks and plans due by {w['end']}: " if due and w.get("explicit")
+            head = ("Overdue tasks and plans: " if overdue
+                    else f"Open tasks and plans due by {w['end']}: " if due and w.get("explicit")
                     else "Open tasks and plans with a due date: " if due
                     else "Open tasks and plans: ")
             out.append(head + "; ".join(
@@ -2886,7 +3370,8 @@ def deterministic_answer(bundle: dict) -> str:
             # Something is open; the filter is what left nothing — say which.
             named = [e["name"] for e in bundle["entities"]]
             reason = " and ".join(([f"mention {' or '.join(named)}"] if named else [])
-                                  + (["are due"] if due else []))
+                                  + (["are overdue"] if overdue else ["are due"] if due
+                                     else []))
             why = (f" {reason}" if reason else "") \
                 + (f" for {w['label']}" if w.get("explicit") else "")
             out.append(f"No open tasks or plans{why} ({open_all} open in total).")
@@ -3146,13 +3631,20 @@ def _supported(f: dict, pool: dict) -> bool:
 
 # A period after these ends a word, not a sentence: 'you saw Dr. Ellis on
 # 2026-10-10' split at 'Dr.' left the date in a fragment with no citation.
-# Not 'etc', which usually does end one. Nor does an initial ('Laura J.
-# Kim', 'Dr. R. Ellis') or a dotted abbreviation ('D.D.S.', 'Ph.D.',
-# 'U.S.'): names reach answers verbatim from contact cards and `handles link
-# --new`, and the answer about Laura J. Kim failed its own check.
-_ABBREVIATIONS = _HONORIFICS | {"st", "jr", "sr", "vs", "e.g", "i.e", "a.m", "p.m"}
-_ABBREV_BEFORE = re.compile(r"(?<![A-Za-z])([A-Za-z][A-Za-z.]*)$")
-_DOTTED = re.compile(r"(?:[A-Za-z]{1,3}\.)+[A-Za-z]{1,3}")
+# Nor does an initial in any alphabet ('Laura J. Kim', 'Dr. R. Ellis',
+# 'José Á. García') or a dotted abbreviation ('D.D.S.', 'Ph.D.', 'U.S.'):
+# names reach answers verbatim from contact cards and `handles link --new`,
+# and the answers about Laura J. Kim and José Á. García failed their own
+# check. Nor, whatever the word, does a period followed by a lowercase word
+# ('Ellis Dental Co. in Austin', 'groceries etc. and gas'): a sentence
+# starts with a capital, so an abbreviation not on the list still holds.
+_ABBREVIATIONS = _HONORIFICS | {
+    "st", "jr", "sr", "vs", "e.g", "i.e", "a.m", "p.m",
+    "ave", "blvd", "rd", "mt", "mtn", "ft", "co", "corp", "inc", "ltd", "llc", "dept",
+    "univ", "apt", "no", "approx", "est", "hwy", "ste", "bldg"}
+_LETTER = r"[^\W\d_]"
+_ABBREV_BEFORE = re.compile(rf"(?<!{_LETTER})({_LETTER}(?:{_LETTER}|\.)*)$")
+_DOTTED = re.compile(rf"(?:{_LETTER}{{1,3}}\.)+{_LETTER}{{1,3}}")
 
 
 def _abbreviation_before(text: str, i: int) -> bool:
@@ -3160,9 +3652,11 @@ def _abbreviation_before(text: str, i: int) -> bool:
     if not m:
         return False
     token = m.group(1)
-    return (token.lower().rstrip(".") in _ABBREVIATIONS
-            or (len(token) == 1 and token.isupper())
-            or bool(_DOTTED.fullmatch(token)))
+    if token.lower().rstrip(".") in _ABBREVIATIONS \
+            or (len(token) == 1 and token.isupper()) or bool(_DOTTED.fullmatch(token)):
+        return True
+    nxt = re.match(r"\s+(\S)", text[i + 1:])
+    return bool(nxt and nxt.group(1).isalpha() and nxt.group(1).islower())
 
 
 def _sentences(answer: str) -> list[str]:

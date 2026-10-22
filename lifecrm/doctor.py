@@ -397,6 +397,13 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
         else:
             _add("ok", "unresolved_handles")
 
+        # Who 'you' are (lifecrm/owner.py): when no handle anywhere is known
+        # to be the owner's, the owner reads as a third party — 'with Alex
+        # Rivera, Dr. Rebecca Ellis' in ask, first on People, the top contact
+        # in the review pack. Only once people appear in imports at all.
+        if cfg is not None:
+            _owner_check(conn, cfg, _add)
+
         # A snapshot connector that stops being fed looks exactly like a
         # healthy one. Connectors that expect a steady flow declare how stale
         # is too stale; the check applies once the connector is in use, and
@@ -435,6 +442,30 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     warnings = sum(1 for c in checks if c["status"] == "warn")
     return {"checks": checks, "failures": failures, "warnings": warnings,
             "healthy": failures == 0}
+
+
+def _owner_check(conn: sqlite3.Connection, cfg: Config, _add) -> None:
+    from . import owner as owner_mod
+    from .config import ConfigError
+    people = conn.execute(
+        "SELECT 1 FROM observation_participants p JOIN observations o "
+        "ON o.id = p.observation_id WHERE o.status = 'active' "
+        "AND p.handle_kind IN ('email', 'phone') AND p.role != 'location' "
+        "LIMIT 1").fetchone()
+    if not people:
+        return
+    try:
+        ident = owner_mod.identity(conn, cfg)
+    except ConfigError as e:
+        _add("warn", "owner_unknown", f"{e}")
+        return
+    if ident.handles or ident.entities:
+        _add("ok", "owner_unknown")
+        return
+    _add("warn", "owner_unknown",
+         "nothing imported or configured says which handles are yours, so you read "
+         "as someone else in ask, People and the review pack — add to config.toml: "
+         '[owner] handles = ["email:you@example.com", "phone:+15125550100"]')
 
 
 def _hidden_citation_check(conn: sqlite3.Connection, _add) -> None:

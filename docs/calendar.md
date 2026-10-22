@@ -68,10 +68,24 @@ calendar: takeout-20261021T120000Z-001.zip (Google Takeout, 3 calendar(s): alex.
   repeating events expanded through 2027-01-19 (today + 90 days): 5 series, 23 occurrence(s)
   calendar_event: 39 new, 0 changed | 2022-09-26..2027-01-18 | e.g. 2026-10-20 Launch week
   handles: 7 people (7 named by their invites), 6 place(s) — review with 'lifecrm handles list --suggest'
-  your own address is likely alex.rivera@example.com — link it to yourself once: …
+  your own address is likely alex.rivera@example.com — this import's account, so it already counts as you
   skipped: 1 × room, resource or calendar address among the attendees
 dry run — nothing written. Re-run with --apply to write.
 ```
+
+An iPhone `Home.ics` is not named by your address (its account is
+`calendar:Home`), so nothing in it says which attendee is you. Until
+`config.toml` says so, the report prints the lines to add:
+
+```
+  your own address is likely alex.rivera@example.com — say so once in config.toml, so you are never listed as someone you met (People, the review pack, ask):
+      [owner]
+      handles = ["email:alex.rivera@example.com"]
+    and link it to yourself if you like: lifecrm handles link email:alex.rivera@example.com --entity <id>
+```
+
+(`[owner]` is described in [ask.md](ask.md), "Who you are"; `lifecrm doctor`
+warns `owner_unknown` while nothing imported or configured says who you are.)
 
 Then write it with `--apply`. The command prints an import uuid;
 `lifecrm imports retract <uuid>` undoes what the run added. A run that also
@@ -112,8 +126,24 @@ occurrences, not about a rule.
 
 Deliberate choices worth knowing:
 
-- **Your own address is kept.** It is a handle like any other; linking it to
-  yourself once is what says "I was there".
+- **Your own address is kept.** It is a handle like any other. What says "I
+  was there" is `config.toml` listing it under `[owner]`:
+
+  ```toml
+  [owner]
+  handles = ["email:alex.rivera@example.com"]
+  ```
+
+  That keeps you out of People, the review pack and `ask`'s participant
+  lists ("with Dr. Rebecca Ellis", never "with Alex Rivera, Dr. Rebecca
+  Ellis"). Linking the address to yourself (`lifecrm handles link
+  email:<you> --entity <id>`) gives you a person page but does not, on its
+  own, say that person is you: an iPhone Home calendar's account is
+  `calendar:Home` and its events carry no direction, so nothing else in the
+  import does. When the scan's guess at your address is not covered yet, the
+  report prints the `[owner]` lines to add; when your address is the
+  import's own account (a Google calendar named by it), it already counts
+  as you and the report says so.
 - **Rooms and resources are skipped**, counted. Google's boardroom calendars
   are not people.
 - **Places are handles.** A location becomes `place_id:calendar:<location,

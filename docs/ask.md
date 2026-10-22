@@ -183,6 +183,11 @@ without a kind, an unknown kind, a key other than `handles` and `name`) is a
 one-line error naming the fix, never a setting silently ignored. Leaving the
 table out is fine.
 
+You are told when it is needed. `observe calendar` prints the exact
+`[owner]` lines to add when its guess at your address is not yet covered
+(docs/calendar.md), and `lifecrm doctor` warns `owner_unknown` while people
+appear in your imports but no handle anywhere is known to be yours.
+
 ## Questions about places
 
 A place you linked a handle to (`handles link` on a Timeline `place_id`, or
@@ -232,14 +237,35 @@ phrase at t, the way the bank's text was indexed. In a money question a
 two-letter word stays a search term ("at BP"), and so do the words after
 "at" or "from" ("spend at 76", "what did I buy from H&M", "at Best Buy"),
 up to a word that ends the name ("at Uchi in October"), even when they are
-a number or a stopword. A question that names a merchant is never answered
-with everything you spent: when nothing matches, the answer says there is
-no data for that merchant.
+a number or a stopword. The merchant can be named without "at" too: the
+words right after "pay", "paid" or "charge" ("how much did I pay 76"), a
+number after "on" ("spend on 76", "on 7-11"), and the words right before
+"spending", "purchases" or "charges" ("76 spending", "Whole Foods
+purchases"). A number in a money question is the merchant ("76", "7-11")
+unless something else reads it: a window ("the 20th", "2025", "last 3
+days"), an amount ("$50", "20 dollars", "more than 100", "3.50", "10%") or a
+count ("3 items"). A stream's name is a merchant here as well: "how much did
+I spend on ChatGPT" finds "OPENAI *CHATGPT SUBSCR". When nothing else says
+what was bought, a person you name is the payee and searched the same way
+("how much did I pay Jake" finds "ZELLE TO JAKE MORALES", and journal
+spending that mentions Jake); beside a merchant ("Jake and I at Uchi") a
+person is company, not a filter. You are never the payee.
+
+A question that names a merchant is never answered with everything you
+spent: when nothing matches, the answer says there is no data for that
+merchant. That holds whatever the question names, by one rule rather than
+one per phrasing: every word of a money question is accounted for — the
+question's frame ("how much did I spend"), the time, an amount, a name the
+evidence uses, or a term searched for. A word left over ("how much did I
+spend on X") was something the question named that nothing could use, and
+the answer is `No data for: transactions matching "X"` — never the
+window's total. The words are listed under `intent.unused` in `--json`.
 
 ## Open loops
 
 **"What are my open tasks?", "What's on my list?", "What do I have to do?",
-"What tasks are open?", "Any tasks this week?"** list every task and plan
+"What tasks are open?", "Any tasks this week?", "What plans do I have this
+week?"** list every task and plan
 that is not closed yet (`closed_at` is empty). The soonest due come first.
 Each one is cited as an entry. Name a person ("open tasks with Mom") to list
 only the ones that mention them.
@@ -251,17 +277,25 @@ written down before the window began still counts. "This week" and "this
 month" run to the end of the week or month here, and what the calendar holds
 in that time is listed too.
 
-**"What tasks are due this week?", "What's due this week?", "Anything
-overdue?"** ask for due dates: only open loops that have one, by the end of
+**"What tasks are due this week?", "What's due this week?", "What's due by
+Saturday?"** ask for due dates: only open loops that have one, by the end of
 that time (overdue ones included), soonest first — "Open tasks and plans due
 by 2026-10-25: ...". A loop with no due date is left out, and "due" is never
 a word to search for. With no time named ("what tasks are due") every open
-loop with a due date is listed.
+loop with a due date is listed. A bare weekday in a due question is the
+coming one, today included: "what's due by Saturday" asked on a Thursday is
+this Saturday, never last.
+
+**"What's overdue?", "Anything past due?", "Which tasks are overdue this
+week?"** list only loops due **before today** — the rule the review pack and
+the web UI use — "Overdue tasks and plans: ...". A task due later this week
+is not overdue.
 
 When the person or the time leaves nothing, the answer says so and gives the
 real total: "No open tasks or plans mention Priya Natarajan (4 open in
-total)", "No open tasks or plans are due for this week (4 open in total)."
-It says "You have no open tasks or plans" only when nothing is open.
+total)", "No open tasks or plans are due for this week (4 open in total)",
+"No open tasks or plans are overdue (4 open in total)." It says "You have no
+open tasks or plans" only when nothing is open.
 
 ## A day, a weekend, a week
 
@@ -307,18 +341,34 @@ The window is printed with every answer. Rolling definitions:
 | last 10 days / past six weeks | rolling back from today |
 | this weekend / last weekend / this past weekend | that Saturday and Sunday |
 | the weekend / over the weekend | the one you are in on a Saturday or Sunday; otherwise the last one, or the coming one when the question looks forward ("what's on my calendar for the weekend", "what are my plans") |
-| the coming weekend / the weekend before last | that Saturday and Sunday |
+| the coming weekend / the weekend before last / the weekend after next | that Saturday and Sunday |
+| the week before last | the 7 days before "last week" (8 to 14 days ago) |
+| the week after next | the Monday-to-Sunday week after next week |
+| the night before last | yesterday (last night is today) |
+| the month / year before last, the month / year after next | that calendar month / year |
+| the week of October 5 / the weekend of October 10 | that Monday-to-Sunday week / that week's Saturday and Sunday |
+| the other day | the past week, not today |
+| so far this week / month / quarter / year, this month so far, month to date, YTD | the period's first day through today |
 | three days ago / a week ago / a fortnight ago | that day / that Monday-to-Sunday week |
+| the past few days / the last couple of weeks / the last several months | rolling back from today: **a couple is 2, a few 3, several 7** |
+| a few days ago / a couple of weeks ago | from twice that many units back to one unit back (a few days ago: 6 days ago to yesterday) |
+| the next two weeks / the next few days / over the next 3 days | today and what follows (the next two weeks: today and the 13 days after it) |
 | this month / last month / previous month | calendar months (this month runs to its end for the calendar and open loops) |
 | this year / last year / in 2025 | calendar years |
-| in July / June 2025 / July last year | that calendar month (a bare month means the most recent one) |
+| this quarter / last quarter / Q3 / Q1 2025 / the third quarter | calendar quarters (Q1 is January-March); this quarter runs to today (to its end for the calendar and open loops), a bare "Q3" is the last one begun; "the past quarter" is the last 3 months |
+| in the fall / last summer / this winter / spring 2025 | meteorological seasons, northern hemisphere: spring March-May, summer June-August, fall (autumn) September-November, winter December-February (winter 2025 runs into 2026). "Last summer" is the latest one that is over. A season needs a word that makes it a time — "summer camp" and "did I fall" have none |
+| in July / June 2025 / July last year | that calendar month (a bare month means the most recent one — or the nearest one when the question looks forward: "what's on my calendar for November" asked in October is next month, "for September" last month) |
 | the first / second / third / fourth / last week of September | days 1-7, 8-14, 15-21, 22-28, or the month's last 7 days |
-| the start / middle / end of October (or of last month) | days 1-10, 11-20, or 21 to the month's end |
+| the first / second half of September | days 1-15, or 16 to the month's end |
+| the first few days / last 5 days of October | that many days at the month's start or end |
+| the start / middle / end of October (or of last month); towards / near the end of it | days 1-10, 11-20, or 21 to the month's end |
+| the first half / the end of the year (or of 2025) | January-June or July-December; the start, middle and end of a year are January-March, May-August and October-December |
 | March 3 / 20 October / the 20th of October / 2026-07-04 / last Monday | that day |
+| Saturday / on Friday | the most recent one, today included — or the coming one when the question looks forward ("what's due by Saturday", "what's on my calendar Friday") |
 | 10/20 / 10/20/2026 / 10/20/26 | that day — numeric dates are **month first** (US order). Without a year it is the most recent one, and it needs a word that makes it a time ("on 10/20", "since 9/1"): "1/2 cup" is not January 2 |
 | the 20th | the most recent 20th of a month, up to today |
 | between 2026-07-01 and 2026-07-10 / between June and August | that range |
-| September and October / from September to October / Oct 1 - 15 | one range across both |
+| September and October / September or October / September, October / from September to October / Oct 1 - 15 | one range across both |
 | since 2026-07-01 / since July | from then through today |
 | what's upcoming / what's next on my calendar | from today through the calendar's horizon (90 days by default) |
 | *(nothing)* | last 30 days, and text search is **not** limited to it |
@@ -338,11 +388,16 @@ still searched for.
 Time vocabulary is never a search term even when no window was read from it:
 month and weekday names, "weekend", "fortnight", "next", "upcoming",
 "coming", "earlier", "later", "morning", "afternoon", "evening", "night",
-"rest", "start", "end", "beginning". "What did I do yesterday morning" is
-yesterday, not entries that say "morning". The exception is a name: a
+"rest", "start", "end", "beginning", "far", "few", "couple", "several",
+"half", "second", "before", "after", "date", "quarter", "Q1"-"Q4", "YTD",
+the seasons, "other", and a number counting time units (the "two" of "the
+past two weekends", the "3" of "3 nights"). "What did I do yesterday
+morning" is yesterday, not entries that say "morning", and a phrasing with
+no rule of its own still never searches for its words: at worst the window
+is the default one, and the answer prints which. The exception is a name: a
 place you know as "Sunday Market" is still Sunday Market, and its "Sunday"
-is not read as a day. ("May" and "March" stay words unless the window read
-them, for the reason above.)
+is not read as a day; a person called Summer is still Summer. ("May" and
+"March" stay words unless the window read them, for the reason above.)
 
 A window that reaches past today ("next week", or the rest of this week for a
 calendar question) lists what is coming first, soonest first, then what has
@@ -400,13 +455,17 @@ The deterministic answer must pass them too, and the tests hold it to that.
    line such as "last contact O3 (2026-10-12)" counts only for a sentence
    that cites O3. A sentence that fails is listed under `unsupported`.
    Sentences end at `.`, `!` or `?` outside quotes, but not at the period of
-   an abbreviation ("Dr.", "Mr.", "Mrs.", "Jr.", "St.", "e.g.", "p.m."), of
-   an initial ("Laura J. Kim", "Dr. R. Ellis") or of a dotted abbreviation
-   ("D.D.S.", "Ph.D.", "U.S."). "On 2026-10-10 you saw Dr. Ellis [O3]." and
-   "On 2026-10-09 Laura J. Kim texted you [O1]." are each one sentence
-   citing their record. Names reach answers verbatim from contact cards and
-   `handles link --new`, so a period inside one never cuts a date off from
-   its citation.
+   an abbreviation ("Dr.", "Mr.", "Mrs.", "Jr.", "St.", "e.g.", "p.m.",
+   "Ave.", "Blvd.", "Mt.", "Co.", "Inc.", "Ltd.", "Dept.", "Univ.", "Apt.",
+   "No.", "approx.", "est."), of an initial in any alphabet ("Laura J. Kim",
+   "Dr. R. Ellis", "José Á. García", "Zoë Ö. Müller") or of a dotted
+   abbreviation ("D.D.S.", "Ph.D.", "U.S."). Nor at any period followed by a
+   lowercase word ("Ellis Dental Co. in Austin", "eggs etc. at H-E-B"): a
+   sentence starts with a capital, so an abbreviation not on the list still
+   holds. "On 2026-10-10 you saw Dr. Ellis [O3]." and "On 2026-10-09 José
+   Á. García texted you [O1]." are each one sentence citing their record.
+   Names reach answers verbatim from contact cards and `handles link --new`,
+   so a period inside one never cuts a date off from its citation.
 3. **An answer that cites nothing** is flagged `uncited`.
 
 When a model's answer breaks rule 1 or 2, it is set aside. You get the
@@ -525,14 +584,18 @@ It returns:
   - `entities`: each with `last_contact`, `cards` and `facts` (all as ids),
     and for a place, `visits`. Then `ambiguous`, `no_data`, `loops` and the
     parsed `intent` (among its fields: `contact` for a when-or-whether call
-    or text question, `due` for a due-date question, `forward` for one that
-    looks ahead, and `merchant`, the name a money question's "at" or "from"
-    named). `loops_total` counts the open loops that match the question and
-    `loops_open` every open one. `recap` is true when the question named
-    only a time.
+    or text question, `due` for a due-date question, `overdue` for one
+    after what was due before today, `forward` for one that looks ahead,
+    `merchant`, the name a money question's merchant slot held ("at 76",
+    "pay 76", "76 spending"), and `unused`, the words of a money question
+    nothing could use). `loops_total` counts the open loops that match the
+    question and `loops_open` every open one. `recap` is true when the
+    question named only a time. `today` is the date the question was
+    answered on.
   - `window`: its `start`, `end` and `label`. An explicit window also has
     `spans`, the parts of the question it was read from, and a "this week /
-    month / year" window has `through`, the period's last day.
+    month / quarter / year" (or current season) window has `through`, the
+    period's last day.
 - `evidence_text`: the evidence as the model saw it.
 
 Wrapping that as an MCP tool or an OpenAPI tool server for Open WebUI is the
