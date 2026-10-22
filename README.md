@@ -1,182 +1,208 @@
 # Life CRM
 
-A personal life database. You talk — one long note in the evening, quick
-dictated thoughts during the day — and the system turns it into structured,
-confirmed records: meals, workouts, work, people, places, mood, tasks, ideas,
-with every record traceable to the exact sentence that produced it.
-
-Zero recurring cost: whisper runs on this machine, extraction runs on your
-existing Claude Code subscription (via the `/log` skill), everything else is
-local code. This codebase is the *foundation* of the Life CRM — capture,
-schema, reconciliation, provenance, export, and self-verification. The layers
-on top (dashboard, recall, weekly reviews) come after real data exists.
+A personal life database that runs on your own computer. You talk to your
+phone (one evening note, quick dictated thoughts during the day). Local
+whisper transcribes it, and Claude Code drafts structured records from it
+with `/log`: meals, workouts, work, people, places, mood, tasks, ideas.
+Nothing lands until you have reviewed the diff, and every record points to
+the sentence that produced it. Next to that confirmed journal, importers copy
+what your apps already hold into the same SQLite file: texts, calls,
+contacts, calendar, notes, photo metadata, location visits, browser history,
+bank statements, health data and AI chats. These imported records are
+cited, never asserted as fact. You then ask questions on the command line,
+on a web page on your phone, or by voice, and every fact in the answer
+carries the id of the row it came from. There is no recurring cost: whisper
+and the optional Ollama model run locally, extraction uses an existing
+Claude Code subscription, and everything else is local code.
 
 ```
-iPhone / Android
-  voice note  --OneDrive-->  VoiceJournal/inbox        (audio)
-  quick note  --OneDrive-->  VoiceJournal/inbox-text   (dictated text)
-        |
-        v  lifecrm intake        (local faster-whisper for audio;
-        |                         text imports directly - no model load)
-        v  /log (Claude Code)    draft JSON per docs/contract.md
-        v  lifecrm ingest        validate + reconcile -> reviewable diff
-        v  your confirmation     one keystroke, or corrections
-        v  lifecrm apply         transactional; audit + revisions + provenance
-        v
-   SQLite (data\lifecrm.db)  ->  lifecrm export (jsonl / markdown archives)
+phone ─ voice note / quick note ─> cloud folder (OneDrive or iCloud Drive)
+  │
+  ├─ lifecrm intake          local whisper for audio; text needs no model
+  ├─ /log (Claude Code)      one draft per day (docs/contract.md)
+  ├─ lifecrm ingest          validate + reconcile -> a reviewable diff
+  ├─ you review              one keystroke, or corrections
+  └─ lifecrm apply           CONFIRMED tier: entries, measurements, mentions,
+                             entity relationships (audited, with provenance)
+
+app exports    ─ lifecrm observe       ─> OBSERVED tier: observations
+health exports ─ lifecrm health import ─> health_records
+
+data/lifecrm.db ─> ask · serve (web UI) · voice · dashboard · review
+                   export (jsonl / markdown / obsidian)
 ```
 
-The database outlives every tool on top of it: stable UUIDs, immutable
-sources, corrections as revisions (never overwrites), full-text search,
-deterministic plain-text exports, and `lifecrm doctor` to prove it's intact.
+## Try the demo first
+
+The demo builds a complete instance from synthetic data: one fictional
+person's six weeks, rendered as each app's real export files and run through
+the real importers. Then it opens the web UI. It never touches `data/`.
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1     # Windows
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1      #   -Combo iphone, -Rebuild, -NoServe, -Port
+
+/bin/bash scripts/setup.sh                                     # Mac
+/bin/bash scripts/demo.sh                                      #   --combo android, --rebuild, --no-serve, --port
+```
+
+It builds `demo/<combo>/` (gitignored) and serves it at
+`http://127.0.0.1:8765/`. The build includes an Obsidian vault at
+`demo/<combo>/vault`. [docs/demo.md](docs/demo.md) lists what is in it and
+what to try.
+
+## Two supported setups
+
+| setup | full guide | phone capture |
+|---|---|---|
+| Windows laptop + Samsung Galaxy (Android) | [docs/windows-android.md](docs/windows-android.md) | [docs/android.md](docs/android.md): Samsung Voice Recorder + Autosync for OneDrive, Never sleeping apps, Health Connect export, SMS Backup & Restore, Contacts `.vcf`, Google Takeout |
+| MacBook + iPhone | [docs/mac.md](docs/mac.md) | [docs/iphone.md](docs/iphone.md): two Apple Shortcuts ("Log My Day" for audio, "Quick Note" for dictated text) saving to iCloud Drive |
+
+Other pairings work too. An iPhone with a Windows PC saves to OneDrive
+([docs/iphone.md](docs/iphone.md)). [docs/new-machine.md](docs/new-machine.md)
+is the short version of both setups, for anyone setting up their own copy.
+
+**Commands.** `lifecrm …` below is short for `.venv\Scripts\python.exe -m
+lifecrm …` on Windows and `.venv/bin/python -m lifecrm …` on a Mac, run from
+the repo folder with `PYTHONUTF8=1`. Scripts are
+`powershell -ExecutionPolicy Bypass -File scripts\<name>.ps1` on Windows and
+`/bin/bash scripts/<name>.sh` on a Mac.
 
 ## Daily ritual
 
-1. During the day: any passing thought — run the **Quick Note** shortcut,
-   dictate ten seconds, done.
-2. Evening: run **Log My Day**, talk through the day, stop.
-3. At the computer: open Claude Code here, type `/log`. All of today's notes
-   are extracted together as one coherent day; you review a diff (new
-   entries, closed tasks, links to earlier threads, anything ambiguous) and
-   confirm.
+1. During the day, when a thought comes up, run **Quick Note** (iPhone) or
+   double-press the side button (Samsung) and talk for ten seconds.
+2. In the evening, record one longer note about the day.
+3. At the computer, the scheduled intake has usually run already. Open
+   Claude Code in the repo folder and type `/log`. All of today's notes are
+   extracted together as one day. You review a diff (new entries, closed
+   tasks, links to earlier threads, anything ambiguous) and confirm it.
 
 No audio handy? Paste text straight into `/log`.
 
-## One-time setup
+## Background jobs
 
-Setting this up on a fresh machine that isn't the original author's (your
-own copy, your own data)? Follow [docs/new-machine.md](docs/new-machine.md)
-— it covers clone through first applied `/log`.
+`scripts/install-tasks.ps1` (Task Scheduler, tasks `LifeCRM *`) or
+`scripts/install-tasks.sh` (launchd, `local.lifecrm.*`) registers five jobs
+for your user, with no admin rights needed:
 
-### This computer
+| job | when | does | log |
+|---|---|---|---|
+| intake | daily 07:00 and at logon | both inboxes: text notes, then audio | `data/transcribe.log` |
+| doctor | daily 08:00 | doctor against the live database | `data/doctor.log` (WARN/FAIL lines) |
+| backup | daily 21:30 | snapshot with tiered retention (14 daily, 12 weekly, 24 monthly, yearly kept forever), local and the cloud copy (`cloud_backups_dir`: OneDrive or iCloud Drive) | — |
+| verify-restore | Sundays 12:00 | `lifecrm verify-backup`: restores the newest snapshot into a scratch folder, runs doctor on it, and checks every table holds at least the rows live had when the snapshot was taken | `data/verify-restore.log` (Windows) |
+| review | Sundays 19:00 | `lifecrm review --lens all --write-only`: the review pack for the last full week, waiting in `data/staging/` | `data/review.log` |
 
-```bash
-powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
+The Windows tasks also run on battery. A failed run exits non-zero, so Task
+Scheduler's *Last Run Result* shows `0x1` and launchd's `last exit code`
+shows 1. On a Mac, anything that never reached Python lands in
+`data/launchd-<job>.log`. A file that intake fails on is named in the log
+and stays in the inbox for the next run. `install-tasks.sh --print` shows the
+plists without installing anything, and `uninstall-tasks.sh` removes them.
+
+## Data sources
+
+Every import is a **dry run by default**. It prints per-stream counts, date
+spans and sample rows. Read them, then run the same command with `--apply`.
+Re-running is always safe, because records dedupe on the source's own ids.
+With no path, every connector except `ai_chat` looks in its usual place
+(`finance` needs `[connectors.finance] path`). `lifecrm where` lists what
+this machine has, with the command for each.
+
+**Windows laptop + Samsung:**
+
+| source | how it reaches the laptop | command | guide |
+|---|---|---|---|
+| Voice notes | Samsung Voice Recorder → Autosync → `OneDrive\VoiceJournal\inbox` | `lifecrm intake` (scheduled) | [android.md](docs/android.md) |
+| Quick notes | the same path, or an Automate flow into `inbox-text` | `lifecrm intake` | [android.md](docs/android.md) |
+| Health | Samsung Health → Health Connect → scheduled export `.zip` | `lifecrm health import [zip]` | [health-connect.md](docs/health-connect.md) |
+| Texts and calls | SMS Backup & Restore XML, scheduled to OneDrive | `lifecrm observe android_sms [folder]` | [android-texts.md](docs/android-texts.md) |
+| Contacts | Contacts › Export → `.vcf` | `lifecrm observe contacts [file]` | [contacts.md](docs/contacts.md) |
+| Calendar | Google Takeout, or Google Calendar's `.ical.zip` | `lifecrm observe calendar [export]` | [calendar.md](docs/calendar.md) |
+| Notes | Google Keep Takeout, or a folder of `.md`/`.txt` (Obsidian, Samsung Notes text) | `lifecrm observe notes [path]` | [notes.md](docs/notes.md) |
+| Photos (metadata only) | Gallery › Sync with OneDrive, or a Google Photos Takeout | `lifecrm observe photos [folder]` | [photos.md](docs/photos.md) |
+| Location visits | Timeline › Export Timeline data → `Timeline.json` | `lifecrm observe location [file]` | [location.md](docs/location.md) |
+| Browser history | the laptop's Chrome/Edge/Brave (phone Chrome syncs into it) | `lifecrm observe browser` | [browser.md](docs/browser.md) |
+| WhatsApp | ⋮ › More › Export chat, Quick Share to the laptop | `lifecrm observe whatsapp <zip>`, after setting `[connectors.whatsapp] me` | [whatsapp.md](docs/whatsapp.md) |
+| Bank and card | the bank's CSV or OFX/QFX download | `lifecrm observe finance <file or folder>` | [finance.md](docs/finance.md) |
+| AI chats | Claude / ChatGPT data export | `lifecrm observe ai_chat <zip>` | [ai-chat.md](docs/ai-chat.md) |
+
+**MacBook + iPhone:** first grant Full Disk Access to your terminal (System
+Settings › Privacy & Security › Full Disk Access). Without it, macOS blocks
+Messages, call history, Contacts, Photos, Notes, Safari and iPhone backups,
+and the import says so in one line.
+
+| source | where it lives | command | guide |
+|---|---|---|---|
+| Voice notes | Shortcut "Log My Day" → `iCloud Drive/VoiceJournal/inbox` | `lifecrm intake` (scheduled) | [iphone.md](docs/iphone.md) |
+| Quick notes | Shortcut "Quick Note" → `inbox-text` | `lifecrm intake` | [iphone.md](docs/iphone.md) |
+| Health | Health › Export All Health Data → `export.zip` (AirDrop or Files) | `lifecrm health import [path]` | [apple-health.md](docs/apple-health.md) |
+| Messages | the Mac's own `chat.db` (turn on Messages in iCloud and Text Message Forwarding) | `lifecrm observe mac_messages` | [texts.md](docs/texts.md) |
+| Calls | the Mac's call history (FaceTime › Calls from iPhone) | `lifecrm observe ios_calls` | [calls.md](docs/calls.md) |
+| Texts from a backup (alternative) | an unencrypted Finder backup of the iPhone | `lifecrm observe ios_messages` | [texts.md](docs/texts.md) |
+| Contacts | the Mac's Contacts stores, iCloud included | `lifecrm observe contacts` | [contacts.md](docs/contacts.md) |
+| Calendar | Calendar › File › Export → `.ics` | `lifecrm observe calendar <ics>` | [calendar.md](docs/calendar.md) |
+| Notes | Apple Notes' store | `lifecrm observe notes` | [notes.md](docs/notes.md) |
+| Photos (metadata only) | the Photos library | `lifecrm observe photos` | [photos.md](docs/photos.md) |
+| Browser history | Safari (the iPhone's Safari syncs into it), Chrome, Brave or Edge | `lifecrm observe browser` (`[connectors.browser] browser = "safari"`) | [browser.md](docs/browser.md) |
+| WhatsApp | chat name › Export Chat, AirDrop to the Mac | `lifecrm observe whatsapp <zip>`, after setting `[connectors.whatsapp] me` | [whatsapp.md](docs/whatsapp.md) |
+| Bank and card | Apple Card CSV, or the bank's CSV or OFX/QFX | `lifecrm observe finance <file or folder>` | [finance.md](docs/finance.md) |
+| Location visits | only Google Maps Timeline on the iPhone. Apple's Significant Locations cannot be exported | `lifecrm observe location <file>` | [location.md](docs/location.md) |
+| AI chats | Claude / ChatGPT data export | `lifecrm observe ai_chat <zip>` | [ai-chat.md](docs/ai-chat.md) |
+
+Use one route for texts per phone: the Mac's `chat.db` or an iPhone backup,
+not both by turns. Each one mirrors its own source.
+
+## Commands
+
+`lifecrm --help` and `lifecrm <command> --help` are the full reference.
+
+**Capture and review**
+
+```
+lifecrm status                               # pending notes, open loops, streak
+lifecrm intake                               # both inboxes now (what the scheduled task runs)
+lifecrm import note.txt --date 2026-07-27    # a pasted transcript as a source
+lifecrm transcribe --file "<inbox>/x.m4a" --date 2026-07-27   # one recording, re-dated
+lifecrm filedate "Recording_20261021_003000.m4a"              # the day intake would give a name
+lifecrm ingest <draft.json>                  # validate + reconcile -> a diff (what /log runs)
+lifecrm apply <diff.json>                    # applying is the confirmation
+lifecrm admin discard-run <run prefix>       # end a draft that will never be applied
 ```
 
-Then check `config.toml` (inbox paths, timezone, whisper model — the setup
-benchmark picked `distil-large-v3`), and register the scheduled tasks so
-nothing depends on remembering:
+**Fixing things** (every change is reversible and audited)
 
-```bash
-powershell -ExecutionPolicy Bypass -File scripts/install-tasks.ps1
+```
+lifecrm entry show <uuid>                    # with its transcript passage and revisions
+lifecrm entry edit <uuid> --title "..." --primary-category food
+lifecrm entry retract <uuid>                 # and: entry restore
+lifecrm entry merge <src-uuid> <dst-uuid>
+lifecrm entry close <uuid> --closure done    # or dropped / obsolete; and: entry reopen
+lifecrm link add <from-uuid> <to-uuid> --type resolves      # entry threads; link list / rm
+lifecrm entities match "Jake"
+lifecrm entities merge <src-id> <dst-id>
+lifecrm entities alias-add <id> "Jaik"       # fix a mishearing for good
+lifecrm entities link add <from-id> <to-id> --type from     # records "Jake from El Paso"
+lifecrm entities show <id>                   # relationships listed both ways
 ```
 
-That schedules: **intake** (daily 7:00 + at logon — transcripts are ready
-before you sit down), **backup** (daily 21:30, tiered retention: 14 daily /
-12 weekly / 24 monthly / yearly forever, local + OneDrive), and
-**verify-restore** (weekly — restores the newest snapshot into a scratch
-folder and runs `doctor` on it, because an untested backup is not a backup).
+`entities link` also has `list`, `rm` (retract), `restore`, `types` and
+`type-add`. `categories` and `kinds` add reference rows without a migration.
 
-When a run fails, it says so: each task exits non-zero, so Task Scheduler's
-*Last Run Result* shows `0x1`, and intake's output (with the name of the file
-it choked on) is in `data\transcribe.log`. A file that fails stays in the
-inbox for the next run. `lifecrm doctor` also warns about a typo'd inbox or
-archive path, files waiting in an inbox for over two days, and files in a
-format intake will never read.
+**Ask, the web UI, voice**
 
-In Explorer, right-click `OneDrive\VoiceJournal` → **Always keep on this
-device** so OneDrive keeps real files, not placeholders (the code guards
-against placeholders anyway).
-
-### Your phone
-
-- **iPhone** — [docs/iphone.md](docs/iphone.md): two Apple Shortcuts ("Log My
-  Day" for audio, "Quick Note" for dictated text), action by action, with
-  triggers (Action Button, Back Tap, Siri) and an on-phone verification
-  checklist. No extra apps beyond OneDrive.
-- **Android** — [docs/android.md](docs/android.md): recorder app + Autosync
-  for OneDrive, filename conventions, and the honest caveats.
-
-Both guides are self-contained and shareable on their own.
-
-### Health data (Android)
-
-Sleep, steps, weight, workouts, heart rate, and nutrition come in through
-Android's **Health Connect** hub — the apps you already use write into it,
-and its export is one zip that
-[docs/health-connect.md](docs/health-connect.md) walks through importing:
-dry-run report first (counts, date spans, sample values), then `--apply`.
-Deterministic parsing, dedupe on the source's own record ids, updates only
-from newer records, conflicts surfaced instead of overwritten.
-
-## Commands you'll actually use
-
-```bash
-.venv/Scripts/python -m lifecrm status        # pending notes, open loops, streak
-.venv/Scripts/python -m lifecrm intake        # process both inboxes now
-.venv/Scripts/python -m lifecrm import note.txt --date 2026-07-27
-.venv/Scripts/python -m lifecrm sql "SELECT ..." --json   # read-only queries
-.venv/Scripts/python -m lifecrm doctor        # prove the database is intact
-.venv/Scripts/python -m lifecrm backup        # snapshot local + OneDrive
-.venv/Scripts/python -m lifecrm export --format markdown --out archive/
-.venv/Scripts/python -m lifecrm export --format jsonl --out archive-data/
-.venv/Scripts/python -m lifecrm health import hc-export.zip           # dry-run report
-.venv/Scripts/python -m lifecrm health import hc-export.zip --apply   # then write
-.venv/Scripts/python -m lifecrm health retract --source-file hc-export.zip  # undo it
-.venv/Scripts/python -m lifecrm observe ios_messages     # texts: finds the iPhone backup; see docs/texts.md
-.venv/Scripts/python -m lifecrm handles list --suggest    # who is who, from the phone's contacts
-
-.venv/Scripts/python -m lifecrm dashboard      # charts at /-/dashboards (Ctrl+C stops)
-.venv/Scripts/python -m lifecrm ask "how did I sleep last week"
 ```
-
-AI chat history (Claude / ChatGPT exports — see [docs/ai-chat.md](docs/ai-chat.md)):
-
-```bash
-.venv/Scripts/python -m lifecrm observe ai_chat claude-export.zip           # dry run
-.venv/Scripts/python -m lifecrm observe ai_chat claude-export.zip --apply
-.venv/Scripts/python -m lifecrm handles list                                # who is who
-.venv/Scripts/python -m lifecrm imports retract <uuid>                      # undo a run
-```
-
-Loops and threads:
-
-```bash
-.venv/Scripts/python -m lifecrm entry close <uuid> --closure done   # or dropped/obsolete
-.venv/Scripts/python -m lifecrm entry reopen <uuid>
-.venv/Scripts/python -m lifecrm link add <from-uuid> <to-uuid> --type resolves
-.venv/Scripts/python -m lifecrm link list <uuid>
-```
-
-Fixing things (all reversible, all audited):
-
-```bash
-.venv/Scripts/python -m lifecrm entry show <uuid>     # incl. transcript passage
-.venv/Scripts/python -m lifecrm entry edit <uuid> --title "..." --primary-category food
-.venv/Scripts/python -m lifecrm entry retract <uuid>  # and: entry restore
-.venv/Scripts/python -m lifecrm entry merge <src-uuid> <dst-uuid>
-.venv/Scripts/python -m lifecrm entities match "Jake"
-.venv/Scripts/python -m lifecrm entities merge <src-id> <dst-id>
-.venv/Scripts/python -m lifecrm entities alias-add <id> "Jaik"   # fix a mishearing forever
-```
-
-`lifecrm --help` shows the rest (categories/kinds management, migrate,
-restore, admin).
-
-## Dashboards
-
-```bash
-.venv/Scripts/python -m lifecrm dashboard
-```
-
-Two dashboards at `http://127.0.0.1:8001/-/dashboards` — **Journal** (days
-logged, entries per day, categories, mood & energy, open loops) and
-**Health** (sleep, steps, weight, workouts, heart rate, food energy) — plus
-all of Datasette underneath for ad-hoc exploring of every table.
-
-Definitions are code: [dashboards/dashboards.yml](dashboards/dashboards.yml),
-reviewed and versioned like everything else, and the test suite executes
-every chart query against the current schema so a migration can't silently
-blank a chart. The server reads a **snapshot taken at launch** — the live
-database is never held open (nothing can block backups or restores) — so
-refreshing the data is just rerunning the command. Add `--host 0.0.0.0` to
-open it from your phone on the same network.
-
-## Asking questions
-
-```bash
-.venv/Scripts/python -m lifecrm ask "how did I sleep last week"
+lifecrm ask "how did I sleep last week"
+lifecrm ask "when did I last talk to Mom"
+lifecrm ask "what did Jake text me about the lake"
+lifecrm ask "how much did I spend at Veracruz"
+lifecrm ask "what are my open tasks"
+lifecrm ask --history                        # recent questions; unanswered ones show what to import next
+lifecrm serve                                # web UI at http://127.0.0.1:8765/
+lifecrm serve --host 0.0.0.0 --token random  # from the phone on the same Wi-Fi
+lifecrm voice --text "how did I sleep last week"   # needs nothing installed
+lifecrm voice                                # push-to-talk; extras in requirements-voice.txt
 ```
 
 ```
@@ -184,67 +210,226 @@ Sleep totalled 7.09 h per day over 5 day(s) (min 6.47 h 2026-07-27,
 max 7.75 h 2026-07-26) [M1]. Related entries: 2026-07-27 Gym: push day [E1].
 ```
 
-Every claim carries an evidence id, and the window it used is printed with
-the answer. Retrieval is deterministic — rules parse the question, SQL
-answers it over a read-only connection — so **it works with no AI installed
-at all**. If you install a local model ([Ollama](docs/ask.md), one command),
-it phrases the same evidence in prose and its citations are verified against
-that evidence before you see them; a model that cites something nonexistent
-gets flagged, not printed as fact.
+`M#` is a statistic, `E#` a confirmed entry, `P#` a transcript passage and
+`O#` an imported record, always shown as "(observed, not confirmed)".
+Retrieval is deterministic: rules parse the question and SQL answers it over
+a read-only connection, so it works with no model installed. With
+[Ollama](docs/ask.md) running, a local 7-8B model phrases the same evidence.
+Its answer is checked sentence by sentence against what it cites, and it is
+replaced by the deterministic answer if a number or date does not match.
+`serve` is a viewer over a snapshot, with no capture and no edit button
+([docs/web.md](docs/web.md)). `voice` answers aloud and turns "note …" into a
+quick note for intake and `/log`. It never writes the database
+([docs/voice.md](docs/voice.md)).
 
-Because the model never writes SQL or does arithmetic, a small 7-8B local
-model is enough. Nothing is metered and nothing leaves the machine.
-Questions the database *can't* answer are logged — `ask --history` shows
-them, and that list is the best guide to what to import next.
-[docs/ask.md](docs/ask.md) covers windows, metrics, and the `--json` tool
-interface for hooking up a chat UI or voice front-end later.
+**Imports and handles**
+
+```
+lifecrm where                                # what this machine has that can be imported
+lifecrm connectors                           # connectors and their last run
+lifecrm observe <connector> [path]           # dry run
+lifecrm observe <connector> [path] --apply
+lifecrm imports list
+lifecrm imports retract <uuid>               # undo one run; reversible
+lifecrm imports restore <uuid>               # puts back exactly what retract hid
+lifecrm handles list --suggest               # who is who: candidates from names and contact cards
+lifecrm handles link phone:+15125550142 --entity <id>      # or --new "Jake Morales"
+lifecrm handles ignore <kind:value>          # spam, delivery notices
+```
+
+Importers record *handles* (a phone number, an email, an account), never
+people. Linking one handle attributes every observation that used it, past
+and future, in one decision. Nothing is linked automatically.
+
+**Health**
+
+```
+lifecrm health import [path]                 # Health Connect zip or Apple Health export; dry run
+lifecrm health import [path] --apply
+lifecrm health retract --source-file "<name as reported>"   # undo; and: health restore
+```
+
+**Weekly review and advisors**
+
+```
+lifecrm review                               # last full week's evidence pack -> data/staging/
+lifecrm review --lens health --days 30       # lenses: week, health, career, relationships, finance, all
+lifecrm review --check brief.md --out kept.txt   # verify a brief's citations
+```
+
+In Claude Code, `/review-week` and `/advise <lens>` write a short brief in
+which every claim cites a pack id. The pack itself holds no interpretation.
+A brief you keep becomes a `reflection` entry through the normal import →
+ingest → review → apply gate ([docs/review.md](docs/review.md)).
+
+**Dashboards**
+
+```
+lifecrm dashboard                            # http://127.0.0.1:8001/-/dashboards (Ctrl+C stops)
+```
+
+There are four dashboards. **Journal** shows days logged, entries per day,
+categories, mood and energy, and open loops. **Health** shows sleep, steps,
+weight, workouts, heart rate and food energy. **Observed** covers the
+imported tier: texts per day by app, top people, calls, AI chats, calendar
+events and money out per week, notes and photos per month, a map of photo
+locations, the latest imports and handles waiting to be linked. **People**
+shows who you were in touch with across both tiers, week by week, and each
+person's last contact. Datasette sits underneath for ad-hoc browsing. The
+server reads a snapshot taken at launch and never holds the live database
+open, so rerun it to refresh. The definitions are code
+([dashboards/dashboards.yml](dashboards/dashboards.yml)). The test suite runs
+every chart query in every filter form against the current schema, and once
+more through an in-process Datasette. The photo map's tiles need internet.
+
+**Export**
+
+```
+lifecrm export --format markdown --out exports/markdown
+lifecrm export --format jsonl --out exports/jsonl
+lifecrm export --format obsidian --out "<vault folder>" [--dry-run]
+```
+
+The exports are deterministic: two exports of the same data diff cleanly.
+The obsidian format is a read-only vault. It holds day notes (journal,
+health line, a digest of observed records with their uuids), one note per
+person, place and thing, `Loops.md` and `Index.md`. A re-export rewrites and
+prunes only the notes that carry `lifecrm: generated`, so your own notes in
+the vault are never touched ([docs/obsidian.md](docs/obsidian.md)). Reading
+an export with no code at all: [docs/restore.md](docs/restore.md).
+
+**Operations**
+
+```
+lifecrm doctor                               # every invariant the schema cannot enforce; exit 1 on failure
+lifecrm backup                               # snapshot locally + to cloud_backups_dir
+lifecrm verify-backup [snapshot]             # prove a snapshot restores, without touching live
+lifecrm restore [snapshot]                   # list snapshots, or restore one (backs up current first)
+lifecrm migrate                              # pending schema migrations, snapshot first
+lifecrm configure [--force]                  # write config.toml for this machine
+lifecrm where                                # read-only report of importable sources
+lifecrm filedate <name>                      # check a recorder's file names before relying on them
+lifecrm sql "SELECT ..." --json              # read-only queries
+```
+
+`configure` writes `config.toml`. It uses iCloud Drive's VoiceJournal on a
+Mac and OneDrive's on Windows, sets the OS timezone as an IANA name and
+creates the folders. Replacing an existing config needs `--force`, and the
+old file is kept under `data/`. Every setting is in
+[config.example.toml](config.example.toml).
 
 ## How it's built
 
-- **SQLite is canonical** (`data\lifecrm.db`, WAL, schema v4 with a
-  transactional migration runner in `lifecrm/migrations/`). Sources,
-  transcripts, and segments are immutable; entries carry stable UUIDs and are
-  corrected via revisions, retraction, closure, and merges — never
-  destructive rewrites.
-- **Two trust tiers, one rule**: the confirmed tier (`entries`,
-  `measurements`, `mentions`) is everything you reviewed through `/log`; the
-  observed tier (`observations`, `health_records`) is bulk-imported at a scale
-  nobody reviews — cited, never asserted, and structurally unable to write to
-  the confirmed tables. `lifecrm observe` imports it, `imports retract` undoes
-  it, and `handles link` attributes a whole decade of messages in one decision.
-  See [docs/observed-tier.md](docs/observed-tier.md).
-- **Two metric layers, one rule**: `measurements` holds what the journal
-  said; `health_records` holds what sensors recorded (Health Connect
-  import), keyed on the source system's own record ids so re-imports dedupe,
-  updates apply only from newer records (audit-logged), and disagreements
-  surface as conflicts instead of overwrites.
-- **Contract boundary** (`docs/contract.md`, v2): transcripts → versioned
-  JSON → deterministic validation → reviewable diff → transactional apply. A
-  day made of several notes extracts as ONE draft; every entry names which
-  source and which passage supports it. Claude is just the current extractor.
-- **Reconciliation, not replacement**: re-processing produces a diff (add /
-  update / possible duplicate / retract proposal / cross-day closure /
-  unchanged); user-confirmed records are never silently overwritten, and
-  closures of earlier days' tasks always require an explicit decision.
-- **Loops close, threads connect**: `task`/`plan` entries carry
-  `closed_at`/`closure` (done / dropped / obsolete — distinct from
-  retraction, which means "this record was wrong"), and `entry_links`
-  (continues / resolves / part_of / caused / contradicts / relates) capture
-  the thread structure that is only knowable while the memory is fresh.
-- **The archive outlives the code**: deterministic JSONL and markdown
-  exports; `docs/restore.md` explains reading them with no tooling at all.
-- **Privacy**: personal data never enters git (test-enforced); OneDrive gets
-  audio + DB snapshots — that's cloud storage, read `docs/privacy.md`.
+- **SQLite is canonical** (`data/lifecrm.db`, WAL, schema v5). Schema
+  changes are numbered migrations in `lifecrm/migrations/`, applied
+  atomically by `lifecrm migrate` after a snapshot. Sources, transcripts and
+  segments are immutable. Entries carry stable UUIDs and are corrected
+  through revisions, retraction, closure and merges, never by overwriting.
+- **Two trust tiers, one rule.** The confirmed tier (`entries`,
+  `measurements`, `mentions`, `entity_links`) holds what you reviewed. The
+  observed tier (`observations`, `health_records`) is bulk-imported at a
+  scale nobody reviews. It is cited, never asserted, and an importer may not
+  write entries, measurements, mentions, entity aliases or entity links.
+  Connectors are pure readers ([docs/observed-tier.md](docs/observed-tier.md)).
+- **The contract boundary** ([docs/contract.md](docs/contract.md), v2) runs
+  transcripts → versioned JSON draft → deterministic validation → reviewable
+  diff → transactional apply. A day made of several notes extracts as one
+  draft. Re-processing produces a diff (add, update, possible duplicate,
+  retract proposal, cross-day closure, unchanged). Confirmed records are
+  never silently overwritten. Cross-day closures and retractions are always
+  your explicit decision. Claude is just the current extractor.
+- **Provenance.** Every entry names the source and the character span that
+  supports it. Every observation names the import that brought it in and the
+  export file it came from. Every `ask` fact carries an id you can check.
+- **Mirroring, per connector.** Texts (`ios_messages`, `mac_messages`,
+  `android_sms` from a full backup), calls, AI chats, calendars, contacts,
+  notes and a Mac Photos library *mirror* their source when it names an
+  account: what the source no longer holds is removed on the next import.
+  Removal is scoped to that account, preceded by a snapshot, and refused
+  when it would remove a large share of the archive at once
+  (`--allow-mass-removal` overrides). A record that a journal entry or a
+  relationship cites is hidden instead of deleted. WhatsApp exports, bank
+  statements, location, browser history, photo folders and Takeouts
+  *remember*, because a missing record there is not evidence of deletion.
+- **Health** comes from Health Connect or Apple Health into
+  `health_records`, keyed on the source's own record ids (or a stable hash
+  for Apple). It updates only from newer records and surfaces conflicts
+  instead of overwriting. Sleep is dated by the day you woke up.
+- **Loops, threads and relationships.** `task`/`plan` entries close (done,
+  dropped or obsolete, which is different from retraction). `entry_links`
+  (continues, resolves, part_of, caused, contradicts, relates) capture
+  threads. `entity_links` (schema v5) are typed relationships between
+  people, places and things, like *Jake from El Paso*, *Jake works_at Acme*
+  or *Linda parent_of Alex*. They come only from a reviewed draft or
+  `entities link add`, never inferred, and `ask` cites them through the
+  entry that stated them.
+- **Read-only front ends.** `serve` and `dashboard` read snapshots, and
+  serve's only write is the question log. `ask` retrieves over a read-only
+  connection and then logs the question unless you pass `--no-log`.
+  `review` never writes the database. `voice` drafts notes into the
+  inbox and never applies them. The only path into the confirmed tier is
+  `/log` → ingest → review → apply.
+- **The archive outlives the code.** Exports are deterministic, and
+  [docs/restore.md](docs/restore.md) explains how to read them with no
+  tooling at all.
+- **Privacy.** Personal data never enters git, and tests enforce that. The
+  cloud folder holds audio and DB snapshots, which is cloud storage. Read
+  [docs/privacy.md](docs/privacy.md).
 
-Tests: `.venv/Scripts/python -m pytest tests -q`.
+Tests: `.venv\Scripts\python.exe -m pytest tests -q` (Mac:
+`.venv/bin/python -m pytest tests -q`). Every concurrent pytest run needs its
+own `--basetemp`. pytest deletes a basetemp at session start, so two runs
+sharing one wipe each other's files mid-test.
+`.github/workflows/ci.yml` (Windows and macOS runners) runs once the repo is
+pushed to GitHub. Until then, the `.sh` scripts are tested under Git Bash on
+Windows.
 
-## Roadmap (deliberately not built yet)
+## Not yet verified on real devices
 
-This work completes the **foundation**, not the application. After real
-notes accumulate — and the schema has survived contact with them — the next
-layers go on top: richer dashboard views (timeline, entity pages, review
-queue — the first Datasette layer shipped as `lifecrm dashboard`), a live
-Obsidian mirror, typed entity↔entity relationships (Jake works_at Acme),
-weekly review briefs drafted from the same evidence `ask` retrieves, and a
-voice front-end over the `ask --json` interface. `transcript_segments` and
-stable entry UUIDs are already in place as their extension points.
+Every connector and every phone-side step is tested against synthetic files
+in the real formats, not against the owner's real phones and exports. Each
+guide ends with what to check on the first real run:
+
+- Windows + Samsung: [windows-android.md](docs/windows-android.md#verification-checklist-once-on-the-real-devices),
+  [android.md](docs/android.md#verify-it-on-the-real-phone-once). Recorder
+  file names, Autosync, One UI menus, the Firewall prompt for phone access.
+- Mac + iPhone: [mac.md](docs/mac.md#what-has-not-been-verified-on-a-real-mac),
+  [iphone.md](docs/iphone.md#verification-checklist-run-on-the-real-phone).
+  Nothing has run on a real Mac yet: launchd, Full Disk Access, iCloud
+  latency, whisper speed on Apple Silicon.
+- Imports: [texts](docs/texts.md#first-real-import-checklist-unproven-until-a-real-backup),
+  [calls](docs/calls.md#first-real-import-checklist-unproven-until-a-real-store),
+  [Android texts](docs/android-texts.md#first-real-import-checklist-unproven-until-a-real-backup),
+  [Health Connect](docs/health-connect.md#first-real-import-checklist-unproven-until-a-real-phone-run),
+  [Apple Health](docs/apple-health.md#first-real-import-checklist-unproven-until-a-real-iphone-run),
+  [notes](docs/notes.md#real-device-checklist-unverified-until-run-on-real-exports),
+  [photos](docs/photos.md#first-real-import-checklist-unproven-until-real-exports),
+  [finance](docs/finance.md#first-real-import--check-these),
+  and the known limitations in [contacts](docs/contacts.md#known-limitations),
+  [calendar](docs/calendar.md#known-limitations),
+  [location](docs/location.md#known-limitations),
+  [browser](docs/browser.md#known-limitations) and
+  [WhatsApp](docs/whatsapp.md#known-limitations).
+- Front ends: [voice](docs/voice.md#not-yet-verified-on-real-hardware) (a
+  real microphone, the wake word, speakers). For the web UI on a real phone,
+  see [web.md](docs/web.md#on-your-phone). No real Ollama model has been
+  tried with `ask`'s citation check.
+
+## Roadmap
+
+The work order is [docs/next-brief.md](docs/next-brief.md). It is built
+through Phase 5: integrity fixes, backups you can trust, every connector in
+the source ranking, cross-tier `ask`, entity relationships, dashboards v2,
+the weekly review and advisors, the read-only Obsidian mirror, the web UI
+and the voice loop. Still open:
+
+- the real-device and first-real-import checklists above;
+- ActivityWatch screen time;
+- comparison questions ("this month vs last");
+- owner actions: `gh auth login` and push (which also turns on CI), the
+  folder rename, registering the scheduled tasks, and `lifecrm migrate` to
+  bring the real database to schema v5.
+
+Deliberately not built: a capture UI (the phone apps are the capture), live
+federation of app data (everything is copied into `lifecrm.db`), and
+bidirectional Obsidian sync, which would be a second write path.

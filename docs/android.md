@@ -20,7 +20,12 @@ Automate flow  ──Autosync──> OneDrive/VoiceJournal/inbox-text   (typed/d
 Samsung Health ──> Health Connect ──scheduled export──> zip ──> lifecrm health import
 SMS Backup & Restore ──scheduled──> OneDrive ──> lifecrm observe android_sms
 Contacts export (.vcf), Google Takeout (Calendar, Keep, Photos) ──> lifecrm observe ...
+Timeline export (Timeline.json) ──> lifecrm observe location
+WhatsApp "Export chat" (.zip) ──Quick Share──> lifecrm observe whatsapp
 ```
+
+To read it all back on the phone, open the laptop's web UI in the phone's
+browser ([web.md, "On your phone"](web.md#on-your-phone)).
 
 Voice and text notes are *journal sources*: they go through `/log` and your
 review. Everything else is the *observed tier*: bulk imports you check with a
@@ -300,6 +305,17 @@ in your OneDrive (under *Pictures*). That keeps the photo archive current
 without Takeout: point `observe photos` at that OneDrive folder. Note that a
 folder of online-only OneDrive files is downloaded file by file when read —
 mark it *Always keep on this device* first, or use Takeout for the history.
+
+### Location and browser history
+
+- **Where you were:** Settings › Location › Location services › Timeline ›
+  **Export Timeline data** writes `Timeline.json` **(verify)**. Save it to
+  OneDrive and run `python -m lifecrm observe location`. See
+  [location.md](location.md).
+- **What you read:** with Chrome sync on, the phone's Chrome history arrives
+  in the laptop's Chrome, and `python -m lifecrm observe browser` reads it
+  there. See
+  [browser.md](browser.md).
 
 ## 7. Moving a recording to another day
 

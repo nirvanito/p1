@@ -10,11 +10,17 @@ Two setups are supported end to end, and the demo builds either one:
 
 | combo | computer | phone | what it imports |
 |---|---|---|---|
-| `android` | Windows laptop | Samsung Galaxy | Health Connect export, SMS Backup & Restore (texts + calls), Google Contacts `.vcf`, Google Calendar Takeout, Google Keep Takeout, Chase CSV, Samsung Gallery photos (EXIF), Google Maps Timeline, Chrome history, WhatsApp (Android format), Claude + ChatGPT exports |
-| `iphone` | MacBook | iPhone | Apple Health `export.zip`, the Mac's Messages `chat.db`, Call History, the Mac's Contacts store, Apple Calendar `.ics`, Apple Notes `NoteStore.sqlite`, Apple Card CSV, Mac Photos library, Safari history, WhatsApp (iOS format), Claude + ChatGPT exports |
+| `android` | Windows laptop | Samsung Galaxy | Health Connect export, SMS Backup & Restore (texts + calls), Google Contacts `.vcf`, Google Calendar Takeout, Google Keep Takeout, Chase CSVs, Samsung Gallery photos (EXIF), Google Maps Timeline, Chrome history, WhatsApp (Android format), Claude + ChatGPT exports |
+| `iphone` | MacBook | iPhone | Apple Health `export.zip`, the Mac's Messages `chat.db`, Call History, the Mac's Contacts store, Apple Calendar `.ics`, Apple Notes `NoteStore.sqlite`, Apple Card CSVs + a credit union `.qfx`, Mac Photos library, Safari history, WhatsApp (iOS format), Claude + ChatGPT exports |
 
-Both start from the same journal: about two weeks of voice and quick notes
-going through intake, a draft per day, ingest, review and apply.
+The iPhone combo has no location sample, because Apple's Significant
+Locations cannot be exported ([location.md](location.md)).
+
+Both start from the same journal: thirteen logged days spread over the six
+weeks. Each day is an evening note, sometimes with quick notes, dropped into
+the text inbox under the file name that combo's phone would give it. The
+notes go through intake, one draft per day, ingest, review and apply. They
+arrive as text, so whisper is not needed unless you pass `--with-audio`.
 
 ## Run it
 
@@ -32,23 +38,33 @@ powershell -ExecutionPolicy Bypass -File scripts/demo.ps1
 /bin/bash scripts/demo.sh
 ```
 
-Each script builds `demo/<combo>/` the first time, then opens the web UI at
-`http://127.0.0.1:8765/`. Pass `-Combo iphone` / `--combo android` to build
-the other setup on the same machine. Both work on either OS, because every
-input is a file. To rebuild from scratch, use `-Rebuild` / `--rebuild`.
+Each script builds `demo/<combo>/` the first time (about two minutes), then
+opens the web UI at `http://127.0.0.1:8765/`. `demo.ps1` builds the android
+combo by default and `demo.sh` the iphone one. Pass `-Combo iphone` /
+`--combo android` to build the other setup on the same machine. Both work on
+either OS, because every input is a file. To rebuild from scratch, use
+`-Rebuild` / `--rebuild`. `-NoServe` / `--no-serve` builds without serving,
+and `-Port N` / `--port N` serves on another port.
 
-You can also call the command directly:
+You can also call the command directly. Here `python` is the project's venv
+interpreter (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on a
+Mac):
 
 ```bash
 python -m lifecrm demo --combo android          # or iphone, or both
 python -m lifecrm demo --combo iphone --force   # rebuild
+python -m lifecrm demo --dir ~/lifecrm-demo     # build somewhere else (one combo)
+python -m lifecrm demo --anchor 2026-10-22      # pin the demo's "today"
 python -m lifecrm demo --with-audio             # also speak + transcribe one note
+python -m lifecrm demo --no-ask --json          # skip the sample questions; print the summary as JSON
 ```
 
 `--with-audio` uses the OS voice (Windows System.Speech or macOS `say`) to
-record one evening note into the inbox. Local whisper then transcribes it,
-which proves the audio path on a fresh machine. It needs the whisper model,
-which is a one-time download if it isn't cached already.
+record one evening note into the inbox. Local whisper (`small`) then
+transcribes it, which proves the audio path on a fresh machine. The demo
+runs its commands offline (`HF_HUB_OFFLINE=1`), so the `small` model must
+already be in the Hugging Face cache. To let the first run download it, set
+`HF_HUB_OFFLINE=0` in that terminal.
 
 ## What is in it
 
@@ -77,6 +93,8 @@ People, places, phone numbers and emails are all fictional (`example.com`,
 ## Things to try
 
 Replace `<demo>` with the path the build printed, for example `demo/android`.
+The build ends by printing the answers to ten sample questions and several
+of these commands with the root filled in.
 
 ```bash
 python -m lifecrm --root <demo> serve                     # web UI: Ask, Today, People, Loops
@@ -85,13 +103,27 @@ python -m lifecrm --root <demo> ask "what's Jake's favorite restaurant"
 python -m lifecrm --root <demo> ask "how did I sleep last week"
 python -m lifecrm --root <demo> ask "how much did I spend at Veracruz"
 python -m lifecrm --root <demo> ask "when did I last talk to Mom"
+python -m lifecrm --root <demo> ask "what are my open tasks"
 python -m lifecrm --root <demo> status                    # streak, open loops, today's pending note
-python -m lifecrm --root <demo> dashboard                 # charts (Journal, Health, Observed)
+python -m lifecrm --root <demo> dashboard                 # charts (Journal, Health, Observed, People)
 python -m lifecrm --root <demo> handles list --suggest    # identifiers still waiting for a decision
 python -m lifecrm --root <demo> review --lens health      # the weekly evidence pack
-python -m lifecrm --root <demo> export --format obsidian --out <demo>/vault
+python -m lifecrm --root <demo> voice --text "how did I sleep last week"
 python -m lifecrm --root <demo> doctor
 ```
+
+The build already wrote an Obsidian vault to `<demo>/vault` (open that
+folder as a vault in Obsidian). Running
+`export --format obsidian --out <demo>/vault` again rewrites only the notes
+that changed.
+
+`doctor` reports 0 failures. The warnings are expected. `unresolved_handles`
+is the review queue the demo leaves on purpose. On the iPhone combo,
+`health_multi_origin` also appears, because the Watch and the iPhone both
+write sleep records, as a real pair does. The iPhone's nights are in-bed
+time only and carry no value, so no night is counted twice
+([apple-health.md](apple-health.md), "iPhone + Apple Watch: two
+recorders").
 
 Every answer cites its evidence. `[E3]` is a journal entry you confirmed,
 `[M1]` is a metric series, `[P2]` is a transcript passage, and `[O4]` is an
@@ -100,10 +132,11 @@ transaction. Imported records are cited, never asserted as fact. Click a
 citation in the web UI to see the row behind it.
 
 **The note left for you:** today's quick note is still sitting in the
-inbox, the way a real one would be. In Claude Code, run `/log` with the demo
-root to process it: ask Claude to "log today's note in the demo
-(`--root demo/android`)". It goes through the same draft, ingest, review and
-apply loop as real data.
+text inbox, the way a real one would be (`status` lists it). In Claude Code,
+run `/log` against the demo root to process it: ask Claude to "log today's
+note in the demo, with `--root demo/android` on every lifecrm command". It
+goes through the same intake, draft, ingest, review and apply loop as real
+data.
 
 ## What the demo plays itself
 

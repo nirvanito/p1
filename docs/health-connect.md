@@ -16,6 +16,10 @@ apps -> Health Connect (on phone) -> export zip -> synced/downloaded to PC
      -> python -m lifecrm health import <zip> --apply
 ```
 
+On an iPhone, the same `health import` reads Apple Health's *Export All
+Health Data* file instead. It tells the two apart by the file's contents.
+See [apple-health.md](apple-health.md).
+
 ## Phone-side setup (once)
 
 1. Open **Health Connect** (Android 14+: Settings → search "Health Connect";

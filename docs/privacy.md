@@ -26,9 +26,10 @@ database snapshots are stored on Microsoft's (OneDrive) or Apple's (iCloud)
 servers under your account. That is the trade-off for phone auto-upload and
 off-machine backup. If you are not comfortable with it:
 
-- Point `inbox_dir`/`archive_dir`/`onedrive_backups_dir` in `config.toml` at
-  local folders and move audio over USB, or
-- keep the cloud inbox but set `onedrive_backups_dir` to a local path so
+- Point `inbox_dir`/`archive_dir`/`cloud_backups_dir` in `config.toml` at
+  local folders and move audio over USB (`onedrive_backups_dir` is still
+  accepted as the old name), or
+- keep the cloud inbox but set `cloud_backups_dir` to a local path so
   snapshots never leave the machine (then arrange your own off-machine
   backup — a copy on an encrypted USB drive, for example).
 

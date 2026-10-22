@@ -12,18 +12,19 @@ backups_dir = "backups"            # local DB snapshots
 inbox_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox'
 inbox_text_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\inbox-text'   # dictated quick notes
 archive_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\archive'
-onedrive_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'  # any cloud folder
+cloud_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'  # OneDrive or iCloud Drive; the old name onedrive_backups_dir still works
 # On a Mac with an iPhone they live in iCloud Drive (Shortcuts save to a fixed
 # folder there, no picker):
 # inbox_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/inbox'
 # inbox_text_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/inbox-text'
 # archive_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/archive'
-# onedrive_backups_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/backups'
+# cloud_backups_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/backups'
 # OneDrive on a Mac lives at '~/Library/CloudStorage/OneDrive-Personal/VoiceJournal/...'.
 
 [time]
 timezone = "America/Chicago"       # IANA name; recorded per source at ingest
 day_rollover_hour = 5              # recordings before 05:00 local count as the previous day
+filename_date = "auto"             # auto | journal | calendar — whose date a recording's filename carries (docs/android.md)
 
 [whisper]
 model = "distil-large-v3"          # benchmarked vs "small": same CPU speed, fewer name errors
@@ -51,6 +52,93 @@ enabled = true                     # false = never call a model, evidence only
 endpoint = "http://localhost:11434"
 model = "llama3.1:8b"              # must be pulled: ollama pull llama3.1:8b
 timeout_sec = 120
+num_ctx = 8192                     # the model's context window for one answer
 default_days = 30                  # window when the question names no time
 max_entries = 8                    # entries quoted as evidence
 max_passages = 4                   # transcript passages quoted as evidence
+max_observations = 6               # imported records (texts, calls, events, ...) quoted as evidence
+max_transactions = 10              # transactions listed under a spend answer
+max_loops = 10                     # open tasks/plans listed
+
+# ---------------------------------------------------------------- connectors
+# Optional per-connector settings for `lifecrm observe <name>`. Every key is
+# optional; uncomment a table to use it. Each connector's doc lists the rest.
+
+# [connectors.android_sms]          # docs/android-texts.md
+# folder = "~/OneDrive/Apps/SMS Backup & Restore"   # where the app uploads
+# account = "+15125550100"          # this phone's own number; scopes mirroring
+# mirror = true                     # only if your backups do not say type="full"
+
+# [connectors.whatsapp]             # docs/whatsapp.md
+# me = "Your Name"                  # your name as your own lines show it (or a list)
+# date_order = "mdy"                # mdy | dmy | ymd — only if the dry run says it had to guess
+# timezone = "America/Chicago"      # the phone's zone, if not [time] timezone
+# exports_dir = "~/Downloads"       # where exports land when no path is given
+
+# [connectors.calendar]             # docs/calendar.md
+# path = "~/Downloads/takeout-20261022T120000Z-001.zip"   # .ics, folder, Takeout or .ical.zip
+# account = "you@example.com"       # names the account a multi-calendar export mirrors
+# horizon_days = 90                 # how far ahead repeating events expand
+# exclude_calendars = ["Holidays in United States"]
+
+# [connectors.contacts]             # docs/contacts.md
+# path = "~/Downloads/contacts.vcf" # a .vcf, a folder of them, a Takeout zip, or an AddressBook folder
+# account = "google:you@example.com"   # set only when you want a vCard's deletions mirrored
+
+# [connectors.notes]                # docs/notes.md
+# path = "~/OneDrive/Notes/Obsidian"   # a folder, a Keep Takeout zip, or NoteStore.sqlite
+# keep_account = "you@gmail.com"    # lets Keep imports mirror deletions when the export cannot say whose it is
+
+# [connectors.finance]              # docs/finance.md
+# path = "~/Documents/Statements"   # folder of downloaded statements (needed to run with no path)
+# For a bank with no preset, a column mapping (header names in the CSV):
+# date_col = "Date"
+# description_col = "Description"
+# amount_col = "Amount"             # or debit_col / credit_col
+# date_format = "%m/%d/%Y"
+# sign = "spend_negative"           # or "spend_positive"
+# currency = "usd"
+# institution = "My Credit Union"
+# account = "1234"                  # the card or account's last four
+# match = "mycu*.csv"               # which files the mapping applies to
+# delimiter = ";"
+
+# [connectors.photos]               # docs/photos.md
+# path = "~/OneDrive/Pictures/Samsung Gallery"   # a folder, a Google Photos Takeout, or a Photos library
+# include_hidden = false            # Mac Photos library: also import the Hidden album
+
+# [connectors.location]             # docs/location.md
+# path = "~/OneDrive/Timeline.json" # Timeline.json, location-history.json, or a Takeout
+
+# [connectors.browser]              # docs/browser.md
+# browser = "chrome"                # chrome | brave | edge | safari | chromium | vivaldi | opera
+# path = "..."                      # a History / History.db file or a profile folder
+# exclude_domains = ["mybank.example"]
+
+# ---------------------------------------------------------------- front ends
+# Optional. The values shown are the defaults.
+
+# [web]                             # `lifecrm serve` (docs/web.md)
+# host = "127.0.0.1"                # 0.0.0.0 for the phone on the same Wi-Fi
+# port = 8765
+# token = ""                        # "random" makes one up at each start
+# log_questions = true              # record questions in recall_log
+# use_llm = true                    # let a running local model phrase answers
+# model = "small"                   # whisper model for voice questions in the page
+# refresh_seconds = 3               # how often to check the live DB for changes
+# dashboard_port = 8001             # where `lifecrm dashboard` listens, for the link
+# allowed_hosts = []                # extra Host names to accept
+
+# [voice]                           # `lifecrm voice` (docs/voice.md); extras: requirements-voice.txt
+# model = "small"                   # whisper model for voice turns: latency first
+# use_llm = true                    # phrase answers with the [ask] model when Ollama is running
+# speak = true
+# voice = "Samantha"                # say -v name (macOS) or SAPI voice name (Windows)
+# max_spoken_chars = 400
+# piper_model = "~/voices/en_US-lessac-medium.onnx"
+# wake_model = "hey_jarvis"
+# docs/voice.md lists the rest: llm_model, vad_filter, device, wake_threshold,
+# silence_rms, silence_sec, max_record_sec.
+
+# [review]                          # `lifecrm review` (docs/review.md)
+# quiet_weeks = 3                   # relationships: people not contacted for this many weeks

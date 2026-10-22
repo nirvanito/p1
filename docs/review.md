@@ -166,15 +166,17 @@ longer want goes the usual way: `entry retract <uuid>`.
 ## Scheduling
 
 The pack is cheap and read-only, so it can be waiting before you sit down
-for the review. The scheduled job runs, weekly (Monday morning, after the
-night's intake):
+for the review. `scripts/install-tasks.ps1` (task "LifeCRM review") and
+`scripts/install-tasks.sh` (`local.lifecrm.review`) register a weekly job,
+Sundays at 19:00. It runs `scripts/review.ps1` / `review.sh`, which logs to
+`data/review.log`:
 
 ```bash
 python -m lifecrm review --lens all --write-only
 ```
 
-which leaves `data\staging\review-all-<week>.md` for the week that just
-ended. The job never writes the database and never runs a model; turning
+That leaves `data\staging\review-all-<week>.md` (and `.json`) for the
+default period, the last full Monday-to-Sunday week. The job never writes the database and never runs a model; turning
 the pack into a brief stays an interactive `/review-week` session.
 
 ## Settings

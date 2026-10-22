@@ -4,8 +4,8 @@ Everything to run Life CRM on a Mac with an iPhone as the phone, from an
 empty Mac to a scheduled, self-checking setup with your texts, contacts,
 photos, notes, calendar and health data alongside the voice journal. The
 Windows laptop + Android combination is covered by
-[new-machine.md](new-machine.md) and [android.md](android.md); the database,
-the commands and the `/log` review loop are identical on both.
+[windows-android.md](windows-android.md) and [android.md](android.md); the
+database, the commands and the `/log` review loop are identical on both.
 
 What changes on a Mac, in one paragraph: the voice journal lives in **iCloud
 Drive** instead of OneDrive (the iPhone's Shortcuts can save there without a
@@ -65,12 +65,12 @@ always run as `/bin/bash scripts/<name>.sh`, so they need no execute bit.
 
 ```
 wrote /Users/alex/LifeCRM/config.toml
-  journal folder        /Users/alex/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal  (iCloud Drive — ...)
-  inbox_dir             .../VoiceJournal/inbox
-  inbox_text_dir        .../VoiceJournal/inbox-text
-  archive_dir           .../VoiceJournal/archive
-  onedrive_backups_dir  .../VoiceJournal/backups
-  timezone              America/Chicago  (from /etc/localtime)
+  journal folder     /Users/alex/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal  (iCloud Drive — ...)
+  inbox_dir          .../VoiceJournal/inbox
+  inbox_text_dir     .../VoiceJournal/inbox-text
+  archive_dir        .../VoiceJournal/archive
+  cloud_backups_dir  .../VoiceJournal/backups
+  timezone           America/Chicago  (from /etc/localtime)
 created in .../VoiceJournal: inbox, inbox-text, archive, backups
 ```
 
@@ -86,8 +86,8 @@ Options when the proposal is wrong: `--journal-root DIR` (another folder),
 `config.toml` (the old one is kept under `data/`). It never creates iCloud
 Drive itself: if iCloud Drive is off, it writes the config, creates nothing,
 and tells you to turn iCloud Drive on and re-run with `--force`.
-(`onedrive_backups_dir` is the setting's historical name; any cloud folder
-works.)
+(`cloud_backups_dir` takes any cloud folder; configs that still say
+`onedrive_backups_dir`, its old name, keep working.)
 
 ### Keep the journal downloaded
 
@@ -212,7 +212,7 @@ Mac does.
 /bin/bash scripts/install-tasks.sh
 ```
 
-Writes four LaunchAgents to `~/Library/LaunchAgents/` and loads them (as you,
+Writes five LaunchAgents to `~/Library/LaunchAgents/` and loads them (as you,
 no sudo):
 
 | job | when | runs |
@@ -220,12 +220,14 @@ no sudo):
 | `local.lifecrm.intake` | daily 07:00 **and at login** | `scripts/transcribe-inbox.sh` — both inboxes; transcripts ready before you sit down |
 | `local.lifecrm.doctor` | daily 08:00 | `scripts/doctor.sh` — invariants on the live database |
 | `local.lifecrm.backup` | daily 21:30 | `scripts/backup.sh` — snapshot, local + iCloud Drive, tiered retention |
-| `local.lifecrm.verify-restore` | Sunday 12:00 | `scripts/verify-restore.sh` — restores the newest snapshot into a scratch folder and checks it |
+| `local.lifecrm.verify-restore` | Sunday 12:00 | `scripts/verify-restore.sh` — `lifecrm verify-backup`: restores the newest snapshot into a scratch folder and checks it |
+| `local.lifecrm.review` | Sunday 19:00 | `scripts/review.sh` — the review pack for the last full week, waiting in `data/staging/` for `/review-week` |
 
 When a run fails, it says so — exactly as on Windows:
 
-- `data/transcribe.log` and `data/doctor.log` carry every line, prefixed with
-  the run's start time, ending in `FAILED (exit N) - see the lines above`.
+- `data/transcribe.log`, `data/doctor.log` and `data/review.log` carry every
+  line, prefixed with the run's start time, ending in
+  `FAILED (exit N) - see the lines above`.
   A recording intake chokes on is named there and stays in the inbox.
 - `launchctl print gui/$(id -u)/local.lifecrm.intake` shows
   **last exit code** — the Mac's version of Task Scheduler's *Last Run
@@ -253,12 +255,17 @@ with `.venv/bin/python -m lifecrm ...`.
 | source | where it lives | command |
 |---|---|---|
 | Messages (iMessage, SMS, RCS) | the Mac's own `~/Library/Messages/chat.db` (with *Messages in iCloud* on, the full history) | `observe mac_messages` |
-| Texts and calls from the phone | an unencrypted **Finder** backup: Finder › your iPhone › General › *Back up all of the data on your iPhone to this Mac*, untick *Encrypt local backup*, **Back Up Now** | `observe ios_messages`, `observe ios_calls` — see [texts.md](texts.md) |
+| Texts from the phone (instead of `chat.db`) | an unencrypted **Finder** backup: Finder › your iPhone › General › *Back up all of the data on your iPhone to this Mac*, untick *Encrypt local backup*, **Back Up Now** | `observe ios_messages` — see [texts.md](texts.md) (an unencrypted backup is expected to lack call history) |
 | Contacts | the Mac's Contacts stores (iCloud contacts included) | `observe contacts` |
 | Photos (metadata only — time, place, camera; never the pixels) | `~/Pictures/Photos Library.photoslibrary` | `observe photos` |
 | Apple Notes | `~/Library/Group Containers/group.com.apple.notes` | `observe notes` |
 | Calendar | Calendar app › select a calendar › File › Export › Export… → an `.ics` | `observe calendar ~/Downloads/<name>.ics` |
-| Apple Health | iPhone Health app › your picture › **Export All Health Data** › AirDrop to the Mac (→ `~/Downloads/export.zip`) or Save to Files › iCloud Drive | `health import ~/Downloads/export.zip` |
+| Apple Health | iPhone Health app › your picture › **Export All Health Data** › AirDrop to the Mac (→ `~/Downloads/export.zip`) or Save to Files › iCloud Drive | `health import` (finds the newest export) or `health import ~/Downloads/export.zip` — see [apple-health.md](apple-health.md) |
+| Calls | the Mac's call history, with FaceTime › Settings › **Calls from iPhone** on | `observe ios_calls` — see [calls.md](calls.md) |
+| Safari history | `~/Library/Safari/History.db` (the iPhone's Safari syncs into it) | `observe browser`, with `[connectors.browser] browser = "safari"` if Chrome is also installed — see [browser.md](browser.md) |
+| WhatsApp | on the iPhone: chat name › **Export Chat** › AirDrop (→ `~/Downloads`) | `observe whatsapp` — set `[connectors.whatsapp] me` first; see [whatsapp.md](whatsapp.md) |
+| Bank and card statements | Apple Card's monthly CSV, a bank's CSV or OFX/QFX | `observe finance <file or folder>` — see [finance.md](finance.md) |
+| Location | only Google Maps Timeline on the iPhone; Apple's Significant Locations cannot be exported | `observe location <file>` — see [location.md](location.md) |
 | AI chats (Claude, ChatGPT) | the vendor's export zip | `observe ai_chat <zip>` — see [ai-chat.md](ai-chat.md) |
 
 Use **one** route for texts per account: the Mac's `chat.db` and an iPhone
@@ -290,14 +297,16 @@ text notes (Quick Note) still work, since they never load whisper.
 To see a fully populated system before your own data exists:
 
 ```
-.venv/bin/python -m lifecrm demo --combo iphone
+/bin/bash scripts/demo.sh            # builds demo/iphone/ and opens the web UI on :8765
+.venv/bin/python -m lifecrm demo --combo iphone     # or just build it
 ```
 
 builds a separate demo project from the built-in persona (Alex Rivera in
-Austin — journal, texts, calls, contacts, photos, notes, calendar, health) in
-each source's real export format, imported through the same connectors your
-data uses. `lifecrm demo --help` says where it puts it and how to open the
-dashboard or `ask` against it.
+Austin — journal, texts, calls, contacts, photos, notes, calendar, Safari,
+WhatsApp, Apple Card, AI chats, Apple Health) in each source's real export
+format, imported through the same connectors your data uses. It prints the
+demo root and the commands to try against it; [demo.md](demo.md) has the
+rest.
 
 ## 10. Day to day
 

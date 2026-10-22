@@ -93,7 +93,7 @@ the original machine's file paths; they are provenance text, never reopened.)
    .venv\Scripts\python.exe -m lifecrm sql "SELECT COUNT(*) AS entries FROM entries"
    ```
 6. `powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1` to
-   schedule intake, doctor, backup and verify-restore again.
+   schedule intake, doctor, backup, verify-restore and review again.
 
 ### Mac
 
@@ -144,6 +144,11 @@ category with their measurements, closure states, and links. `[[Name]]` marks
 a person/place/thing; `_entities/<slug>.md` lists every day that entity
 appears. Any text editor from any decade can read it; Obsidian renders the
 links as a graph.
+
+**Obsidian** (`--format obsidian`): the markdown export plus a digest of the
+day's observed records, one note per person, place or thing, and loop and
+index notes (`Loops.md`, `Index.md`). It is the same plain text, laid out
+as a vault ([obsidian.md](obsidian.md)).
 
 **JSONL** (`--format jsonl`): one file per database table, one JSON object
 per line, cross-referenced by UUIDs and names rather than database ids.

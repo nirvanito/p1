@@ -154,3 +154,14 @@ Shortcuts saving into iCloud Drive or the OneDrive file provider. Please run:
    you pin the folder (step 8: any iCloud Drive folder, only one under
    Shortcuts, or — for OneDrive — not at all) — those three facts replace
    the guesses in the docs.
+
+## Beyond capture
+
+- **Reading it on the phone:** open the computer's web UI in Safari and add
+  it to the Home Screen ([web.md, "On your phone"](web.md#on-your-phone)).
+- **The phone's other data** comes in on the computer. On a Mac that means
+  Messages, calls, Contacts, Photos, Notes and Apple Health
+  ([mac.md](mac.md)). Safari history syncs into the Mac's Safari through
+  iCloud ([browser.md](browser.md)). Apple's own location history cannot be
+  exported; only Google Maps Timeline on the iPhone can
+  ([location.md](location.md)).

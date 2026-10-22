@@ -45,8 +45,8 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 `setup.ps1` finds or installs Python 3.12 (faster-whisper's dependencies
 have no wheels for newer Pythons yet), creates `.venv`, installs the
-requirements, copies `config.example.toml` to `config.toml` if there is none,
-and creates an empty database. Re-running it is safe.
+requirements, runs `lifecrm configure` if there is no `config.toml` yet
+(section 3), and creates an empty database. Re-running it is safe.
 
 Keep the clone **outside** OneDrive (for example `C:\Users\<you>\lifecrm`):
 the database must not be cloud-synced while it is open. Its snapshots go to
@@ -54,7 +54,9 @@ OneDrive on purpose, through `backup`.
 
 ## 2. The OneDrive folders
 
-In Explorer, create:
+`lifecrm configure` (run by `setup.ps1`) creates these inside your OneDrive
+folder; it never creates OneDrive itself, so sign in to OneDrive first. To
+make them by hand, create in Explorer:
 
 ```
 OneDrive\VoiceJournal\inbox         <- audio notes from the phone
@@ -77,16 +79,20 @@ whichever OneDrive the phone signs into.
 lifecrm configure
 ```
 
-It writes `config.toml`: the four OneDrive folders, your timezone, and the
-whisper model. Re-run it any time; `lifecrm configure --help` lists what it
-asks. Prefer to edit by hand? The keys that matter:
+It writes `config.toml`: the four OneDrive folders and Windows' timezone as
+an IANA name. Everything else is `config.example.toml`'s defaults, comments
+included, such as the whisper model. `setup.ps1` already ran it once. To
+start over, run `lifecrm configure --force`, which keeps the replaced file
+under `data\`. `lifecrm configure --help` lists the options
+(`--journal-root`, `--timezone`, `--no-mkdir`). Prefer to edit by hand? The
+keys that matter:
 
 ```toml
 [paths]
 inbox_dir = '~\OneDrive\VoiceJournal\inbox'
 inbox_text_dir = '~\OneDrive\VoiceJournal\inbox-text'
 archive_dir = '~\OneDrive\VoiceJournal\archive'
-onedrive_backups_dir = '~\OneDrive\VoiceJournal\backups'
+cloud_backups_dir = '~\OneDrive\VoiceJournal\backups'
 
 [time]
 timezone = "America/Chicago"     # your IANA zone
@@ -142,19 +148,21 @@ powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 
 This registers, for your user (no admin):
 
-| task | when | does |
-|---|---|---|
-| LifeCRM intake | daily 07:00 and at logon | transcribes audio, imports text notes |
-| LifeCRM backup | daily 21:30 | tiered snapshots, local + OneDrive |
-| LifeCRM verify-restore | Sundays 12:00 | restores the newest snapshot into a scratch folder and runs doctor on it |
+| task | when | does | log |
+|---|---|---|---|
+| LifeCRM intake | daily 07:00 and at logon | transcribes audio, imports text notes | `data\transcribe.log` |
+| LifeCRM doctor | daily 08:00 | doctor against the live database | `data\doctor.log` (WARN/FAIL lines) |
+| LifeCRM backup | daily 21:30 | tiered snapshots, local + OneDrive | — |
+| LifeCRM verify-restore | Sundays 12:00 | `lifecrm verify-backup`: restores the newest snapshot into a scratch folder, runs doctor on it, checks every table against live | `data\verify-restore.log` |
+| LifeCRM review | Sundays 19:00 | last full week's review pack in `data\staging\`, for `/review-week` | `data\review.log` |
 
 On a laptop:
 
-- **Battery.** Open Task Scheduler › each LifeCRM task › Properties ›
-  *Conditions*. If "Start the task only if the computer is on AC power" or
-  "Stop if the computer switches to battery power" is ticked, untick both —
-  Windows' default for a task registered from a script is to tick them, and
-  then a laptop on battery skips (or kills) the run without a word.
+- **Battery.** The script registers every task to start on battery and to
+  keep running when the charger is pulled. Windows' default for a scripted
+  task is the opposite, and a laptop on battery would then skip (or kill)
+  the run without a word. To check, open Task Scheduler › a LifeCRM task ›
+  Properties › *Conditions*: both power boxes should be unticked.
 - **Sleep.** A task due while the lid is closed runs when the laptop wakes
   ("run as soon as possible after a missed start"); intake also runs at every
   logon.
@@ -191,14 +199,20 @@ counts, date spans and sample lines; then run the same command with
 |---|---|---|---|
 | Voice notes | §1 Voice Recorder + Autosync | `VoiceJournal\inbox` | `lifecrm intake` (scheduled) |
 | Text notes | §2 Automate + sync | `VoiceJournal\inbox-text` | `lifecrm intake` (scheduled) |
-| Health | §3 Samsung Health → Health Connect → scheduled export | Drive/OneDrive `.zip` | `lifecrm health import "<zip>"` |
-| Texts and calls | §4 SMS Backup & Restore, scheduled | `OneDrive\SMSBackupRestore` | `lifecrm observe android_sms "<sms-….xml>"` |
-| Contacts | §5 Contacts › Export | a `.vcf` | `lifecrm observe contacts "<Contacts.vcf>"` |
+| Health | §3 Samsung Health → Health Connect → scheduled export | Drive/OneDrive `.zip` | `lifecrm health import ["<zip>"]` |
+| Texts and calls | §4 SMS Backup & Restore, scheduled | `OneDrive\SMSBackupRestore` | `lifecrm observe android_sms ["<folder or sms-….xml>"]` ([android-texts.md](android-texts.md)) |
+| Contacts | §5 Contacts › Export | a `.vcf` | `lifecrm observe contacts ["<Contacts.vcf>"]` |
 | Calendar | §6 Google Takeout | `Takeout\Calendar` | `lifecrm observe calendar "<…\Takeout\Calendar>"` |
 | Keep notes | §6 Google Takeout | `Takeout\Keep` | `lifecrm observe notes "<…\Takeout\Keep>"` |
 | Photos (metadata) | §6 Takeout, or Gallery › Sync with OneDrive | `Takeout\Google Photos` / `OneDrive\Pictures\…` | `lifecrm observe photos "<folder>"` |
+| Location visits | §6 Timeline › Export Timeline data | `Timeline.json` | `lifecrm observe location ["<Timeline.json>"]` ([location.md](location.md)) |
+| Browser history | Chrome sync on the phone | the laptop's Chrome/Edge/Brave profile | `lifecrm observe browser` ([browser.md](browser.md)) |
+| WhatsApp | ⋮ › More › Export chat › Quick Share | `Downloads\WhatsApp Chat with ….zip` | `lifecrm observe whatsapp ["<zip>"]`; set `[connectors.whatsapp] me` first ([whatsapp.md](whatsapp.md)) |
+| Bank and card | the bank's website | a `.csv` / `.ofx` / `.qfx` | `lifecrm observe finance "<file or folder>"` ([finance.md](finance.md)) |
 | AI chats | Claude / ChatGPT data export | a `.zip` | `lifecrm observe ai_chat "<zip>"` ([ai-chat.md](ai-chat.md)) |
 
+A path in brackets is optional: with none, the connector looks where that
+export usually lands (`lifecrm where` shows what it finds).
 `lifecrm connectors` lists the connectors this install has, with each one's
 last run. Health has its own walkthrough: [health-connect.md](health-connect.md).
 
@@ -214,14 +228,17 @@ Linking a handle attributes every text, call and invite that used it; it is
 always your decision.
 
 **Undo.** `lifecrm imports list` shows every run; `lifecrm imports retract
-<uuid>` takes one back out (kept on disk, hidden everywhere). Health:
-`lifecrm health retract --source-file "<zip name>"`.
+<uuid>` takes one back out (kept on disk, hidden everywhere), and `lifecrm
+imports restore <uuid>` puts it back. Health:
+`lifecrm health retract --source-file "<zip name>"` (and `health restore`).
 
 ## 8. Asking and looking (on the laptop)
 
 ```
 lifecrm ask "how did I sleep last week"
+lifecrm serve                     # the web UI: http://127.0.0.1:8765/  (Ctrl+C stops)
 lifecrm dashboard                 # http://127.0.0.1:8001/-/dashboards  (Ctrl+C stops)
+lifecrm voice --text "when did I last talk to Mom"   # voice.md for the microphone
 ```
 
 `ask` answers from the database with citations, deterministically. With a
@@ -235,8 +252,8 @@ rerun it to refresh.
 Both servers listen only on the laptop itself unless you say otherwise:
 
 ```
-lifecrm dashboard --host 0.0.0.0
-lifecrm web --host 0.0.0.0        # the phone-friendly page, if your version has it (lifecrm --help)
+lifecrm serve --host 0.0.0.0 --token random   # the phone-friendly page, port 8765 (web.md)
+lifecrm dashboard --host 0.0.0.0              # the charts, port 8001
 ```
 
 1. **Windows Firewall.** The first time, Windows asks whether Python may
@@ -246,50 +263,55 @@ lifecrm web --host 0.0.0.0        # the phone-friendly page, if your version has
    the firewall blocks the phone even after you allowed Python.
 3. **Find the laptop's address:** `ipconfig` › the Wi-Fi adapter's *IPv4
    Address*, e.g. `192.168.1.23`. On the phone (same Wi-Fi), open
-   `http://192.168.1.23:8001/-/dashboards` (the web page prints its own
-   address and port when it starts).
+   `http://192.168.1.23:8765/` for the web page (`serve` prints the address
+   with its token when it starts) or `http://192.168.1.23:8001/-/dashboards`
+   for the charts.
 4. Samsung Internet or Chrome › menu › **Add page to › Home screen** makes it
    one tap next time.
 
 Missed or refused the firewall prompt? In an **administrator** PowerShell,
-allow the port on Private networks only (add the web page's port too):
+allow the ports on Private networks only:
 
 ```
-New-NetFirewallRule -DisplayName "Life CRM (LAN)" -Direction Inbound -Protocol TCP -LocalPort 8001 -Profile Private -Action Allow
+New-NetFirewallRule -DisplayName "Life CRM (LAN)" -Direction Inbound -Protocol TCP -LocalPort 8765,8001 -Profile Private -Action Allow
 Remove-NetFirewallRule -DisplayName "Life CRM (LAN)"     # to take it away again
 ```
 
-These pages have **no login**. Use them only on your own Wi-Fi: never on a
-Public profile, never port-forwarded. Guest networks and "AP isolation"
+The dashboard has **no login**, and the web page has only the `--token` key.
+Use them only on your own Wi-Fi: never on a Public profile, never
+port-forwarded. Guest networks and "AP isolation"
 block phone-to-laptop traffic by design.
 
 ## 10. The demo — no phone needed
 
 ```
-lifecrm demo --combo android
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1   # builds demo\android\, opens the web UI on :8765
+lifecrm demo --combo android                                # or just build it
 ```
 
 builds a separate, throwaway project root holding six weeks of a fictional
 life (Alex Rivera in Austin: a best friend Jake who loves Veracruz, a Lake
-Bled trip four years ago, a board deck due) rendered as the Samsung-side
-exports — voice notes, SMS Backup & Restore XML, a Health Connect export,
-a contacts `.vcf`, Takeout calendar/Keep/photos — and imports them through
-the same commands as above. It never touches your own data. It prints the
-demo root; point any command at it with `--root`:
+Bled trip four years ago, a board deck due). The life is rendered as the
+Samsung-side exports: the phone's notes, SMS Backup & Restore XML, a Health
+Connect export, a contacts `.vcf`, a Takeout with calendar and Keep,
+Samsung Gallery photos, `Timeline.json`, Chrome history, a WhatsApp export,
+Chase CSVs and AI chat exports. It imports them through the same commands
+as above, and never touches your own data. It prints the demo root; point
+any command at it with `--root`:
 
 ```
 lifecrm --root "<demo root>" status
-lifecrm --root "<demo root>" ask "where does Jake like to eat"
+lifecrm --root "<demo root>" ask "where is Jake from"
 lifecrm --root "<demo root>" dashboard --host 0.0.0.0
 ```
 
-`lifecrm demo --help` has the options.
+[demo.md](demo.md) has the rest; `lifecrm demo --help` has the options.
 
 ## 11. Backups
 
 `backup` (scheduled daily) keeps tiered snapshots in `backups\` and a copy in
-`OneDrive\VoiceJournal\backups`; `verify-restore` (weekly) proves the newest
-one restores. Restoring, and moving to a new laptop: [restore.md](restore.md)
+`OneDrive\VoiceJournal\backups`; `verify-restore` (weekly, `lifecrm
+verify-backup`) proves the newest one restores. Restoring, and moving to a new laptop: [restore.md](restore.md)
 and [new-machine.md](new-machine.md).
 
 ## Troubleshooting

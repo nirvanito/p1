@@ -1,5 +1,5 @@
 # Snapshot the database (SQLite backup API — never a raw copy of a live WAL DB)
-# to backups\ and the OneDrive backups folder, with tiered retention.
+# to backups\ and the cloud backups folder, with tiered retention.
 #   powershell -ExecutionPolicy Bypass -File scripts\backup.ps1
 
 $ErrorActionPreference = "Stop"

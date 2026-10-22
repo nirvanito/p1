@@ -27,7 +27,7 @@ gate is never bypassed from a phone.
 
 | page | what it shows |
 |---|---|
-| **Ask** | A question box. The answer is exactly `lifecrm ask --json`'s (`recall.answer()`): every claim carries a citation chip — `M1` a metric series, `E2` a journal entry, `P3` a transcript passage, `O4` an observed record (once observed retrieval is in `ask`). Tap a chip to expand the evidence: the series as a small chart with mean/min/max, the entry with the transcript passage it came from, the observed row with its stream, time, who, text and the import that brought it in. Under each answer: the time window it used, and *answered deterministically* or the local model that phrased it (its citations are checked). Example questions come from the demo persona on the demo database, generic ones otherwise. |
+| **Ask** | A question box. The answer is exactly `lifecrm ask --json`'s (`recall.answer()`): every claim carries a citation chip — `M1` a metric series, `E2` a journal entry, `P3` a transcript passage, `O4` an observed record. Tap a chip to expand the evidence: the series as a small chart with mean/min/max, the entry with the transcript passage it came from, the observed row with its stream, time, who, text and the import that brought it in. Under each answer: the time window it used, and *answered deterministically* or the local model that phrased it (its citations are checked). Example questions come from the demo persona on the demo database, generic ones otherwise. |
 | **Today** | Pick a day (date picker, prev/next, or tap a square on the five-week heat map). The day's summary, mood / energy / slept, health numbers from sensor imports, journal entries grouped by category with kind badges, and observed records (texts, calls, chats, ...) grouped by stream — styled as *observed*, each citing its import. |
 | **People** | Everyone of type person, most recent contact first — across both tiers (the latest journal mention vs. the latest text/call/chat naming one of their handles). A person page adds aliases, linked handles, journal mentions, recent observed records, contact-card fields, and *you → them* / *them → you*. |
 | **Loops** | Open tasks and plans, overdue first, then by due date; the last few closed. Closing one is `lifecrm entry close <uuid>` — or say it in tonight's note. |
@@ -142,8 +142,7 @@ paths — never questions or the key).
 
 ## JSON API
 
-Everything the page shows is plain JSON, for scripts or a future voice
-front-end. Errors are JSON too: `{"error": "...", "status": 400}`.
+Everything the page shows is plain JSON, for scripts or another front end. Errors are JSON too: `{"error": "...", "status": 400}`.
 
 | endpoint | returns |
 |---|---|

@@ -49,7 +49,7 @@ Then write:
 ```
 
 The command prints an import uuid. `lifecrm imports retract <uuid>` undoes the
-whole run.
+whole run (reversible with `lifecrm imports restore <uuid>`).
 
 Accepted targets: the `.zip`, an unzipped directory, or `conversations.json`
 itself.
@@ -153,6 +153,7 @@ exists to answer.
 .venv/Scripts/python -m lifecrm observe ai_chat <export> --apply
 .venv/Scripts/python -m lifecrm imports list
 .venv/Scripts/python -m lifecrm imports retract <uuid>
+.venv/Scripts/python -m lifecrm imports restore <uuid>
 .venv/Scripts/python -m lifecrm handles list [--all]
 .venv/Scripts/python -m lifecrm handles link <kind:value> --entity <id>
 .venv/Scripts/python -m lifecrm handles ignore <kind:value>

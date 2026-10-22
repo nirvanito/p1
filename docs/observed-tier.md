@@ -4,7 +4,12 @@ Status: **built as schema v4** (2026-08-24). The schema, the shared write
 layer (`lifecrm/domain/observations.py`), the connector contract
 (`lifecrm/connectors/base.py`) and the first connector
 ([ai_chat](ai-chat.md) — Claude and ChatGPT exports) are implemented and
-tested. Remaining connectors (texts, calendar, finance, photos) are not.
+tested. Every planned connector has been built since (2026-09-24 and
+2026-10-22): texts (`ios_messages`, `mac_messages`, `android_sms`,
+`whatsapp`), calls (`ios_calls`), `contacts`, `calendar`, `notes`,
+`finance`, `photos`, `location` and `browser`. `lifecrm connectors` lists
+them, and each has its own doc page. This page remains the design they all
+follow.
 
 ## The problem this solves
 
@@ -208,6 +213,7 @@ classify(row, rec)               -> 'identical'|'refreshed'|'update'|'conflict'
 build_plan(conn, scan)           -> plan            # newer-wins, conflicts surfaced
 apply_plan(conn, scan, plan)     -> counts          # one transaction, one imports row
 retract_import(conn, import_uuid)                   # status='retracted', audited
+restore_import(conn, import_uuid)                   # puts back exactly what retract hid
 ```
 
 `classify` is lifted from `domain/health.py` — newer `last_modified_at` wins,
@@ -218,11 +224,15 @@ reinventing it.
 CLI, mirroring `health import` (dry-run by default, `--apply` to write):
 
 ```
-lifecrm observe <connector> <target>            # dry-run report
-lifecrm observe <connector> <target> --apply
-lifecrm observe --list                          # connectors and last run time
-lifecrm observe retract <import-uuid>
+lifecrm observe <connector> [<target>]         # dry-run report
+lifecrm observe <connector> [<target>] --apply
+lifecrm connectors                             # connectors and last run time
+lifecrm imports list
+lifecrm imports retract <import-uuid>
+lifecrm imports restore <import-uuid>          # puts back exactly what retract hid
 ```
+
+(As built. The sketch had `observe --list` and `observe retract`.)
 
 Note the naming collision: `lifecrm import` already means "import a text
 transcript as a journal source." Hence `observe` for the new group. `health
@@ -284,8 +294,8 @@ the observed tier is real.
 
 - No fuzzy name resolution from message bodies (derived, not stored).
 - No media in the database — `media_path` only, per the existing rule.
-- No importer writes to `entries`, `measurements`, `mentions` or
-  `entity_aliases`, under any circumstance.
+- No importer writes to `entries`, `measurements`, `mentions`,
+  `entity_aliases` or `entity_links`, under any circumstance.
 - No federated query layer. Every connector copies into `lifecrm.db`; nothing is
   read live from an app at question time.
 - No LLM anywhere in the import path. Connectors are deterministic parsers, the
