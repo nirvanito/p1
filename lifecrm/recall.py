@@ -1791,8 +1791,10 @@ def find_entities(conn: sqlite3.Connection, question: str) -> list[dict]:
 
 # ---------------------------------------------------------------- observed tier
 
-TEXT_STREAMS = ("imessage", "sms", "rcs", "android_sms", "android_mms", "whatsapp")
+TEXT_STREAMS = ("imessage", "sms", "rcs", "android_sms", "android_mms", "whatsapp",
+                "instagram_dm", "messenger", "telegram", "linkedin_message")
 CALL_STREAMS = ("ios_call", "android_call")
+EMAIL_STREAMS = ("email",)
 AI_STREAMS = ("claude_chat", "chatgpt_chat")
 # Reactions and thread events carry no prose of their own: searching them
 # only ever matches the group name they inherit.
@@ -1809,17 +1811,30 @@ STREAM_GROUPS: dict[str, tuple[str, ...]] = {
     "place visit": ("place_visit",),
     "web visit": ("browser_visit",),
     "AI chat": AI_STREAMS,
+    "email": EMAIL_STREAMS,
+    "search": ("web_search",),
+    "video": ("video_watch",),
+    "workout": ("workout",),
+    "listening": ("music_play",),
+    "highlight": ("highlight",),
+    "book": ("book",),
+    "food": ("food_log",),
+    "nutrition day": ("nutrition_day",),
+    "ride": ("ride",),
+    "food order": ("food_order",),
+    "LinkedIn connection": ("linkedin_connection",),
 }
 STREAM_LABELS = {s: label for label, streams in STREAM_GROUPS.items()
                  for s in streams}
 AI_NAMES = {"claude_chat": "Claude", "chatgpt_chat": "ChatGPT"}
 # What 'when did I last talk to X' counts as contact.
-CONTACT_GROUPS = ("text", "call", "calendar")
+CONTACT_GROUPS = ("text", "call", "calendar", "email")
 # Where a place's visits are: a Timeline visit there, an event held there.
 _VISIT_STREAMS = ("place_visit", "calendar_event")
 # What a recap of a day lists beside its entries: where you were and what
 # you did there, not every message and web page.
-_RECAP_STREAMS = ("calendar_event", "place_visit", "photo", "txn") + CALL_STREAMS
+_RECAP_STREAMS = ("calendar_event", "place_visit", "photo", "txn", "workout", "ride",
+                  "food_order") + CALL_STREAMS
 # What a journal entry says when it was a call or a text — the confirmed
 # side of 'when did I last CALL Mom'.
 _CHANNEL_WORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
@@ -1830,7 +1845,9 @@ _CHANNEL_WORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 # The span of a search that was not clipped to the window.
 ALL_RECORDS = "all records"
-_UNTIMED = ("contact card", "note", "transaction")
+# Dated by the day only (a placeholder time): never print a clock time.
+_UNTIMED = ("contact card", "note", "transaction", "book", "nutrition day",
+            "LinkedIn connection")
 
 # Question words that narrow the observed search to some streams.
 STREAM_WORDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
@@ -2525,7 +2542,9 @@ def last_contact(conn: sqlite3.Connection, cfg: Config, family: list[int],
     for group in groups:
         group_streams = STREAM_GROUPS[group]
         clause, fargs = _party_clause(family)
-        if group == "text":
+        if group in ("text", "email"):
+            # An email, like a text, is contact only when it passed between
+            # you and them — not a thread they were merely copied on.
             sent, sargs = _party_clause(family, sender_only=True)
             if sender_only:
                 clause, fargs = sent, sargs
