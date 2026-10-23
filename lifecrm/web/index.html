@@ -606,13 +606,25 @@ function initials(name) {
   return ((words[0] || "?")[0] + (words.length > 1 ? words[words.length - 1][0] : "")).toUpperCase();
 }
 function plural(n, one, many) { return n + " " + (n === 1 ? one : (many || one + "s")); }
+function fmtMoney(v, unit) {
+  if (v === null || v === undefined) return "–";
+  const cur = String(unit || "").toUpperCase();
+  const sym = { USD: "$", EUR: "€", GBP: "£" }[cur];
+  const text = Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return sym ? sym + text : (text + (cur ? " " + cur : ""));
+}
 
 const STREAMS = {
   imessage: "iMessage", sms: "SMS", rcs: "RCS", text_reaction: "Reactions", text_event: "Thread events",
   android_sms: "SMS", android_mms: "MMS", android_call: "Calls", ios_call: "Calls", whatsapp: "WhatsApp",
   claude_chat: "Claude", chatgpt_chat: "ChatGPT", calendar_event: "Calendar", contact_card: "Contacts",
   note: "Notes", txn: "Transactions", photo: "Photos", place_visit: "Places", browser_visit: "Browsing",
+  email: "Email", instagram_dm: "Instagram", messenger: "Messenger", telegram: "Telegram",
+  linkedin_message: "LinkedIn messages", linkedin_connection: "LinkedIn", web_search: "Searches",
+  video_watch: "YouTube", workout: "Workouts", music_play: "Listening", highlight: "Highlights",
+  book: "Books", food_log: "Food log", nutrition_day: "Nutrition", ride: "Rides", food_order: "Food orders",
 };
+const FOOD_LABELS = { energy: "Energy", protein: "Protein", carbohydrate: "Carbs", fat: "Fat", fiber: "Fiber" };
 const streamLabel = st => STREAMS[st] || String(st || "").replace(/_/g, " ");
 const SOURCE_TYPES = { audio: "voice note", pasted: "pasted text", phone_transcript: "phone dictation", manual: "typed note" };
 
@@ -724,7 +736,7 @@ function chart(c) {
     lastW = W;
     const H = c.height || 150;
     const m = c.compact ? { l: 2, r: 46, t: 8, b: 4 } : { l: 38, r: 50, t: 10, b: 22 };
-    const dates = dateRange(c.start, c.end);
+    const dates = c.dates || dateRange(c.start, c.end);
     const n = Math.max(1, dates.length);
     const lines = c.lines.map(l => ({ ...l, byDate: new Map(l.points.map(p => [p.date, p.value])) }));
     const values = lines.flatMap(l => l.points.map(p => p.value)).filter(v => typeof v === "number");
@@ -798,7 +810,7 @@ function chart(c) {
       if (hot) hot.classList.add("hot");
       const rows = lines.map(l => {
         const v = l.byDate.get(dates[i]);
-        return { color: lines.length > 1 ? l.color : null, text: (lines.length > 1 ? l.name + ": " : "") + (typeof v === "number" ? fmtValue(v, c.unit) : "no data") };
+        return { color: lines.length > 1 ? l.color : null, text: (lines.length > 1 ? l.name + ": " : "") + (typeof v === "number" ? fmtValue(v, l.unit !== undefined ? l.unit : c.unit) : "no data") };
       });
       showTip(ev, dates[i], rows);
     };
@@ -810,7 +822,7 @@ function chart(c) {
   };
   if (window.ResizeObserver) new ResizeObserver(draw).observe(wrap);
   else setTimeout(draw, 0);
-  const box = h("div", null, c.lines.length > 1 ? h("div", { class: "legend" }, c.lines.map(l => h("span", null, h("i", { style: "background:" + l.color }), l.name))) : null, wrap);
+  const box = h("div", null, c.lines.length > 1 && !c.hideLegend ? h("div", { class: "legend" }, c.lines.map(l => h("span", null, h("i", { style: "background:" + l.color }), l.name))) : null, wrap);
   return box;
 }
 
@@ -1138,6 +1150,8 @@ async function viewDay(dateArg) {
     parts.push(section("Health", null, h("div", { class: "tiles" }, d.health.map(m => h("div", { class: "tile", title: "sensor import · " + plural(m.records, "record") + (m.source_files.length ? " · " + m.source_files.join(", ") : "") },
       h("div", { class: "label" }, m.label), h("div", { class: "value" }, fmtValue(m.value, "").replace(/ $/, ""), h("span", { class: "unit" }, m.unit)), h("div", { class: "note" }, "sensor · " + plural(m.records, "record")))))));
   }
+  const activity = activitySection(d.activity || {});
+  if (activity) parts.push(activity);
   if (d.entries_count) {
     parts.push(h("section", { class: "section" }, h("h3", null, "Journal", h("span", { class: "count" }, "· " + plural(d.entries_count, "entry", "entries"))),
       d.by_category.map(g => h("div", { style: "margin-bottom:12px" },
@@ -1159,6 +1173,41 @@ async function viewDay(dateArg) {
         d.next ? h("a", { class: "btn", href: "#/today/" + d.next }, fmtDay(d.next), icon("right")) : null)));
   }
   fill(body, ...parts);
+}
+
+// What the day's imports say you did, added up (api._day_activity). Every
+// tile is observed; every row links to the record it came from.
+function activitySection(a) {
+  const tiles = [], rows = [];
+  const link = (uuid, main, meta, side) => h("a", { class: "link-row", href: "#/obs/" + uuid },
+    h("div", { class: "row-main" }, h("div", { class: "row-title" }, main), meta ? h("div", { class: "row-meta" }, meta) : null),
+    side ? h("div", { class: "row-side" }, side) : null);
+  if (a.workouts) {
+    tiles.push(tile("Workouts", String(a.workouts.count), fmtValue(a.workouts.minutes, "min")));
+    for (const w of a.workouts.items) rows.push(link(w.uuid, w.title || "Workout", [w.local_time ? w.local_time.slice(11) : null, w.origin_app, w.text].filter(Boolean).join(" · "), w.minutes !== null && w.minutes !== undefined ? fmtValue(w.minutes, "min") : null));
+  }
+  if (a.listening) {
+    tiles.push(tile("Listening", fmtValue(a.listening.minutes, "min"), plural(a.listening.tracks, "track") + (a.listening.plays !== a.listening.tracks ? " · " + plural(a.listening.plays, "play") : "")));
+    for (const t of a.listening.top) rows.push(link(t.uuid, t.title || "Track", t.by ? "listened · " + t.by : "listened", fmtValue(t.minutes, "min")));
+  }
+  if (a.searches) tiles.push(tile("Searches", String(a.searches.count), "Google & YouTube"));
+  if (a.food) {
+    const kcal = a.food.totals.find(t => t.key === "energy");
+    tiles.push(tile("Food log", kcal ? fmtValue(kcal.value, "kcal") : plural(a.food.foods, "food"), a.food.basis === "nutrition_day" ? "daily summary" : plural(a.food.foods, "food") + " summed"));
+    const line = a.food.totals.filter(t => t.key !== "energy").map(t => (FOOD_LABELS[t.key] || t.key) + " " + fmtValue(t.value, t.unit)).join(" · ");
+    if (a.food.uuids.length) rows.push(link(a.food.uuids[0], "Food log totals" + (kcal ? " · " + fmtValue(kcal.value, "kcal") : ""), [line, a.food.foods ? plural(a.food.foods, "food") + " logged" : null].filter(Boolean).join(" · "), null));
+  }
+  for (const [key, label, verb] of [["rides", "Rides", "ride"], ["orders", "Food orders", "order"]]) {
+    const r = a[key];
+    if (!r) continue;
+    tiles.push(tile(label, String(r.count), r.total !== null && r.total !== undefined ? fmtMoney(r.total, r.unit) : null));
+    for (const it of r.items) rows.push(link(it.uuid, it.title || verb, [it.local_time ? it.local_time.slice(11) : null, it.origin_app, it.text].filter(Boolean).join(" · "), it.value !== null && it.value !== undefined ? fmtMoney(it.value, it.unit) : null));
+  }
+  if (!tiles.length) return null;
+  return h("section", { class: "section" }, h("h3", null, "Activity"),
+    h("div", { class: "tier-note" }, "Added up from imported records, never reviewed — each row links to its record."),
+    h("div", { class: "tiles" }, tiles),
+    rows.length ? h("div", { class: "list observed", style: "margin-top:10px" }, rows) : null);
 }
 
 function heatmap(dd, selected) {
@@ -1184,10 +1233,16 @@ function heatmap(dd, selected) {
 async function viewPeople() {
   const search = h("input", { class: "search", type: "search", placeholder: "Search people", "aria-label": "Search people", autocomplete: "off" });
   const list = h("div", null, skeleton(4));
-  setView(pageHead("People", "Everyone in your journal and your imports — last contact across both."), search, h("div", { class: "section" }, list));
+  const emails = h("div");
+  setView(pageHead("People", "Everyone in your journal and your imports — last contact across both: texts on any app, emails, calls and meetings."), search, h("div", { class: "section" }, list), emails);
   let data;
   try { data = await api("/api/people"); }
   catch (e) { fill(list, errorCard(e)); return; }
+  if ((data.recent_emails || []).length) {
+    fill(emails, h("section", { class: "section" }, h("h3", null, "Recent emails"),
+      h("div", { class: "tier-note" }, "Imported mail, never reviewed — each row cites its import."),
+      h("div", { class: "list observed" }, data.recent_emails.map(o => obsRow(o, { showDate: true })))));
+  }
   const draw = () => {
     const q = search.value.trim().toLowerCase();
     const rows = data.people.filter(p => !q || p.name.toLowerCase().includes(q) || p.aliases.some(a => a.toLowerCase().includes(q)));
@@ -1218,8 +1273,11 @@ async function viewPerson(id) {
   catch (e) { setView(errorCard(e)); return; }
   if (p.status === "merged" && p.merged_into) { location.replace("#/person/" + p.merged_into); return; }
   const first = p.name.replace(/^dr\.?\s+/i, "").split(/\s+/)[0];
+  const li = p.linkedin;
+  const work = li && (li.position || li.company) ? [li.position, li.company].filter(Boolean).join(" at ") : null;
   const head = h("div", { class: "person-head", style: "margin-bottom:18px" }, h("div", { class: "avatar lg", "aria-hidden": "true" }, initials(p.name)),
     h("div", null, h("h1", null, p.name), h("div", { class: "muted", style: "margin-top:4px" }, [p.type, p.aliases.length ? "aka " + p.aliases.join(", ") : null].filter(Boolean).join(" · ")),
+      work ? h("div", { class: "small", style: "margin-top:4px" }, h("a", { href: "#/obs/" + li.uuid, title: "LinkedIn connection — imported, not reviewed" }, work), h("span", { class: "muted" }, " · LinkedIn, connected " + fmtDay(li.connected_on) + " (observed)")) : null,
       p.notes ? h("div", { class: "small", style: "margin-top:4px" }, p.notes) : null));
   const parts = [head];
 
@@ -1253,8 +1311,12 @@ async function viewPerson(id) {
     parts.push(h("section", { class: "section" }, h("h3", null, "Upcoming"), h("div", { class: "tier-note" }, "Dated after today — on the calendar, not contact yet."),
       h("div", { class: "list observed" }, p.upcoming.map(o => obsRow(o, { showDate: true, showStream: true })))));
   }
+  if ((p.emails || []).length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Emails"), h("div", { class: "tier-note" }, "Mail from or to one of " + first + "'s addresses — imported, not reviewed."),
+      h("div", { class: "list observed" }, p.emails.map(o => obsRow(o, { showDate: true })))));
+  }
   if ((p.observations || []).length) {
-    parts.push(h("section", { class: "section" }, h("h3", null, "Recent observed records"), h("div", { class: "tier-note" }, "Texts, calls and chats that name one of " + first + "'s handles — imported, not reviewed."),
+    parts.push(h("section", { class: "section" }, h("h3", null, "Recent observed records"), h("div", { class: "tier-note" }, "Texts, emails, calls and payments that name one of " + first + "'s handles — imported, not reviewed."),
       h("div", { class: "list observed" }, p.observations.map(o => obsRow(o, { showDate: true, showStream: true })))));
   }
   setView(parts);
@@ -1389,6 +1451,8 @@ async function viewHealth(daysArg) {
   if (d.metrics.length) {
     parts.push(h("div", { class: "chart-grid" }, d.metrics.map(mt => healthCard(mt, d))));
   }
+  if (d.workouts && d.workouts.sessions) parts.push(section("Logged workouts", null, h("div", { class: "chart-grid" }, workoutsCard(d.workouts))));
+  if (d.nutrition) parts.push(section("Nutrients", null, nutritionCard(d.nutrition)));
   if (d.journal.length) {
     const mood = d.journal.filter(j => j.metric === "mood" || j.metric === "energy");
     const rest = d.journal.filter(j => !(j.metric === "mood" || j.metric === "energy"));
@@ -1402,7 +1466,7 @@ async function viewHealth(daysArg) {
     for (const j of rest) cards.push(healthCard(j, d, "from your journal"));
     parts.push(section("From your journal", null, h("div", { class: "chart-grid" }, cards)));
   }
-  if (!d.metrics.length && !d.journal.length) {
+  if (!d.metrics.length && !d.journal.length && !(d.workouts && d.workouts.sessions) && !d.nutrition) {
     const latest = Object.entries(d.latest || {}).sort((a, b) => b[1] < a[1] ? -1 : 1)[0];
     parts.push(emptyState("health", latest
       ? "No health data in the last " + days + " days — the newest is " + fmtDay(latest[1]) + "."
@@ -1412,6 +1476,48 @@ async function viewHealth(daysArg) {
     parts.push(h("p", { class: "muted small", style: "margin-top:16px" }, "Nothing in this window for " + d.missing.map(mm => mm.label + " (latest " + fmtDay(mm.latest) + ")").join(", ") + "."));
   }
   setView(parts);
+}
+
+// Workouts per Monday-to-Sunday week from the fitness imports (Strong, Hevy,
+// Strava): bars are minutes, the tooltip adds the sessions.
+function workoutsCard(w) {
+  const weeks = w.weeks.map(x => x.week);
+  const last = w.weeks[w.weeks.length - 1];
+  return h("div", { class: "card chart-card" },
+    h("h2", null, "Workouts per week"),
+    h("div", { class: "headline" }, h("span", { class: "big" }, String(last.sessions)), h("span", { class: "unit" }, last.sessions === 1 ? "session" : "sessions"),
+      h("span", { class: "sub" }, "week of " + fmtDay(last.week), h("br"), plural(w.sessions, "session") + " · " + fmtValue(w.minutes, "min") + " in " + plural(w.weeks.length, "week"))),
+    chart({ start: w.start, end: w.end, dates: weeks, kind: "bar", unit: "min", height: 140, label: "workout minutes per week", hideLegend: true,
+      lines: [{ name: "Minutes", color: "var(--series-1)", points: w.weeks.map(x => ({ date: x.week, value: x.minutes })) },
+        { name: "Sessions", unit: "", color: "var(--series-2)", points: w.weeks.map(x => ({ date: x.week, value: x.sessions })) }] }),
+    h("div", { class: "muted small", style: "margin-top:4px" }, "observed · fitness imports · minutes per week" + (w.latest ? " · newest " + fmtDay(w.latest) : "")));
+}
+
+// lifecrm nutrients over the page's window: never advice, and it says so.
+function nutritionCard(n) {
+  if (n.error) return h("div", { class: "card error" }, n.error);
+  const lineOf = x => {
+    const ref = x.status === "high" ? "above the " + x.upper_kind + " " + fmtValue(x.upper, x.unit)
+      : x.percent.toFixed(0) + "% of the " + x.reference_kind + " " + fmtValue(x.reference, x.unit);
+    const src = x.sources.length ? " · most from " + x.sources.map(s => s.food + " " + s.share_percent + "%").join(", ") : "";
+    const main = h("div", { class: "row-main" }, h("div", { class: "row-title" }, x.label + " · " + fmtValue(x.average, x.unit) + "/day"), h("div", { class: "row-meta" }, ref + src));
+    return x.latest_uuid ? h("a", { class: "link-row", href: "#/obs/" + x.latest_uuid, title: plural(x.rows, "row") + " averaged" }, main, h("div", { class: "row-side" }, plural(x.rows, "row")))
+      : h("div", { class: "link-row" }, main);
+  };
+  const groups = [["low", "Low — below 70% of the reference"], ["borderline", "Borderline — 70–100%"], ["high", "High — average above the upper level"]];
+  const body = [];
+  for (const [key, title] of groups) {
+    if (!n[key].length) continue;
+    body.push(h("div", { class: "stream-head" }, title), h("div", { class: "list observed" }, n[key].map(lineOf)));
+  }
+  const over = n.over_on_some_days.filter(x => x.status !== "high");
+  if (over.length) body.push(h("div", { class: "muted small", style: "margin-top:8px" }, "Above the upper level on some days: " + over.map(x => x.label + " (" + plural(x.days_over, "day") + ")").join(", ")));
+  if (!body.length && n.days_counted) body.push(h("div", { class: "muted small" }, "Nothing below or above the reference intakes (" + n.meets + " met)."));
+  if (!n.days_counted) body.push(h("div", { class: "muted small" }, "No complete day of logging in this window."));
+  return h("div", { class: "card" },
+    h("p", { class: "small", style: "margin:0 0 10px" }, h("b", null, n.disclaimer)),
+    h("div", { class: "muted small", style: "margin-bottom:8px" }, plural(n.days_counted, "day") + " counted, " + fmtDay(n.start) + " – " + fmtDay(n.end) + " · reference intakes for " + n.profile + " · observed"),
+    body);
 }
 
 function healthCard(mt, d, note) {

@@ -30,8 +30,9 @@ from zoneinfo import ZoneInfo
 from . import CONTRACT_VERSION, SCHEMA_VERSION
 from .config import MENTION_ROLES, TIME_OF_DAY
 from .domain.util import DomainError, now_utc
-from .recall import (CALL_STREAMS, HEALTH_METRICS, JOURNAL_METRICS, STREAM_GROUPS,
-                     TEXT_STREAMS, _health_days, fmt_value)
+from .recall import (AI_NAMES, CALL_STREAMS, CONTACT_GROUPS, EMAIL_STREAMS,
+                     HEALTH_METRICS, JOURNAL_METRICS, STREAM_GROUPS, TEXT_STREAMS,
+                     _health_days, fmt_value)
 from .views import entry_provenance
 
 
@@ -481,18 +482,31 @@ _ROLE_LABELS = {"participant": "with", "location": "at", "item": "item",
                 "subject": "about", "mention": "mentions"}
 
 # Streams the day digest names item by item; every other stream is counted
-# only. Tapbacks and thread events are not "contact" with anyone.
-_MESSAGE_STREAMS = ("imessage", "sms", "rcs", "android_sms", "android_mms",
-                    "whatsapp")
-_CALL_STREAMS = ("ios_call", "android_call")
-_CHAT_STREAMS = {"claude_chat": "Claude", "chatgpt_chat": "ChatGPT"}
+# only. Tapbacks and thread events are not "contact" with anyone. The groups
+# are recall's shared lists (the ones ask, the web UI and review read), so a
+# messaging app added there is itemized here too.
+_MESSAGE_STREAMS = TEXT_STREAMS
+_CALL_STREAMS = CALL_STREAMS
+_EMAIL_STREAMS = EMAIL_STREAMS
+_CHAT_STREAMS = AI_NAMES
+# Things done, each named at its time: a workout with its summary, a ride,
+# a food order.
+_TIMED_STREAMS = {"workout": STREAM_GROUPS["workout"],
+                  "ride": STREAM_GROUPS["ride"],
+                  "food order": STREAM_GROUPS["food order"]}
+# Reading, by title: highlights grouped per book, books rated or shelved.
+_HIGHLIGHT_STREAMS = STREAM_GROUPS["highlight"]
+_BOOK_STREAMS = STREAM_GROUPS["book"]
+# Counted, never itemized: one line each.
+_LISTENING_STREAMS = STREAM_GROUPS["listening"]
+_SEARCH_STREAMS = STREAM_GROUPS["search"]
 _NOT_CONTACT = ("text_reaction", "text_event")
 # What makes an entity "seen" on a day: not a contact card (dated the day the
 # contacts were exported), a tapback or thread event, or a missed call; and
-# for a person only what `ask` counts as contact (recall.last_contact) — a
-# text, a call or a calendar event.
+# for a person only what `ask` counts as contact (recall.last_contact,
+# recall.CONTACT_GROUPS) — a text, an email, a call or a calendar event.
 _NOT_SEEN = ("contact_card", *_NOT_CONTACT)
-_PERSON_SEEN = (*TEXT_STREAMS, *CALL_STREAMS, *STREAM_GROUPS["calendar"])
+_PERSON_SEEN = tuple(s for group in CONTACT_GROUPS for s in STREAM_GROUPS[group])
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
              "Saturday", "Sunday")
 _RECENT_DAYS = 14
@@ -862,21 +876,26 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
     conn, tz = ctx["conn"], ctx["tz"]
     rows = conn.execute(
         "SELECT id, uuid, stream, started_at, utc_offset_sec, direction, title, "
-        "body FROM observations WHERE journal_date=? AND status='active' "
+        "body, value, unit FROM observations WHERE journal_date=? AND status='active' "
         "ORDER BY started_at, uuid", (jd,)).fetchall()
     if not rows:
         return []
     who: dict[int, list[int]] = {}
+    senders: set[tuple[int, int]] = set()
     for r in conn.execute(
-            "SELECT DISTINCT p.observation_id AS oid, h.entity_id AS eid "
-            "FROM observations o "
+            "SELECT DISTINCT p.observation_id AS oid, h.entity_id AS eid, "
+            "p.role = 'sender' AS sent FROM observations o "
             "JOIN observation_participants p ON p.observation_id=o.id "
             "JOIN entity_handles h ON h.kind=p.handle_kind AND h.value=p.handle_value "
             "JOIN entities et ON et.id=h.entity_id AND et.status='active' "
             "WHERE o.journal_date=? AND o.status='active' "
             "ORDER BY p.observation_id, h.entity_id", (jd,)):
-        if r["eid"] not in ctx["owners"]:
+        if r["eid"] in ctx["owners"]:
+            continue
+        if r["eid"] not in who.get(r["oid"], []):
             who.setdefault(r["oid"], []).append(r["eid"])
+        if r["sent"]:
+            senders.add((r["oid"], r["eid"]))
 
     def cite(row) -> str:
         return f" — observed `{row['uuid']}`"
@@ -887,15 +906,54 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
     def name_key(eid):
         return (ctx["ents"][eid]["name"].casefold(), eid)
 
+    def money(row) -> str:
+        if row["value"] is None:
+            return ""
+        return f" · {row['value']:,.2f} {(row['unit'] or '').upper()}".rstrip()
+
+    timed = {s: kind for kind, streams in _TIMED_STREAMS.items() for s in streams}
     counts: dict[str, int] = {}
     items: list[tuple[tuple, str]] = []
     texts: dict[int, list] = {}
+    emails: dict[int, list] = {}
     calls: dict[int, list] = {}
     chats: dict[tuple, list] = {}
+    highlights: dict[str, list] = {}
+    listening: list = []
+    searches: list = []
     for r in rows:
         counts[r["stream"]] = counts.get(r["stream"], 0) + 1
         people = who.get(r["id"], [])
-        if r["stream"] == "calendar_event":
+        if r["stream"] in timed:
+            kind = timed[r["stream"]]
+            if kind == "workout":
+                summary = _md_text(_snip((r["body"] or "").split("\n")[0], 100))
+                mins = (f" ({_amount(round(r['value']), 'min')})"
+                        if r["value"] is not None and r["unit"] == "min" else "")
+                text = f"workout: {what(r)}{mins}" + (f" — {summary}" if summary else "")
+            else:
+                text = f"{kind}: {what(r)}{money(r)}"
+            items.append(((0, r["started_at"], r["uuid"]),
+                          f"- {_hm(r, tz)} {text}{cite(r)}"))
+        elif r["stream"] in _HIGHLIGHT_STREAMS:
+            highlights.setdefault(r["title"] or "(untitled book)", []).append(r)
+        elif r["stream"] in _BOOK_STREAMS:
+            rating = (f" · rated {_num(r['value'])}"
+                      + (f" {r['unit']}" if r["unit"] else "")
+                      if r["value"] is not None else "")
+            items.append(((5, (r["title"] or "").casefold(), r["uuid"]),
+                          f"- book: *{what(r)}*{rating}{cite(r)}"))
+        elif r["stream"] in _LISTENING_STREAMS:
+            listening.append(r)
+        elif r["stream"] in _SEARCH_STREAMS:
+            searches.append(r)
+        elif r["stream"] in _EMAIL_STREAMS:
+            # with its sender, or its recipients when you sent it: a Cc on
+            # someone else's mail is not an email with that person
+            for eid in people:
+                if r["direction"] == "out" or (r["id"], eid) in senders:
+                    emails.setdefault(eid, []).append(r)
+        elif r["stream"] == "calendar_event":
             with_ = (" · with " + ", ".join(_entity_link(ctx, eid)
                                             for eid in sorted(people, key=name_key))
                      if people else "")
@@ -925,12 +983,36 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
                       f"- {len(msgs)} text{'s' if len(msgs) != 1 else ''} with "
                       f"{_entity_link(ctx, eid)} ({streams}) · latest "
                       f"{_hm(last, tz)}: “{said}”{cite(last)}"))
+    for eid in sorted(emails, key=name_key):
+        msgs = emails[eid]
+        last = msgs[-1]
+        subject = _md_text(_snip(last["title"] or last["body"], 80)) or "(no subject)"
+        items.append(((1, *name_key(eid), 1),
+                      f"- {len(msgs)} email{'s' if len(msgs) != 1 else ''} with "
+                      f"{_entity_link(ctx, eid)} · latest {_hm(last, tz)}: "
+                      f"“{subject}”{cite(last)}"))
     for eid in sorted(calls, key=name_key):
         rs = calls[eid]
         items.append(((2, *name_key(eid)),
                       f"- {len(rs)} call{'s' if len(rs) != 1 else ''} with "
                       f"{_entity_link(ctx, eid)} · latest {_hm(rs[-1], tz)}"
                       f"{cite(rs[-1])}"))
+    for title, hs in sorted(highlights.items(), key=lambda kv: (kv[0].casefold(), kv[0])):
+        items.append(((5, title.casefold(), hs[0]["uuid"]),
+                      f"- {len(hs)} highlight{'s' if len(hs) != 1 else ''} in "
+                      f"*{_md_text(_snip(title, 100))}*{cite(hs[0])}"))
+    if listening:
+        mins = sum(r["value"] for r in listening
+                   if r["value"] is not None and r["unit"] == "min")
+        items.append(((6, "listening"),
+                      f"- listened {_amount(round(mins), 'min')} "
+                      f"({len(listening)} track{'s' if len(listening) != 1 else ''}"
+                      f" or episode{'s' if len(listening) != 1 else ''})"
+                      f"{cite(listening[0])}"))
+    if searches:
+        items.append(((6, "searches"),
+                      f"- {len(searches)} search{'es' if len(searches) != 1 else ''}"
+                      f"{cite(searches[0])}"))
     for (stream, title), msgs in chats.items():
         items.append(((4, msgs[0]["started_at"], stream, title),
                       f"- {_CHAT_STREAMS[stream]} chat: {_md_text(_snip(title, 100))} "
@@ -1055,13 +1137,17 @@ def _entity_facts(conn: sqlite3.Connection) -> dict[int, dict]:
         return ",".join("?" for _ in items)
 
     as_of = conn.execute("SELECT MAX(started_at) FROM imports").fetchone()[0] or ""
+    # An email is an encounter with its sender, or with its recipients when
+    # you sent it — never with everyone copied on someone else's mail.
     seen_from = (joins + "JOIN entities et ON et.id=h.entity_id " + live +
                  f"AND o.stream NOT IN ({marks(_NOT_SEEN)}) "
                  f"AND NOT (o.stream IN ({marks(CALL_STREAMS)}) "
                  "AND COALESCE(o.value, 1) <= 0) "
+                 f"AND NOT (o.stream IN ({marks(_EMAIL_STREAMS)}) "
+                 "AND COALESCE(o.direction, '') <> 'out' AND p.role <> 'sender') "
                  "AND o.started_at <= ? "
                  f"AND (et.type <> 'person' OR o.stream IN ({marks(_PERSON_SEEN)})) ")
-    seen_args = (*_NOT_SEEN, *CALL_STREAMS, as_of, *_PERSON_SEEN)
+    seen_args = (*_NOT_SEEN, *CALL_STREAMS, *_EMAIL_STREAMS, as_of, *_PERSON_SEEN)
     for r in conn.execute("SELECT DISTINCT h.entity_id, o.journal_date " + seen_from,
                           seen_args):
         f(r["entity_id"])["seen"].add(r["journal_date"])

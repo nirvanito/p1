@@ -43,10 +43,11 @@ from . import db as db_mod
 from .config import Config
 from .domain import days as days_mod
 from .domain.util import DomainError
-from .recall import (HEALTH_METRICS, JOURNAL_METRICS, _metric_series, _round,
-                     fmt_value, local_today)
+from .recall import (AI_STREAMS, CALL_STREAMS, EMAIL_STREAMS, HEALTH_METRICS,
+                     JOURNAL_METRICS, STREAM_GROUPS, STREAM_LABELS, TEXT_STREAMS,
+                     _metric_series, _round, fmt_value, local_today)
 
-PACK_VERSION = 1
+PACK_VERSION = 2
 
 LENSES = ("week", "health", "career", "relationships", "finance", "all")
 
@@ -75,19 +76,38 @@ LENS_CATEGORIES: dict[str, frozenset[str]] = {
     "finance": frozenset({"purchase"}),
 }
 
-# Fixed stream names (a global namespace shared by every connector).
-MESSAGE_STREAMS = ("imessage", "sms", "rcs", "android_sms", "android_mms",
-                   "whatsapp")
-CALL_STREAMS = ("ios_call", "android_call")
-CALENDAR_STREAMS = ("calendar_event",)
-AI_STREAMS = ("claude_chat", "chatgpt_chat")
-NOTE_STREAMS = ("note",)
-TXN_STREAMS = ("txn",)
+# Stream names are one global namespace shared by every connector; the
+# groups come from recall's shared lists (the ones ask, the web UI and the
+# export read), so a texting app added there counts here too.
+MESSAGE_STREAMS = TEXT_STREAMS
+CALENDAR_STREAMS = STREAM_GROUPS["calendar"]
+NOTE_STREAMS = STREAM_GROUPS["note"]
+TXN_STREAMS = STREAM_GROUPS["transaction"]
+WORKOUT_STREAMS = STREAM_GROUPS["workout"]
+LINKEDIN_CONNECTION_STREAMS = STREAM_GROUPS["LinkedIn connection"]
+LINKEDIN_MESSAGE_STREAMS = ("linkedin_message",)     # one of TEXT_STREAMS
 CONTACT_CHANNELS = (("messages", MESSAGE_STREAMS), ("calls", CALL_STREAMS),
-                    ("meetings", CALENDAR_STREAMS))
+                    ("meetings", CALENDAR_STREAMS), ("emails", EMAIL_STREAMS))
+# Channels whose records pass between you and someone: a message or an email
+# is contact with its sender when it came in and with its recipients when you
+# sent it (recall.last_contact's rule) — never with whoever was only copied.
+DIRECTED_STREAMS = MESSAGE_STREAMS + EMAIL_STREAMS
 # A card or a place can sit on a contact stream (a meeting's room, a paid
 # call) but is never a person you were in touch with.
 NON_PERSON_KINDS = frozenset({"card", "place_id"})
+# A pack this long or shorter counts each stream per day as well.
+BY_DAY_MAX_DAYS = 31
+# Money between people (docs/payments.md): the apps whose statements name
+# the counterparty, and how a bank line names its funding of them.
+PAYMENT_APPS = ("venmo", "paypal")
+_APP_WORD = {app: re.compile(rf"\b{app}\b", re.IGNORECASE) for app in PAYMENT_APPS}
+FINANCE_RULE = (
+    "each money movement is counted once: payment-app transfers between your own "
+    "accounts (value_json.transfer) are left out; a bank line naming a payment app "
+    "(VENMO, PAYPAL) is that app's funding and is left out of the totals whenever "
+    "the app's own statement has rows in the same period — the app's rows, which "
+    "name the person, are counted instead; without that statement the bank line "
+    "counts like any merchant")
 
 HEALTH_TRENDS = ("sleep_session", "steps", "exercise_session", "weight",
                  "resting_heart_rate")
@@ -574,33 +594,252 @@ def _section_health(ctx: _Ctx, entries: list[dict]) -> dict:
         items.append({"id": cid, **item})
     exercise = [e for e in entries if "exercise" in e["categories"]]
     return {"metrics": items, "no_data": no_data,
-            "exercise_entries": [_compact(ctx, e) for e in exercise]}
+            "exercise_entries": [_compact(ctx, e) for e in exercise],
+            "workouts": _workouts(ctx) if ctx.observed else None,
+            "nutrition": _nutrition(ctx) if ctx.observed else None}
 
 
-def _stream_counts(ctx: _Ctx, start: str, end: str) -> dict[str, dict]:
+def _count_item(ctx: _Ctx, key, what: str, rows: list, **extra) -> str | None:
+    """One O# id for a set of observation rows (None for no rows): the span,
+    a sample of uuids and the imports, so the claim stays checkable."""
+    if not rows:
+        return None
+    dates = sorted(r["journal_date"] for r in rows)
+    item = {"type": "observation_count", "tier": "observed", "what": what,
+            "count": len(rows), "first_date": dates[0], "last_date": dates[-1],
+            "uuids": [r["uuid"] for r in rows][:20],
+            "imports": sorted({r["import_uuid"] for r in rows}), **extra}
+    return ctx.ids.cite("O", key, item)
+
+
+def _minutes_of(rows) -> float:
+    return round(sum(r["value"] for r in rows
+                     if r["value"] is not None and (r["unit"] or "") == "min"), 1)
+
+
+def _workouts(ctx: _Ctx) -> dict | None:
+    """Logged workouts (Strong, Hevy, Strava: one row per session) — count
+    and minutes vs the prior period, each session cited, and the period's
+    personal bests. None when no workout was ever imported."""
+    if ctx.conn.execute(
+            f"SELECT 1 FROM observations WHERE status = 'active' AND stream IN "
+            f"({','.join('?' * len(WORKOUT_STREAMS))}) LIMIT 1",
+            WORKOUT_STREAMS).fetchone() is None:
+        return None
+    p = ctx.period
+    rows = _obs_rows(ctx, WORKOUT_STREAMS, p["start"], p["end"])
+    prior = _obs_rows(ctx, WORKOUT_STREAMS, p["prior"]["start"], p["prior"]["end"])
+    minutes = _minutes_of(rows)
+    by_app: dict[str, int] = {}
+    for r in rows:
+        app = r["origin_app"] or "unknown"
+        by_app[app] = by_app.get(app, 0) + 1
+    cid = _count_item(ctx, ("workouts",), "workouts", rows, stream="workout",
+                      minutes=minutes, prior_count=len(prior),
+                      prior_minutes=_minutes_of(prior))
+    sessions = []
+    for r in rows[:MAX_TITLES]:
+        m = round(r["value"], 1) if r["value"] is not None and r["unit"] == "min" \
+            else None
+        sessions.append({"id": _cite_observation(ctx, r, minutes=m, app=r["origin_app"]),
+                         "date": r["journal_date"],
+                         "title": r["title"] or "(untitled workout)",
+                         "minutes": m, "app": r["origin_app"]})
+    return {"id": cid, "count": len(rows), "minutes": minutes,
+            "prior_count": len(prior), "prior_minutes": _minutes_of(prior),
+            "by_app": dict(sorted(by_app.items())), "sessions": sessions,
+            "personal_bests": _personal_bests(ctx)}
+
+
+def _top_sets(r):
+    """(exercise key, shown name, top set) for each exercise of one workout
+    whose heaviest working set has a weight (bodyweight sets have none)."""
+    for ex in _detail(r).get("exercises") or []:
+        if not isinstance(ex, dict) or not isinstance(ex.get("top_set"), dict):
+            continue
+        top = ex["top_set"]
+        kg, reps = top.get("weight_kg"), top.get("reps")
+        if isinstance(kg, bool) or not isinstance(kg, (int, float)) or kg <= 0:
+            continue
+        name = " ".join(str(ex.get("name") or "").split())
+        if not name:
+            continue
+        reps = reps if isinstance(reps, (int, float)) and not isinstance(reps, bool) \
+            else 0
+        yield name.casefold(), name, {"weight": top.get("weight"),
+                                      "unit": top.get("unit"), "reps": top.get("reps"),
+                                      "weight_kg": kg, "score": (float(kg), reps)}
+
+
+def _personal_bests(ctx: _Ctx) -> list[dict]:
+    """Each exercise whose best top set in the period (heaviest by weight_kg,
+    more reps breaking a tie — the fitness connector's own rule) beats every
+    top set logged before the period. An exercise first logged in the period
+    has nothing to beat and is not a personal best. Both sets are cited."""
+    p = ctx.period
+    marks = ",".join("?" * len(WORKOUT_STREAMS))
+    rows = ctx.conn.execute(
+        "SELECT o.id, o.uuid, o.stream, o.journal_date, o.started_at, o.direction, "
+        "o.title, o.value_json, i.uuid AS import_uuid FROM observations o "
+        "JOIN imports i ON i.id = o.import_id "
+        f"WHERE o.status = 'active' AND o.stream IN ({marks}) "
+        "AND o.journal_date <= ? ORDER BY o.started_at, o.id",
+        (*WORKOUT_STREAMS, p["end"])).fetchall()
+    before: dict[str, tuple] = {}
+    during: dict[str, tuple] = {}
+    for r in rows:
+        best = before if r["journal_date"] < p["start"] else during
+        for key, name, top in _top_sets(r):
+            if key not in best or top["score"] > best[key][2]["score"]:
+                best[key] = (r, name, top)
+    out = []
+    for key in sorted(during):
+        if key not in before:
+            continue
+        r, name, top = during[key]
+        pr, _, ptop = before[key]
+        if top["score"] <= ptop["score"]:
+            continue
+        shown = {k: top[k] for k in ("weight", "unit", "reps", "weight_kg")}
+        prev = {k: ptop[k] for k in ("weight", "unit", "reps", "weight_kg")}
+        out.append({"exercise": name, **shown, "date": r["journal_date"],
+                    "id": _cite_observation(ctx, r, exercise=name, top_set=shown),
+                    "previous": {**prev, "date": pr["journal_date"],
+                                 "id": _cite_observation(ctx, pr, exercise=name,
+                                                         top_set=prev)}})
+    return out
+
+
+def _nutrition(ctx: _Ctx) -> dict | None:
+    """lifecrm nutrients' report over the period (lifecrm/nutrients.py, the
+    same function the command runs): low, borderline and high against the
+    reference intakes, each line cited to the rows it averages, with the
+    report's own not-medical-advice line. None when nothing was logged."""
+    from . import nutrients
+    p = ctx.period
+    marks = ",".join("?" * len(nutrients.STREAMS))
+    if ctx.conn.execute(
+            f"SELECT 1 FROM observations WHERE status = 'active' AND stream IN "
+            f"({marks}) AND journal_date BETWEEN ? AND ? LIMIT 1",
+            (*nutrients.STREAMS, p["start"], p["end"])).fetchone() is None:
+        return None
+    try:
+        prof = nutrients.profile(ctx.cfg)
+    except DomainError as e:
+        ctx.notes.append(f"nutrition summary left out: {e}")
+        return None
+    window = {"start": p["start"], "end": p["end"], "days": p["days"],
+              "label": p["label"], "today": p["as_of"]}
+    report = nutrients.build_report(ctx.conn, ctx.cfg, window, prof=prof)
+    cov = report["coverage"]
+    out = {"disclaimer": report["disclaimer"], "profile": prof["label"],
+           "days_counted": cov["days_counted"],
+           "from_daily_summary": cov["from_daily_summary"],
+           "from_food_log": cov["from_food_log"],
+           "low": [], "borderline": [], "high": [], "over_on_some_days": [],
+           "meets": len(report["meets"]), "notes": report["notes"]}
+    if not cov["days_counted"]:
+        return out
+    items = {x["key"]: x for x in report["nutrients"]}
+    obs_ids = sorted({i for x in report["nutrients"]
+                      for i in x["cites"]["nutrition_day"] + x["cites"]["food_log"]})
+    rows: dict[int, dict] = {}
+    for part in _chunks(obs_ids):
+        for r in ctx.conn.execute(
+                "SELECT o.id, o.uuid, o.journal_date, i.uuid AS import_uuid "
+                "FROM observations o JOIN imports i ON i.id = o.import_id "
+                f"WHERE o.id IN ({','.join('?' * len(part))}) ORDER BY o.id", part):
+            rows[r["id"]] = dict(r)
+
+    def cite(key: tuple, what: str, ids: list[int], **extra) -> str | None:
+        return _count_item(ctx, key, what, [rows[i] for i in sorted(set(ids))
+                                            if i in rows],
+                           streams=list(nutrients.STREAMS), **extra)
+
+    for status in ("low", "borderline", "high"):
+        for k in report[status]:
+            x = items[k]
+            ref = x["reference"]
+            shown = {"key": k, "label": ref["label"], "average": x["average"],
+                     "unit": x["unit"], "percent": x["percent"],
+                     "reference": {"kind": ref["kind"], "value": ref["value"],
+                                   "upper_kind": ref["upper_kind"],
+                                   "upper": ref["upper"]},
+                     "days_with_value": x["days_with_value"],
+                     "sources": [{"food": s["food"], "share_percent": s["share_percent"]}
+                                 for s in x.get("sources") or []]}
+            cid = cite(("nutrient", k, x["unit"]),
+                       f"nutrient {ref['label']}: logged intake vs the reference",
+                       x["cites"]["nutrition_day"] + x["cites"]["food_log"],
+                       status=status, average=x["average"], unit=x["unit"],
+                       percent=x["percent"], reference=shown["reference"],
+                       source=ref["source"])
+            out[status].append({"id": cid, "status": status, **shown})
+    for k in report["over_on_some_days"]:
+        x = items[k]
+        ref = x["reference"]
+        days = x["days_over"]
+        cid = cite(("nutrient over", k, x["unit"]),
+                   f"nutrient {ref['label']}: days above the "
+                   f"{ref['upper_kind']} {ref['upper']:g} {x['unit']}",
+                   [i for d in days for i in d["ids"]],
+                   upper=ref["upper"], upper_kind=ref["upper_kind"], unit=x["unit"])
+        out["over_on_some_days"].append({
+            "id": cid, "key": k, "label": ref["label"], "unit": x["unit"],
+            "upper_kind": ref["upper_kind"], "upper": ref["upper"],
+            "days": len(days), "dates": [d["date"] for d in days]})
+    return out
+
+
+def _stream_counts(ctx: _Ctx, start: str, end: str, *,
+                   by_day: bool = False) -> dict[str, dict]:
+    """Records per stream over [start, end] — every stream there is, so a
+    connector added later counts the day its rows arrive. A stream whose
+    values are durations in minutes (workouts, listening) carries their sum;
+    `by_day` adds the count for each day that has any."""
     out = {}
     for r in ctx.conn.execute(
             "SELECT o.stream, COUNT(*) AS n, MIN(o.journal_date) AS first, "
-            "MAX(o.journal_date) AS last, GROUP_CONCAT(DISTINCT i.uuid) AS imports "
+            "MAX(o.journal_date) AS last, GROUP_CONCAT(DISTINCT i.uuid) AS imports, "
+            "SUM(CASE WHEN o.unit = 'min' THEN o.value END) AS minutes "
             "FROM observations o JOIN imports i ON i.id = o.import_id "
             "WHERE o.status = 'active' AND o.journal_date BETWEEN ? AND ? "
             "GROUP BY o.stream", (start, end)):
         out[r["stream"]] = {"count": r["n"], "first_date": r["first"],
                             "last_date": r["last"],
                             "imports": sorted(set((r["imports"] or "").split(",")) - {""})}
+        if r["minutes"] is not None:
+            out[r["stream"]]["minutes"] = round(r["minutes"], 1)
+    if by_day:
+        for r in ctx.conn.execute(
+                "SELECT stream, journal_date, COUNT(*) AS n FROM observations "
+                "WHERE status = 'active' AND journal_date BETWEEN ? AND ? "
+                "GROUP BY stream, journal_date ORDER BY stream, journal_date",
+                (start, end)):
+            out[r["stream"]].setdefault("by_day", {})[r["journal_date"]] = r["n"]
     return out
 
 
-def _contacts(ctx: _Ctx) -> dict[tuple, dict]:
-    """Who the period's messages, calls and meetings were with, per person.
+def _stream_label(stream: str) -> str | None:
+    """recall's group label for a stream ('listening' for music_play), when
+    it says more than the stream's own name."""
+    label = STREAM_LABELS.get(stream)
+    return label if label and label != stream.replace("_", " ") else None
+
+
+def _contacts(ctx: _Ctx, channels=CONTACT_CHANNELS) -> dict[tuple, dict]:
+    """Who the period's messages, calls, meetings and emails were with, per
+    person (or, given `channels`, the records of just those streams).
 
     Counted from the other side's role: an incoming record counts its sender
     (a group message from Jake is contact with Jake, not with everyone else
     in the room), an outgoing one its recipients, an undirected one (a
-    meeting) everyone but the location."""
+    meeting) everyone but the location. An email with no direction (nothing
+    said which address is yours) counts only its sender — a Cc is never
+    contact."""
     p = ctx.period
-    streams = [s for _, group in CONTACT_CHANNELS for s in group]
-    channel_of = {s: ch for ch, group in CONTACT_CHANNELS for s in group}
+    streams = [s for _, group in channels for s in group]
+    channel_of = {s: ch for ch, group in channels for s in group}
     marks = ",".join("?" * len(streams))
     people: dict[tuple, dict] = {}
     for r in ctx.conn.execute(
@@ -621,6 +860,9 @@ def _contacts(ctx: _Ctx) -> dict[tuple, dict]:
         if r["direction"] == "in" and r["role"] == "recipient":
             continue
         if r["direction"] == "out" and r["role"] == "sender":
+            continue
+        if r["stream"] in EMAIL_STREAMS and r["direction"] not in ("in", "out") \
+                and r["role"] != "sender":
             continue
         if (r["handle_kind"], r["handle_value"].lower()) in ctx.owner_handles:
             continue
@@ -696,43 +938,58 @@ def _person_rows(ctx: _Ctx, entries: list[dict]) -> list[dict]:
         cited = person.get("_entries", [])
         row["entries"] = [_cite_entry(ctx, e) for e, _ in cited]
         row["saw"] = sum(1 for _, role in cited if role == "participant")
-        for channel, _ in CONTACT_CHANNELS:
-            ch = person["channels"].get(channel)
-            if not ch:
-                row[channel] = None
-                continue
-            obs = ch["obs"]
-            item = {"type": "observation_count", "tier": "observed",
-                    "what": f"{channel} with {row['name']}",
-                    "streams": sorted(ch["streams"]), "count": len(obs),
-                    "in": ch["in"], "out": ch["out"],
-                    "first_date": obs[0]["date"], "last_date": obs[-1]["date"],
-                    "first_uuid": obs[0]["uuid"], "last_uuid": obs[-1]["uuid"]}
-            if ch["timed"]:
-                item["minutes"] = round(ch["minutes"], 1)
-            cid = ctx.ids.cite("O", ("contact", key, channel), item)
-            row[channel] = {"id": cid, "count": len(obs), "in": ch["in"],
-                            "out": ch["out"], **({"minutes": item["minutes"]}
-                                                 if "minutes" in item else {})}
+        _cite_channels(ctx, key, person, row, CONTACT_CHANNELS)
         row["total"] = total(person)
         rows.append(row)
     return rows
+
+
+def _cite_channels(ctx: _Ctx, key: tuple, person: dict, row: dict,
+                   channels) -> None:
+    """row[channel] = the cited count of the person's records on each
+    channel (None where there are none)."""
+    for channel, _ in channels:
+        ch = person["channels"].get(channel)
+        if not ch:
+            row[channel] = None
+            continue
+        obs = ch["obs"]
+        item = {"type": "observation_count", "tier": "observed",
+                "what": f"{channel} with {row['name']}",
+                "streams": sorted(ch["streams"]), "count": len(obs),
+                "in": ch["in"], "out": ch["out"],
+                "first_date": obs[0]["date"], "last_date": obs[-1]["date"],
+                "first_uuid": obs[0]["uuid"], "last_uuid": obs[-1]["uuid"]}
+        if ch["timed"]:
+            item["minutes"] = round(ch["minutes"], 1)
+        cid = ctx.ids.cite("O", ("contact", key, channel), item)
+        row[channel] = {"id": cid, "count": len(obs), "in": ch["in"],
+                        "out": ch["out"], "streams": item["streams"],
+                        **({"minutes": item["minutes"]} if "minutes" in item else {})}
 
 
 def _section_observations(ctx: _Ctx, people) -> dict:
     """Counts per stream, then the period's most-contacted people (`people`
     is called after the streams are cited, so the ids read in order)."""
     p = ctx.period
-    cur = _stream_counts(ctx, p["start"], p["end"])
+    by_day = p["days"] <= BY_DAY_MAX_DAYS
+    cur = _stream_counts(ctx, p["start"], p["end"], by_day=by_day)
     prior = _stream_counts(ctx, p["prior"]["start"], p["prior"]["end"])
     streams = []
     for stream in sorted(cur, key=lambda s: (-cur[s]["count"], s)):
         item = {"type": "observation_count", "tier": "observed",
                 "what": f"{stream} records", "stream": stream, **cur[stream],
                 "prior_count": prior.get(stream, {}).get("count", 0)}
+        label = _stream_label(stream)
+        if label:
+            item["label"] = label
+        if "minutes" in cur[stream]:
+            item["prior_minutes"] = prior.get(stream, {}).get("minutes", 0)
         cid = ctx.ids.cite("O", ("stream", stream), item)
         streams.append({"id": cid, "stream": stream, "count": item["count"],
-                        "prior_count": item["prior_count"]})
+                        "prior_count": item["prior_count"],
+                        **{k: item[k] for k in ("label", "minutes", "prior_minutes",
+                                                "by_day") if k in item}})
     return {"total": sum(c["count"] for c in cur.values()),
             "prior_total": sum(c["count"] for c in prior.values()),
             "streams": streams, "top_people": people()[:TOP_PEOPLE]}
@@ -751,7 +1008,7 @@ def _obs_rows(ctx: _Ctx, streams: tuple[str, ...], start: str, end: str) -> list
     return ctx.conn.execute(
         "SELECT o.id, o.uuid, o.stream, o.journal_date, o.started_at, o.ended_at, "
         "o.direction, o.title, o.body, o.value, o.unit, o.value_json, "
-        "i.uuid AS import_uuid FROM observations o "
+        "o.origin_app, i.uuid AS import_uuid FROM observations o "
         "JOIN imports i ON i.id = o.import_id "
         f"WHERE o.status = 'active' AND o.stream IN ({marks}) "
         "AND o.journal_date BETWEEN ? AND ? ORDER BY o.started_at, o.id",
@@ -791,6 +1048,16 @@ def _section_titles(ctx: _Ctx) -> dict:
     return {"ai_chats": ai, "ai_chats_total": len(chats), "notes": notes}
 
 
+def _between_you_sql() -> tuple[str, list]:
+    """SQL (over observation o and participant row p) for 'this record passed
+    between you and p': a message or an email p sent, or one you sent
+    (recall.last_contact's rule) — a group text Jake sent is not Maya in
+    touch, a Cc'd thread is not contact. Calls and meetings are left alone."""
+    marks = ",".join("?" * len(DIRECTED_STREAMS))
+    return (f"(o.stream NOT IN ({marks}) OR o.direction = 'out' "
+            "OR p.role = 'sender')", list(DIRECTED_STREAMS))
+
+
 def _last_contacts(ctx: _Ctx) -> dict[int, dict]:
     """Every person's last contact up to the period's end, either tier."""
     end = ctx.period["end"]
@@ -813,6 +1080,7 @@ def _last_contacts(ctx: _Ctx) -> dict[int, dict]:
     if ctx.observed:
         streams = [s for _, group in CONTACT_CHANNELS for s in group]
         marks = ",".join("?" * len(streams))
+        between, between_args = _between_you_sql()
         for r in ctx.conn.execute(
                 "SELECT h.kind, h.value, h.entity_id, MAX(o.journal_date) AS d, "
                 "COUNT(DISTINCT o.id) AS n FROM entity_handles h "
@@ -821,8 +1089,9 @@ def _last_contacts(ctx: _Ctx) -> dict[int, dict]:
                 "JOIN observations o ON o.id = p.observation_id "
                 f"WHERE h.entity_id IS NOT NULL AND h.ignored = 0 "
                 f"AND o.status = 'active' AND o.stream IN ({marks}) "
+                f"AND {between} "
                 "AND o.journal_date <= ? GROUP BY h.kind, h.value, h.entity_id",
-                (*streams, end)):
+                (*streams, *between_args, end)):
             if (r["kind"], r["value"].lower()) in ctx.owner_handles or \
                     r["kind"] in NON_PERSON_KINDS:
                 continue
@@ -861,6 +1130,7 @@ def _cite_last_contact(ctx: _Ctx, q: dict) -> str | None:
     merged = [eid for eid in ctx.entity_names
               if _final_entity(ctx, eid) == q["entity_id"]]
     emarks = ",".join("?" * len(merged))
+    between, between_args = _between_you_sql()
     r = ctx.conn.execute(
         "SELECT o.uuid, o.stream, o.journal_date, o.started_at, o.direction, "
         "o.title, i.uuid AS import_uuid FROM observations o "
@@ -869,9 +1139,9 @@ def _cite_last_contact(ctx: _Ctx, q: dict) -> str | None:
         "JOIN entity_handles h ON h.kind = p.handle_kind "
         "AND h.value = p.handle_value "
         f"WHERE h.entity_id IN ({emarks}) AND h.ignored = 0 "
-        f"AND o.status = 'active' AND o.stream IN ({marks}) "
+        f"AND o.status = 'active' AND o.stream IN ({marks}) AND {between} "
         "AND o.journal_date = ? ORDER BY o.started_at DESC, o.id DESC LIMIT 1",
-        (*merged, *streams, q["last_contact"])).fetchone()
+        (*merged, *streams, *between_args, q["last_contact"])).fetchone()
     if r is None:
         return None
     q["via"] = next(ch for ch, group in CONTACT_CHANNELS if r["stream"] in group)
@@ -928,7 +1198,48 @@ def _section_career(ctx: _Ctx, entries: list[dict]) -> dict:
             "meetings": {"total": len(events),
                          "hours": round(sum(timed) / 60, 1) if timed else 0,
                          "events": events[:MAX_ENTRIES],
-                         "by_attendee": attendees_out[:MAX_PEOPLE]}}
+                         "by_attendee": attendees_out[:MAX_PEOPLE]},
+            "linkedin": _linkedin(ctx) if ctx.observed else None}
+
+
+def _linkedin(ctx: _Ctx) -> dict | None:
+    """Connections made in the period (LinkedIn's Connected On date) and the
+    period's LinkedIn messages per person, by the messages' sender/recipient
+    rule. None when nothing from LinkedIn was ever imported."""
+    streams = LINKEDIN_CONNECTION_STREAMS + LINKEDIN_MESSAGE_STREAMS
+    if ctx.conn.execute(
+            f"SELECT 1 FROM observations WHERE status = 'active' AND stream IN "
+            f"({','.join('?' * len(streams))}) LIMIT 1", streams).fetchone() is None:
+        return None
+    p = ctx.period
+    rows = _obs_rows(ctx, LINKEDIN_CONNECTION_STREAMS, p["start"], p["end"])
+    prior = _obs_rows(ctx, LINKEDIN_CONNECTION_STREAMS, p["prior"]["start"],
+                      p["prior"]["end"])
+    connections = []
+    for r in rows[:MAX_TITLES]:
+        d = _detail(r)
+        connections.append({
+            "id": _cite_observation(ctx, r, position=r["body"]),
+            "date": r["journal_date"], "name": r["title"] or "(no name)",
+            "position": d.get("position") or None, "company": d.get("company") or None})
+    channels = (("linkedin", LINKEDIN_MESSAGE_STREAMS),)
+    people = _contacts(ctx, channels)
+    ranked = sorted(people.items(), key=lambda kv: (
+        -len(kv[1]["channels"]["linkedin"]["obs"]), kv[1]["name"].lower(),
+        kv[1].get("handle") or ""))
+    messages = []
+    for key, person in ranked[:MAX_PEOPLE]:
+        row = {k: person[k] for k in ("name", "entity_id", "resolved")}
+        if "handle" in person:
+            row["handle"] = person["handle"]
+        _cite_channels(ctx, key, person, row, channels)
+        ch = row.pop("linkedin")
+        messages.append({**row, "id": ch["id"], "count": ch["count"],
+                         "in": ch["in"], "out": ch["out"]})
+    total = len(_obs_rows(ctx, LINKEDIN_MESSAGE_STREAMS, p["start"], p["end"]))
+    return {"connections": connections, "connections_total": len(rows),
+            "connections_prior": len(prior), "messages_total": total,
+            "messages": messages}
 
 
 def _money_flow(r) -> tuple[str | None, float]:
@@ -962,14 +1273,99 @@ def _txn_totals(rows) -> dict[str, dict]:
                   for k, v in t.items()} for cur, t in sorted(totals.items())}
 
 
+def _payment_app(r) -> str | None:
+    """The payment app a txn row came from (its own statement), if any."""
+    app = (r["origin_app"] or "").lower()
+    return app if app in PAYMENT_APPS else None
+
+
+def _classify_txns(ctx: _Ctx, rows: list) -> dict:
+    """FINANCE_RULE applied to one period's txn rows: what the totals count
+    (bank lines and payments), payments by counterparty, and what is left
+    out — transfers between your own accounts, and bank lines funding a
+    payment app whose own statement covers the period."""
+    apps_present = {_payment_app(r) for r in rows} - {None}
+    counterparties: dict[int, list] = {}
+    for part in _chunks([r["id"] for r in rows if _payment_app(r)]):
+        for a in ctx.conn.execute(
+                "SELECT p.observation_id, p.handle_kind, p.handle_value, "
+                "h.entity_id, h.display_name, h.ignored "
+                "FROM observation_participants p JOIN entity_handles h "
+                "ON h.kind = p.handle_kind AND h.value = p.handle_value "
+                f"WHERE p.role = 'counterparty' AND p.observation_id IN "
+                f"({','.join('?' * len(part))}) "
+                "ORDER BY p.observation_id, p.handle_kind, p.handle_value", part):
+            counterparties.setdefault(a["observation_id"], []).append(a)
+    out = {"counted": [], "merchant_rows": [], "payments": [], "transfers": [],
+           "funding": []}
+    for r in rows:
+        app = _payment_app(r)
+        if app and _detail(r).get("transfer") is True:
+            out["transfers"].append(r)
+            continue
+        if app is None:
+            text = f"{r['title'] or ''} {r['body'] or ''}"
+            funds = next((a for a in sorted(apps_present) if _APP_WORD[a].search(text)),
+                         None)
+            if funds:
+                out["funding"].append((r, funds))
+                continue
+        out["counted"].append(r)
+        who = [a for a in counterparties.get(r["id"], []) if not a["ignored"]]
+        if app and who:
+            out["payments"].append((r, who[0]))
+        else:
+            out["merchant_rows"].append(r)
+    return out
+
+
+def _payments(ctx: _Ctx, payments: list) -> tuple[list[dict], int]:
+    """Money between you and each counterparty a payment app names: paid
+    (you to them) and received (them to you) per currency, each person's rows
+    cited. A counterparty is a handle, resolved only through `handles link`."""
+    by: dict[tuple, dict] = {}
+    for r, a in payments:
+        key, info = _person(ctx, a["handle_kind"], a["handle_value"], a["entity_id"],
+                            a["display_name"])
+        slot = by.setdefault((key, r["unit"] or ""), {**info, "currency": r["unit"],
+                                                      "paid": 0.0, "received": 0.0,
+                                                      "rows": [], "apps": set()})
+        flow, amount = _money_flow(r)
+        if flow == "spent":
+            slot["paid"] += amount
+        elif flow == "received":
+            slot["received"] += amount
+        slot["rows"].append(r)
+        slot["apps"].add(_payment_app(r))
+    ranked = sorted(by.items(), key=lambda kv: (
+        -(kv[1]["paid"] + kv[1]["received"]), kv[1]["name"].lower(), kv[0][1]))
+    out = []
+    for (key, currency), s in ranked[:MAX_MERCHANTS]:
+        rows = s.pop("rows")
+        s["apps"] = sorted(s["apps"])
+        if s["entity_id"] is not None:
+            s["entity_type"] = ctx.entity_types.get(s["entity_id"])
+        s["paid"], s["received"] = round(s["paid"], 2), round(s["received"], 2)
+        s["net"] = round(s["received"] - s["paid"], 2)
+        s["count"] = len(rows)
+        s["id"] = _count_item(ctx, ("payments", key, currency),
+                              f"payments with {s['name']}", rows, stream="txn",
+                              paid=s["paid"], received=s["received"],
+                              currency=currency, apps=s["apps"])
+        out.append(s)
+    return out, len(by)
+
+
 def _section_finance(ctx: _Ctx, entries: list[dict]) -> dict:
     p = ctx.period
-    out = {"totals": [], "merchants": [], "merchants_total": 0}
+    out = {"totals": [], "merchants": [], "merchants_total": 0,
+           "payments": [], "payments_total": 0, "excluded": {}, "rule": FINANCE_RULE}
     if ctx.observed:
-        rows = _obs_rows(ctx, TXN_STREAMS, p["start"], p["end"])
-        prior = _txn_totals(_obs_rows(ctx, TXN_STREAMS, p["prior"]["start"],
-                                      p["prior"]["end"]))
-        for cur, t in _txn_totals(rows).items():
+        cls = _classify_txns(ctx, _obs_rows(ctx, TXN_STREAMS, p["start"], p["end"]))
+        prior = _txn_totals(_classify_txns(ctx, _obs_rows(
+            ctx, TXN_STREAMS, p["prior"]["start"], p["prior"]["end"]))["counted"])
+        rows = cls["merchant_rows"]
+        for cur, t in _txn_totals(cls["counted"]).items():
             pt = prior.get(cur)
             out["totals"].append({
                 "currency": cur or None, **t,
@@ -1000,6 +1396,20 @@ def _section_finance(ctx: _Ctx, entries: list[dict]) -> dict:
             cid = ctx.ids.cite("O", ("merchant", m["merchant"], m["currency"]), item)
             out["merchants"].append({"id": cid, **m})
         out["merchants_total"] = len(merchants)
+        out["payments"], out["payments_total"] = _payments(ctx, cls["payments"])
+        for name, found, what in (
+                ("transfers", cls["transfers"],
+                 "payment-app transfers between your own accounts (left out)"),
+                ("funding", [r for r, _ in cls["funding"]],
+                 "bank lines funding a payment app (left out)")):
+            if found:
+                apps = sorted({a for _, a in cls["funding"]}) if name == "funding" \
+                    else sorted({_payment_app(r) for r in found})
+                out["excluded"][name] = {
+                    "id": _count_item(ctx, ("excluded", name), what, found,
+                                      stream="txn", apps=apps,
+                                      totals=_txn_totals(found)),
+                    "count": len(found), "apps": apps, "totals": _txn_totals(found)}
     said = [e for e in entries if e["money"]]
     out["journal_spending"] = [{**_compact(ctx, e), "money": e["money"]} for e in said]
     out["purchase_entries"] = [_compact(ctx, e) for e in entries
@@ -1270,17 +1680,125 @@ def _person_line(row: dict) -> str:
     if row["entries"]:
         parts.append(f"in {_n(len(row['entries']), 'entry')} "
                      + "".join(f"[{c}]" for c in row["entries"]))
-    for channel in ("messages", "calls", "meetings"):
+    for channel, _ in CONTACT_CHANNELS:
         ch = row.get(channel)
         if ch:
             detail = ""
-            if channel == "messages":
-                detail = f" ({ch['in']} in, {ch['out']} out)"
+            if channel in ("messages", "emails"):
+                apps = ""
+                if channel == "messages" and len(ch.get("streams") or []) > 1:
+                    apps = "; " + ", ".join(ch["streams"])
+                detail = f" ({ch['in']} in, {ch['out']} out{apps})"
             elif ch.get("minutes"):
                 detail = f" ({_num(ch['minutes'], 'min')})"
             parts.append(f"{_n(ch['count'], channel[:-1])}{detail} [{ch['id']}]")
     who = row["name"] + ("" if row["resolved"] else f" (unresolved {row['handle']})")
     return f"- {who}: " + ", ".join(parts)
+
+
+def _stream_line(o: dict) -> str:
+    label = f" ({o['label']})" if o.get("label") else ""
+    line = f"- [{o['id']}] {o['stream']}{label}: {o['count']} (prior {o['prior_count']})"
+    if "minutes" in o:
+        line += (f" · {_num(o['minutes'], 'min')}"
+                 f" (prior {_num(o.get('prior_minutes') or 0, 'min')})")
+    if o.get("by_day"):
+        line += " · by day: " + ", ".join(f"{d[5:]} {n}" for d, n in o["by_day"].items())
+    return line
+
+
+def _top_set(t: dict) -> str:
+    weight = f"{t['weight']:g}" if isinstance(t.get("weight"), (int, float)) \
+        else str(t.get("weight"))
+    reps = f" × {t['reps']:g}" if isinstance(t.get("reps"), (int, float)) else ""
+    return f"{weight} {t.get('unit') or 'kg'}{reps}"
+
+
+def _workout_lines(w: dict | None) -> list[str]:
+    if w is None:
+        return []
+    head = (f"Workouts logged (Strong / Hevy / Strava): {_n(w['count'], 'session')}, "
+            f"{_num(w['minutes'], 'min')}; prior period {w['prior_count']}, "
+            f"{_num(w['prior_minutes'], 'min')}")
+    out = [head + (f" [{w['id']}]" if w["id"] else "")]
+    out += [f"- [{x['id']}] {x['date']} {x['title']}"
+            + (f" ({_num(x['minutes'], 'min')})" if x["minutes"] is not None else "")
+            for x in w["sessions"]]
+    if w["personal_bests"]:
+        out.append("New personal bests (heaviest top set, vs everything logged before "
+                   "the period):")
+        out += [f"- [{b['id']}] {b['date']} {b['exercise']}: {_top_set(b)}, up from "
+                f"{_top_set(b['previous'])} on {b['previous']['date']} "
+                f"[{b['previous']['id']}]" for b in w["personal_bests"]]
+    return out
+
+
+def _nutrition_lines(n: dict | None) -> list[str]:
+    if n is None:
+        return []
+    out = [f"Nutrition ({n['disclaimer']})",
+           f"{n['days_counted']} day(s) counted ({n['from_daily_summary']} daily "
+           f"summaries, {n['from_food_log']} summed from food_log); reference intakes "
+           f"for {n['profile']}"]
+    for status, title in (("low", "low (below 70% of the reference)"),
+                          ("borderline", "borderline (70-100%)")):
+        for x in n[status]:
+            src = (" · most from " + ", ".join(f"{s['food']} {s['share_percent']}%"
+                                               for s in x["sources"])
+                   if x["sources"] else "")
+            out.append(f"- [{x['id']}] {title}: {x['label']} {_num(x['average'], '')} "
+                       f"{x['unit']}/day, {x['percent']:.1f}% of the "
+                       f"{x['reference']['kind']} {x['reference']['value']:g} "
+                       f"{x['unit']}{src}")
+    for x in n["high"]:
+        out.append(f"- [{x['id']}] high: {x['label']} {_num(x['average'], '')} "
+                   f"{x['unit']}/day, above the {x['reference']['upper_kind']} "
+                   f"{x['reference']['upper']:g} {x['unit']}")
+    for x in n["over_on_some_days"]:
+        out.append(f"- [{x['id']}] {x['label']} above the {x['upper_kind']} "
+                   f"{x['upper']:g} {x['unit']} on {x['days']} day(s): "
+                   + ", ".join(x["dates"]))
+    if not (n["low"] or n["borderline"] or n["high"]) and n["days_counted"]:
+        out.append(f"- nothing below or above the references ({n['meets']} met)")
+    out += [f"  note: {note}" for note in n["notes"]]
+    return out
+
+
+def _linkedin_lines(li: dict | None) -> list[str]:
+    if li is None:
+        return []
+    out = [f"LinkedIn: {li['connections_total']} connection(s) made (prior period "
+           f"{li['connections_prior']}), {li['messages_total']} message(s)"]
+    out += [f"- [{c['id']}] {c['date']} connected: {c['name']}"
+            + (f" — {c['position']}" if c["position"] else "")
+            + (f" at {c['company']}" if c["company"] else "")
+            for c in li["connections"]]
+    out += [f"- [{m['id']}] messages with {m['name']}"
+            + ("" if m["resolved"] else f" (unresolved {m['handle']})")
+            + f": {m['count']} ({m['in']} in, {m['out']} out)" for m in li["messages"]]
+    return out
+
+
+def _payment_lines(s: dict) -> list[str]:
+    out = []
+    if s.get("payments"):
+        out.append("Payments with people (Venmo / PayPal, by counterparty; paid = "
+                   "you to them):")
+        for p in s["payments"]:
+            cur = f" {p['currency']}" if p["currency"] else ""
+            who = p["name"] + ("" if p["resolved"] else f" (unresolved {p['handle']})")
+            out.append(f"- [{p['id']}] {who}: paid {p['paid']:,.2f}{cur}, received "
+                       f"{p['received']:,.2f}{cur} ({_n(p['count'], 'payment')})")
+        if s["payments_total"] > len(s["payments"]):
+            out.append(f"- … and {s['payments_total'] - len(s['payments'])} more")
+    for name, ex in sorted((s.get("excluded") or {}).items()):
+        what = ("transfers between your own accounts" if name == "transfers"
+                else "bank lines funding " + ", ".join(ex["apps"]))
+        out.append(f"- [{ex['id']}] left out of the totals: {_n(ex['count'], 'row')}, "
+                   f"{what}")
+    if out or s.get("excluded"):
+        out.append(f"Counting rule: {s['rule']}.")
+    return out
 
 
 def render_markdown(pack: dict) -> str:
@@ -1349,13 +1867,14 @@ def render_markdown(pack: dict) -> str:
         if s["exercise_entries"]:
             out.append("Exercise in the journal: " + ", ".join(
                 f"[{e['id']}] {e['date']} {e['title']}" for e in s["exercise_entries"]))
+        out += _workout_lines(s.get("workouts"))
+        out += _nutrition_lines(s.get("nutrition"))
         out.append("")
     if pack.get("observations"):
         s = pack["observations"]
         out += [f"## Observed ({s['total']} imported records; prior period "
                 f"{s['prior_total']})", ""]
-        out += [f"- [{o['id']}] {o['stream']}: {o['count']} (prior {o['prior_count']})"
-                for o in s["streams"]] or ["- (no imported records)"]
+        out += [_stream_line(o) for o in s["streams"]] or ["- (no imported records)"]
         if s["top_people"]:
             out += ["", "Top people by contact:"]
             out += [_person_line(r) for r in s["top_people"]]
@@ -1392,6 +1911,7 @@ def render_markdown(pack: dict) -> str:
                 + (f" ({e['minutes']} min)" if e["minutes"] is not None else "")
                 + (f" with {', '.join(e['attendees'])}" if e["attendees"] else "")
                 for e in m["events"]]
+        out += _linkedin_lines(s.get("linkedin"))
         out.append("")
     if "finance" in pack:
         s = pack["finance"]
@@ -1407,6 +1927,7 @@ def render_markdown(pack: dict) -> str:
                 + f" ({m['count']} txn)" for m in s["merchants"]] or ["- (no transactions)"]
         if s["merchants_total"] > len(s["merchants"]):
             out.append(f"- … and {s['merchants_total'] - len(s['merchants'])} more merchants")
+        out += _payment_lines(s)
         if s["journal_spending"]:
             out.append("Amounts said in the journal:")
             out += [f"- [{e['id']}] {e['date']} {e['title']}: "

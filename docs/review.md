@@ -51,7 +51,7 @@ Ids are pack-local, one per thing, numbered in reading order:
 | `E#` | an entry (uuid, date, kind, categories, people, amounts, loop state) | confirmed |
 | `M#` | a journal metric over the period (mood, energy, sleep hours, sleep quality) with the prior period's mean and the change | confirmed |
 | `H#` | a sensor/app health metric over the period, likewise, naming the export files | observed |
-| `O#` | one imported observation (uuid, import uuid), or a count over observations: a stream, a person's messages/calls/meetings, a merchant | observed |
+| `O#` | one imported observation (uuid, import uuid), or a count over observations: a stream, a person's messages/calls/meetings/emails, a merchant, payments with a person, the period's workouts, a nutrient's averaged rows | observed |
 
 `index` maps every id to its details; `review --check` and the sources
 footer read it. Sections, by name:
@@ -68,20 +68,50 @@ footer read it. Sections, by name:
   workouts (sessions and minutes), weight (mean, and change first to last),
   resting heart rate — each vs the prior period, from `health_records`.
   A metric with no data names its last record date, so "no sleep data" reads
-  as a stale import rather than a sleepless week.
-- **observations** — imported records per stream (vs the prior period) and
-  the most-contacted people.
+  as a stale import rather than a sleepless week. Then `workouts`, the
+  sessions logged in Strong, Hevy or Strava (docs/fitness.md): count and
+  minutes vs the prior period, each session cited, and **personal bests** —
+  each exercise whose heaviest top set in the period (`weight_kg`, more reps
+  breaking a tie: the connector's own rule) beats every top set logged
+  before the period, cited beside the set it beat. An exercise first logged
+  in the period has nothing to beat and is not a personal best. `null` when
+  no workout was ever imported. And `nutrition`, when the period holds
+  food-diary rows: `lifecrm nutrients`' report over the period
+  (docs/nutrition.md) — the nutrients that came out low, borderline or high
+  against the reference intakes and the days over an upper level, each
+  cited to the rows it averages, with the report's own line that it is not
+  medical advice and recommends nothing (the brief keeps it; a flagged
+  nutrient is at most a question for a clinician).
+- **observations** — imported records per stream, every stream there is
+  (vs the prior period; minutes for streams that are durations, such as
+  workouts and listening; and, for a period of 31 days or fewer, the count
+  on each day), and the most-contacted people.
 - **titles** — AI chat conversations (grouped, with turn counts) and note
   titles of the period.
 - **relationships** — per person: the entries that name them (and how many
-  as a participant — "saw"), and the messages, calls and meetings with them;
-  then who has not been in contact for `--quiet-weeks` (default 3) weeks
-  before the period end, each with a cited last contact.
+  as a participant — "saw"), and the messages (every messaging app recall
+  knows: iMessage, SMS, RCS, WhatsApp, Instagram, Messenger, Telegram,
+  LinkedIn), calls, meetings and emails with them; then who has not been in
+  contact for `--quiet-weeks` (default 3) weeks before the period end, each
+  with a cited last contact.
 - **career** — work entries, decisions, and calendar meetings: total, timed
-  hours (all-day blocks excluded), and by attendee.
+  hours (all-day blocks excluded), and by attendee. `linkedin` (when
+  LinkedIn was imported): the connections made in the period (LinkedIn's
+  *Connected On* date, with position and company) vs the prior period, and
+  the period's LinkedIn messages per person, in and out.
 - **finance** — spent and received per currency vs the prior period, then
   merchants ranked by spend **under the bank's own description** (no
-  categorization), plus amounts said in the journal.
+  categorization); then **payments with people** — Venmo and PayPal rows
+  (docs/payments.md) by counterparty: paid (you to them), received, net,
+  resolved only through a linked handle — plus amounts said in the journal.
+  Each money movement is counted once (`rule` in the pack): payment-app
+  transfers between your own accounts (`value_json.transfer`) are left
+  out; a bank line naming a payment app (VENMO, PAYPAL) is that app's
+  funding and is left out of the totals whenever the app's own statement has
+  rows in the same period — the app's rows, which name the person, are
+  counted instead; without that statement the bank line counts like any
+  merchant. What was left out is listed under `excluded`, cited. Rides and
+  food orders are not added: the card statement already holds them.
 - **briefs** — briefs already saved for this period (see below). Listed, not
   counted.
 - **coverage**, **notes**, **empty** — how complete the period is ("entries
@@ -90,10 +120,16 @@ footer read it. Sections, by name:
 
 ### People
 
-A contact is counted from the other side's role: an incoming message counts
-its sender (a group message from Jake is contact with Jake, not with
-everyone else in the thread), an outgoing one its recipients, a meeting
-everyone but the location. You are recognized by the rule `ask` and the web
+A contact is counted from the other side's role: an incoming message or
+email counts its sender (a group message from Jake is contact with Jake,
+not with everyone else in the thread; an email you were sent is not contact
+with whoever else was copied), an outgoing one its recipients, a meeting
+everyone but the location. An email with no direction (nothing said which
+address is yours) counts its sender only. "Last contact" for the quiet list
+follows the same rule for messages and emails — recall.last_contact's, the
+one `ask` and the web UI use. Stream groups come from recall's shared lists
+(`TEXT_STREAMS`, `EMAIL_STREAMS`, `STREAM_GROUPS`), so a messaging app added
+there counts here too. You are recognized by the rule `ask` and the web
 UI's People page use (`lifecrm/owner.py`, docs/ask.md "Who you are"): the
 handles `config.toml` lists under `[owner]`, the sender of outgoing records,
 the account an import names, and the entity any of them is linked to — and

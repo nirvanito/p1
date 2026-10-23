@@ -39,9 +39,13 @@
 #   calendar event) count every attendee except the entity linked to a
 #   handle some import names as its own account.
 # - Contact on the people dashboard is the rule `ask` uses
-#   (recall.last_contact): a text, a call that connected (a missed call has
-#   value 0) or a calendar event, dated no later than today. A calendar
-#   export reaches months ahead, and next week's meeting is not contact.
+#   (recall.last_contact, recall.CONTACT_GROUPS): a text on any messaging
+#   app (recall.TEXT_STREAMS), an email, a call that connected (a missed
+#   call has value 0) or a calendar event, dated no later than today. An
+#   email counts its sender, or its recipients when you sent it - never a
+#   Cc on mail someone else sent. A calendar export reaches months ahead,
+#   and next week's meeting is not contact. Stream lists here mirror
+#   recall's shared lists (tests/test_more_fronts_dashboards.py checks it).
 #   "Today" is date('now', 'localtime'), this machine's clock - Datasette
 #   cannot read [time] timezone or the rollover hour.
 # - Summed health metrics (sleep, steps, food energy, workouts) are summed
@@ -182,7 +186,7 @@ plugins:
 
     health:
       title: Health
-      description: Sleep, steps, weight, workouts, heart rate, food - imported from Health Connect or Apple Health
+      description: Sleep, steps, weight, workouts, heart rate, food - imported from Health Connect or Apple Health, workout apps (Strong, Hevy, Strava) and food diaries (Cronometer)
       filters:
         date_start:
           name: From
@@ -194,7 +198,8 @@ plugins:
         - [latest-weight, last-night-sleep, workouts-count]
         - [sleep-per-night, sleep-per-night, weight-trend]
         - [steps-per-day, steps-per-day, heart-rate]
-        - [kcal-per-day, kcal-per-day, .]
+        - [logged-workouts-per-week, logged-workouts-per-week, kcal-per-day]
+        - [diary-kcal-per-day, diary-kcal-per-day, diary-protein-per-day]
       charts:
         latest-weight:
           title: Latest weight
@@ -326,12 +331,104 @@ plugins:
             encoding:
               x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
               y: { field: kcal, type: quantitative }
+        logged-workouts-per-week:
+          title: Logged workouts per week (Strong, Hevy, Strava - minutes)
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            COALESCE(origin_app, '?') AS app, COUNT(*) AS sessions,
+            ROUND(SUM(CASE WHEN unit = 'min' THEN COALESCE(value, 0) ELSE 0 END), 1)
+            AS minutes
+            FROM observations
+            WHERE status='active' AND stream = 'workout'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week, app ORDER BY week DESC, app
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: minutes, type: quantitative }
+              color: { field: app, type: nominal }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: app, type: nominal }
+                - { field: sessions, type: quantitative }
+                - { field: minutes, type: quantitative }
+        diary-kcal-per-day:
+          title: Food diary energy per day (Cronometer / MyFitnessPal, kcal)
+          db: lifecrm
+          query: >-
+            SELECT day, ROUND(kcal) AS kcal, basis
+            FROM (SELECT journal_date AS day, MAX(value) AS kcal,
+            'daily summary' AS basis
+            FROM observations
+            WHERE status='active' AND stream = 'nutrition_day' AND value IS NOT NULL
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day
+            UNION ALL
+            SELECT journal_date, SUM(value), 'food log summed'
+            FROM observations
+            WHERE status='active' AND stream = 'food_log' AND unit = 'kcal'
+            AND value IS NOT NULL
+            AND journal_date NOT IN (SELECT journal_date FROM observations
+            WHERE status='active' AND stream = 'nutrition_day')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY journal_date)
+            ORDER BY day DESC
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
+              y: { field: kcal, type: quantitative }
+              color: { field: basis, type: nominal }
+              tooltip:
+                - { field: day, type: temporal, timeUnit: utcyearmonthdate }
+                - { field: kcal, type: quantitative }
+                - { field: basis, type: nominal }
+        diary-protein-per-day:
+          title: Protein per day (food diary, g)
+          db: lifecrm
+          query: >-
+            SELECT day, ROUND(protein, 1) AS protein
+            FROM (SELECT journal_date AS day,
+            MAX(json_extract(value_json, '$.nutrients.protein[0]')) AS protein
+            FROM observations
+            WHERE status='active' AND stream = 'nutrition_day'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY day
+            UNION ALL
+            SELECT journal_date,
+            SUM(json_extract(value_json, '$.nutrients.protein[0]'))
+            FROM observations
+            WHERE status='active' AND stream = 'food_log'
+            AND journal_date NOT IN (SELECT journal_date FROM observations
+            WHERE status='active' AND stream = 'nutrition_day')
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY journal_date)
+            WHERE protein IS NOT NULL
+            ORDER BY day DESC
+          library: vega-lite
+          display:
+            mark: { type: bar, tooltip: true }
+            encoding:
+              x: { field: day, type: temporal, timeUnit: utcyearmonthdate }
+              y: { field: protein, type: quantitative }
 
     observed:
       title: Observed
       description: >-
-        Texts, calls, AI chats, calendar, money, photos and notes as imported -
-        never reviewed. Open a chart for its SQL and the rows behind it.
+        Texts (every messaging app), email, calls, AI chats, calendar, money,
+        photos, notes, listening and searches as imported - never reviewed.
+        Open a chart for its SQL and the rows behind it.
       filters:
         date_start:
           name: From
@@ -345,6 +442,7 @@ plugins:
         - [calls-per-week, ai-chats-per-week, calendar-per-week]
         - [spending-per-week, spending-per-week, notes-per-month]
         - [photo-map, photo-map, photos-per-month]
+        - [emails-per-week, listening-per-week, searches-per-week]
         - [latest-imports, latest-imports, latest-imports]
       charts:
         observed-records:
@@ -364,7 +462,8 @@ plugins:
           query: >-
             SELECT COUNT(*) AS messages FROM observations
             WHERE status='active' AND stream IN ('imessage','sms','rcs',
-            'android_sms','android_mms','whatsapp')
+            'android_sms','android_mms','whatsapp','instagram_dm','messenger',
+            'telegram','linkedin_message')
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
           library: metric
@@ -386,7 +485,8 @@ plugins:
             SELECT journal_date AS day, stream, COUNT(*) AS messages
             FROM observations
             WHERE status='active' AND stream IN ('imessage','sms','rcs',
-            'android_sms','android_mms','whatsapp')
+            'android_sms','android_mms','whatsapp','instagram_dm','messenger',
+            'telegram','linkedin_message')
             [[ AND journal_date >= :date_start ]]
             [[ AND journal_date <= :date_end ]]
             GROUP BY day, stream ORDER BY day DESC, stream
@@ -411,7 +511,8 @@ plugins:
             FROM observation_participants p
             CROSS JOIN observations o ON o.id = p.observation_id
             WHERE o.status='active' AND o.stream IN ('imessage','sms','rcs',
-            'android_sms','android_mms','whatsapp')
+            'android_sms','android_mms','whatsapp','instagram_dm','messenger',
+            'telegram','linkedin_message')
             AND (p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (COALESCE(o.direction, 'in') = 'in' AND p.role = 'sender'))
@@ -592,6 +693,82 @@ plugins:
             encoding:
               x: { field: month, type: temporal, timeUnit: utcyearmonth }
               y: { field: photos, type: quantitative }
+        emails-per-week:
+          title: Emails per week
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            CASE direction WHEN 'in' THEN 'received' WHEN 'out' THEN 'sent'
+            WHEN 'self' THEN 'to yourself' ELSE 'unknown' END AS mail,
+            COUNT(*) AS emails
+            FROM observations
+            WHERE status='active' AND stream = 'email'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week, mail ORDER BY week DESC, mail
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: emails, type: quantitative }
+              color: { field: mail, type: nominal }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: mail, type: nominal }
+                - { field: emails, type: quantitative }
+        listening-per-week:
+          title: Listening per week (Spotify, minutes)
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            COALESCE(json_extract(value_json, '$.kind'), 'music') AS kind,
+            ROUND(SUM(COALESCE(value, 0)), 1) AS minutes, COUNT(*) AS tracks
+            FROM observations
+            WHERE status='active' AND stream = 'music_play'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week, kind ORDER BY week DESC, kind
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: minutes, type: quantitative }
+              color: { field: kind, type: nominal }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: kind, type: nominal }
+                - { field: minutes, type: quantitative }
+                - { field: tracks, type: quantitative }
+        searches-per-week:
+          title: Searches per week (Google activity)
+          db: lifecrm
+          query: >-
+            SELECT date(journal_date, 'weekday 0', '-6 days') AS week,
+            date(journal_date, 'weekday 0', '+1 days') AS week_end,
+            COALESCE(origin_app, '?') AS product, COUNT(*) AS searches
+            FROM observations
+            WHERE status='active' AND stream = 'web_search'
+            [[ AND journal_date >= :date_start ]]
+            [[ AND journal_date <= :date_end ]]
+            GROUP BY week, product ORDER BY week DESC, product
+          library: vega-lite
+          display:
+            mark: { type: bar }
+            encoding:
+              x: { field: week, type: temporal, scale: { type: utc } }
+              x2: { field: week_end }
+              y: { field: searches, type: quantitative }
+              color: { field: product, type: nominal }
+              tooltip:
+                - { field: week, type: temporal, timeUnit: utcyearmonthdate, title: week of }
+                - { field: product, type: nominal }
+                - { field: searches, type: quantitative }
         latest-imports:
           title: Latest imports (lifecrm imports list)
           db: lifecrm
@@ -625,8 +802,9 @@ plugins:
       title: People
       description: >-
         Who you were in touch with, across both tiers - journal mentions you
-        confirmed, plus texts, calls and calendar events whose handles you
-        linked (lifecrm handles link). Your own handles are left out.
+        confirmed, plus texts (any app), emails, calls and calendar events
+        whose handles you linked (lifecrm handles link). Your own handles are
+        left out.
       filters:
         date_start:
           name: From
@@ -661,8 +839,10 @@ plugins:
             AND h.value = p.handle_value
             WHERE o.status='active' AND h.entity_id IS NOT NULL
             AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
-            'whatsapp','ios_call','android_call','calendar_event')
-            AND (o.direction IS NULL OR p.role = 'participant'
+            'whatsapp','instagram_dm','messenger','telegram','linkedin_message',
+            'email','ios_call','android_call','calendar_event')
+            AND ((o.direction IS NULL AND (o.stream <> 'email' OR p.role = 'sender'))
+            OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
             AND o.journal_date <= date('now', 'localtime')
@@ -704,7 +884,7 @@ plugins:
           display:
             field: mentions
         observed-contacts:
-          title: Texts, calls & events with linked people
+          title: Texts, emails, calls & events with linked people
           db: lifecrm
           query: >-
             WITH me AS (SELECT entity_id FROM entity_handles
@@ -719,8 +899,10 @@ plugins:
             WHERE o.status='active' AND e.type = 'person' AND e.status = 'active'
             AND e.id NOT IN (SELECT entity_id FROM me)
             AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
-            'whatsapp','ios_call','android_call','calendar_event')
-            AND (o.direction IS NULL OR p.role = 'participant'
+            'whatsapp','instagram_dm','messenger','telegram','linkedin_message',
+            'email','ios_call','android_call','calendar_event')
+            AND ((o.direction IS NULL AND (o.stream <> 'email' OR p.role = 'sender'))
+            OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
             AND o.journal_date <= date('now', 'localtime')
@@ -746,8 +928,10 @@ plugins:
             AND h.value = p.handle_value
             WHERE o.status='active' AND h.entity_id IS NOT NULL
             AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
-            'whatsapp','ios_call','android_call','calendar_event')
-            AND (o.direction IS NULL OR p.role = 'participant'
+            'whatsapp','instagram_dm','messenger','telegram','linkedin_message',
+            'email','ios_call','android_call','calendar_event')
+            AND ((o.direction IS NULL AND (o.stream <> 'email' OR p.role = 'sender'))
+            OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
             AND o.journal_date <= date('now', 'localtime')
@@ -806,8 +990,10 @@ plugins:
             AND h.value = p.handle_value
             WHERE o.status='active' AND h.entity_id IS NOT NULL
             AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
-            'whatsapp','ios_call','android_call','calendar_event')
-            AND (o.direction IS NULL OR p.role = 'participant'
+            'whatsapp','instagram_dm','messenger','telegram','linkedin_message',
+            'email','ios_call','android_call','calendar_event')
+            AND ((o.direction IS NULL AND (o.stream <> 'email' OR p.role = 'sender'))
+            OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
             AND o.journal_date <= date('now', 'localtime')
@@ -859,8 +1045,10 @@ plugins:
             AND h.value = p.handle_value
             WHERE o.status='active' AND h.entity_id IS NOT NULL
             AND o.stream IN ('imessage','sms','rcs','android_sms','android_mms',
-            'whatsapp','ios_call','android_call','calendar_event')
-            AND (o.direction IS NULL OR p.role = 'participant'
+            'whatsapp','instagram_dm','messenger','telegram','linkedin_message',
+            'email','ios_call','android_call','calendar_event')
+            AND ((o.direction IS NULL AND (o.stream <> 'email' OR p.role = 'sender'))
+            OR p.role = 'participant'
             OR (o.direction = 'out' AND p.role = 'recipient')
             OR (o.direction = 'in' AND p.role = 'sender'))
             AND o.journal_date <= date('now', 'localtime')

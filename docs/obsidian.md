@@ -89,9 +89,16 @@ day's categories) — then:
   same id `lifecrm ask` cites). The entry's uuid is in a hidden `%%` comment,
   ready for `lifecrm entry show`;
 - an **Observed** section: how many rows each imported stream holds for the
-  day, then up to ten notable items — texts and calls with people you have
-  linked, calendar events, notes, place visits and AI-chat conversations —
-  each ending in `observed` and the uuid of its `observations` row.
+  day, then up to ten notable items — at their time, calendar events, place
+  visits, workouts (with the first line of their summary: `Bench Press
+  (Barbell) 3×5 @ 185 lb; …`), rides and food orders (with the fare);
+  texts (on any messaging app — iMessage, SMS, WhatsApp, Instagram,
+  Messenger, Telegram, LinkedIn) and emails with people you have linked (an
+  email is with its sender, or its recipients when you sent it — never with
+  someone only copied on another person's mail), calls, notes, highlights
+  grouped by book title and books rated or shelved, AI-chat conversations;
+  then minutes listened and the number of searches, as counts only — each
+  ending in `observed` and the uuid of an `observations` row behind it.
 
 **An entity note** has the type, uuid and aliases in front matter (Obsidian
 uses `aliases` for link suggestions), first and last seen, the latest
@@ -102,9 +109,11 @@ in imported data.
 
 *Seen* (first and last seen, the latest contact, the Index's "last seen")
 counts the journal days and the imported records that were an encounter:
-for a person a text, a call that connected or a calendar event — what
-`lifecrm ask` counts as contact — and for a place or anything else any
-imported record. Never a contact card (it is dated the day the contacts were
+for a person a text, an email (they sent it, or you sent it to them — a Cc
+on someone else's mail is not one), a call that connected or a calendar
+event — what `lifecrm ask` counts as contact (recall's `CONTACT_GROUPS`) —
+and for a place or anything else any imported record. Never a contact card
+(it is dated the day the contacts were
 exported), a tapback, a missed call, or a record dated after the newest
 import: a calendar export reaches months ahead, and next week's
 meeting has not been seen yet. The newest import's time stands in for

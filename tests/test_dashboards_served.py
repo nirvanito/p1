@@ -154,8 +154,8 @@ def test_every_card_is_served_and_renderable_with_the_persona_seeded(tmp_path, m
     assert _places(rows("observed", "photo-map", "unfiltered")) == [
         "Lake Bled", "Veracruz All Natural"]
     assert _places(rows("observed", "photo-map", "filtered")) == ["Veracruz All Natural"]
-    assert rows("observed", "messages-count", "unfiltered") == [{"messages": 14}]
-    assert rows("observed", "messages-count", "filtered") == [{"messages": 13}]
+    assert rows("observed", "messages-count", "unfiltered") == [{"messages": 18}]
+    assert rows("observed", "messages-count", "filtered") == [{"messages": 16}]
     assert rows("journal", "days-logged", "filtered") == [{"days": 4}]
     assert rows("journal", "days-logged", "unfiltered") == [{"days": 5}]
     assert rows("journal", "days-logged", "blank from") == [{"days": 5}]

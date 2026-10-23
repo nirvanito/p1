@@ -14,8 +14,12 @@ Health numbers come from recall's own per-day rule (recall._health_days: a
 summed metric takes the one app with the larger total, an averaged one pools
 them), for the Health page's series and the day view's tiles alike, so they
 and `ask` can never disagree about what a day's sleep or steps were. "Last
-contact" is recall.last_contact's rule too: a text, a call that connected or
-a calendar event, nothing dated after today.
+contact" is recall.last_contact's rule too: a text (on any messaging app) or
+an email that passed between you and them, a call that connected or a
+calendar event, nothing dated after today.
+
+Stream groups come from recall's shared lists (TEXT_STREAMS, EMAIL_STREAMS,
+STREAM_GROUPS), so a connector added there is counted here the same way.
 """
 
 from __future__ import annotations
@@ -57,6 +61,23 @@ JOURNAL_ORDER = ("mood", "energy", "sleep_hours", "sleep_quality")
 _AI_NAMES = {"claude": "Claude", "chatgpt": "ChatGPT"}
 _EXCERPT = 280
 _PER_STREAM = 60
+_RECENT_EMAILS = 8
+_PERSON_EMAILS = 10
+
+# The day view's activity strip: streams whose rows are things you did,
+# summed rather than only listed (recall's group names, never re-spelled).
+_WORKOUT = recall.STREAM_GROUPS["workout"]
+_RIDE = recall.STREAM_GROUPS["ride"]
+_FOOD_ORDER = recall.STREAM_GROUPS["food order"]
+_LISTENING = recall.STREAM_GROUPS["listening"]
+_SEARCH = recall.STREAM_GROUPS["search"]
+_FOOD_LOG = recall.STREAM_GROUPS["food"]
+_NUTRITION_DAY = recall.STREAM_GROUPS["nutrition day"]
+_LINKEDIN = recall.STREAM_GROUPS["LinkedIn connection"]
+# The day's food totals: these nutrients, from the day's summary when the
+# diary wrote one, else summed over its food log.
+_FOOD_TOTALS = (("energy", "kcal"), ("protein", "g"), ("carbohydrate", "g"),
+                ("fat", "g"), ("fiber", "g"))
 
 
 def _has_table(conn: sqlite3.Connection, name: str) -> bool:
@@ -173,15 +194,32 @@ def _who(stream: str, direction: str | None, origin_app: str | None,
     if stream.endswith("_chat"):
         bot = _AI_NAMES.get((origin_app or "").lower(), origin_app or "assistant")
         return f"you → {bot}" if direction == "out" else f"{bot} → you"
+    # A payment names the other side as its counterparty; your own account
+    # is its sender (money out) or recipient (money in).
+    counter = [p for p in parts if p["role"] == "counterparty"]
+    if counter and direction in ("out", "in"):
+        return f"you → {names(counter)}" if direction == "out" \
+            else f"{names(counter)} → you"
     senders = [p for p in parts if p["role"] == "sender"]
     receivers = [p for p in parts if p["role"] in ("recipient", "participant")]
     if direction == "out":
         return f"you → {names(receivers)}" if receivers else "you"
     if direction == "in" and senders:
         return f"{names(senders)} → you"
+    if direction == "self":          # an email to yourself, Saved Messages
+        return "you → you"
     others = [p for p in parts if p.get("entity_id") not in owners]
     if not others and parts:
         return "you"
+    # Nothing says which side is yours (an email before [owner] is set): who
+    # wrote to whom, as the headers say — "you" wherever a handle is yours.
+    def side(ps: list[dict]) -> str:
+        shown = list(dict.fromkeys("you" if p.get("entity_id") in owners else name(p)
+                                   for p in ps))
+        return ", ".join(shown[:3]) + (f" +{len(shown) - 3}" if len(shown) > 3 else "")
+
+    if direction is None and senders and receivers:
+        return f"{side(senders)} → {side(receivers)}"
     return names(others) or None
 
 
@@ -411,6 +449,124 @@ def _day_health(conn: sqlite3.Connection, journal_date: str) -> list[dict]:
     return out
 
 
+def _minutes(rows) -> float:
+    return round(sum(r["value"] for r in rows
+                     if r["value"] is not None and (r["unit"] or "") == "min"), 1)
+
+
+def _plays(r) -> int:
+    """How many times a listening row was played that day (one at least)."""
+    n = _loads(r["value_json"]).get("plays")
+    return int(n) if isinstance(n, (int, float)) and not isinstance(n, bool) \
+        and n >= 1 else 1
+
+
+def _priced(rows, tz_name: str) -> dict:
+    """Rides or food orders: each with its fare, and the total when every
+    row is in one currency (a fare is a cost, not a signed transaction)."""
+    units = {r["unit"] for r in rows if r["value"] is not None}
+    total = (round(sum(r["value"] for r in rows if r["value"] is not None), 2)
+             if len(units) == 1 else None)
+    return {"count": len(rows), "total": total,
+            "unit": next(iter(units)) if len(units) == 1 else None,
+            "items": [{"uuid": r["uuid"], "title": r["title"],
+                       "text": _excerpt(r["body"], 120), "value": r["value"],
+                       "unit": r["unit"], "origin_app": r["origin_app"],
+                       "local_time": local_time(r["started_at"], tz_name,
+                                                r["utc_offset_sec"])}
+                      for r in rows]}
+
+
+def _food_totals(day_rows: list, food_rows: list) -> dict | None:
+    """The day's intake: the diary's own daily summary when it wrote one
+    (the newest row wins, as `lifecrm nutrients` reads it), else the food
+    log summed. Only the headline nutrients; `lifecrm nutrients` has the rest."""
+    if not day_rows and not food_rows:
+        return None
+    if day_rows:
+        row = day_rows[-1]
+        values = _loads(row["value_json"]).get("nutrients") or {}
+        basis, uuids = "nutrition_day", [row["uuid"]]
+        totals = {}
+        for key, unit in _FOOD_TOTALS:
+            pair = values.get(key)
+            if isinstance(pair, list) and len(pair) == 2 and pair[1] == unit \
+                    and isinstance(pair[0], (int, float)):
+                totals[key] = round(float(pair[0]), 1)
+        if "energy" not in totals and row["value"] is not None and row["unit"] == "kcal":
+            totals["energy"] = round(row["value"], 1)
+    else:
+        basis, uuids = "food_log", [r["uuid"] for r in food_rows]
+        totals = {}
+        for r in food_rows:
+            values = _loads(r["value_json"]).get("nutrients") or {}
+            for key, unit in _FOOD_TOTALS:
+                pair = values.get(key)
+                if isinstance(pair, list) and len(pair) == 2 and pair[1] == unit \
+                        and isinstance(pair[0], (int, float)):
+                    totals[key] = totals.get(key, 0.0) + float(pair[0])
+        if "energy" not in totals:
+            kcal = [r["value"] for r in food_rows
+                    if r["value"] is not None and r["unit"] == "kcal"]
+            if kcal:
+                totals["energy"] = sum(kcal)
+        totals = {k: round(v, 1) for k, v in totals.items()}
+    return {"basis": basis, "foods": len(food_rows), "uuids": uuids[:20],
+            "totals": [{"key": k, "value": totals[k], "unit": u}
+                       for k, u in _FOOD_TOTALS if k in totals]}
+
+
+def _day_activity(conn: sqlite3.Connection, cfg: Config, journal_date: str) -> dict:
+    """What the day's imports say you did, added up: workouts, rides and
+    food orders (each listed with its row), the food log's totals, minutes
+    listened and how many searches. Every figure is observed and names the
+    rows behind it, so the page cites rather than asserts."""
+    if not _observed(conn):
+        return {}
+
+    def rows(streams):
+        return conn.execute(
+            _OBS_SELECT + "WHERE o.journal_date=? AND o.status='active' "
+            f"AND o.stream IN ({_marks(streams)}) ORDER BY o.started_at, o.id",
+            (journal_date, *streams)).fetchall()
+
+    out: dict = {}
+    workouts = rows(_WORKOUT)
+    if workouts:
+        out["workouts"] = {"count": len(workouts), "minutes": _minutes(workouts),
+                           "items": [{
+                               "uuid": r["uuid"], "title": r["title"],
+                               "text": _excerpt((r["body"] or "").split("\n")[0], 160),
+                               "minutes": r["value"] if r["unit"] == "min" else None,
+                               "origin_app": r["origin_app"],
+                               "local_time": local_time(r["started_at"], cfg.timezone,
+                                                        r["utc_offset_sec"])}
+                               for r in workouts]}
+    for key, streams in (("rides", _RIDE), ("orders", _FOOD_ORDER)):
+        found = rows(streams)
+        if found:
+            out[key] = _priced(found, cfg.timezone)
+    food = _food_totals(rows(_NUTRITION_DAY), rows(_FOOD_LOG))
+    if food:
+        out["food"] = food
+    plays = rows(_LISTENING)
+    if plays:
+        top = sorted(plays, key=lambda r: (-(r["value"] or 0), r["started_at"] or "",
+                                           r["id"]))[:3]
+        out["listening"] = {
+            "minutes": _minutes(plays), "tracks": len(plays),
+            "plays": sum(_plays(r) for r in plays),
+            "top": [{"uuid": r["uuid"], "title": r["title"], "by": r["body"],
+                     "minutes": r["value"]} for r in top]}
+    searches = conn.execute(
+        f"SELECT COUNT(*) AS n FROM observations WHERE journal_date=? "
+        f"AND status='active' AND stream IN ({_marks(_SEARCH)})",
+        (journal_date, *_SEARCH)).fetchone()["n"]
+    if searches:
+        out["searches"] = {"count": searches}
+    return out
+
+
 def _neighbor(conn: sqlite3.Connection, journal_date: str, before: bool) -> str | None:
     op, agg = ("<", "MAX") if before else (">", "MIN")
     parts = [f"SELECT {agg}(journal_date) AS d FROM entries "
@@ -477,6 +633,7 @@ def day(conn: sqlite3.Connection, cfg: Config, journal_date: str) -> dict:
         "entries_count": len(entries),
         "by_category": [{"category": k, "entries": v} for k, v in groups.items()],
         "health": _day_health(conn, journal_date),
+        "activity": _day_activity(conn, cfg, journal_date),
         "observed": observed,
         "sources": sources,
     }
@@ -556,13 +713,16 @@ def _owner_entities(conn: sqlite3.Connection, cfg: Config,
 def _contact_clause(today_iso: str, they_sent: str,
                     they_sent_args: tuple = ()) -> tuple[str, list]:
     """What counts as contact with someone — the rule `ask` answers 'when did
-    I last talk to X' with (recall.last_contact): a text that passed between
-    you and them (one they sent, or one you sent), a call that connected, or
-    a calendar event, never dated after today. A group message someone else
-    sent is not them texting you, a missed call is an attempt, a reaction or
-    a note is not a conversation, and next week's meeting has not happened
-    yet. `they_sent` is the SQL saying this person sent row o."""
-    texts, calls = recall.TEXT_STREAMS, recall.CALL_STREAMS
+    I last talk to X' with (recall.last_contact): a text on any messaging app
+    or an email that passed between you and them (one they sent, or one you
+    sent), a call that connected, or a calendar event, never dated after
+    today. A group message someone else sent is not them texting you, an
+    email they were only copied on is not them writing, a missed call is an
+    attempt, a reaction or a note is not a conversation, and next week's
+    meeting has not happened yet. `they_sent` is the SQL saying this person
+    sent row o."""
+    texts = recall.TEXT_STREAMS + recall.EMAIL_STREAMS
+    calls = recall.CALL_STREAMS
     calendar = recall.STREAM_GROUPS["calendar"]
     return ((f"((o.stream IN ({_marks(texts)}) "
              f"AND (o.direction = 'out' OR {they_sent})) "
@@ -639,7 +799,15 @@ def people(conn: sqlite3.Connection, cfg: Config) -> dict:
     # Most recent contact first; a stable sort keeps the never-contacted in
     # name order at the end.
     out.sort(key=lambda x: (x["last_contact"] or {}).get("date") or "", reverse=True)
-    return {"today": now, "people": out}
+    recent_emails = []
+    if _observed(conn):
+        emails = recall.EMAIL_STREAMS
+        rows = conn.execute(
+            _OBS_SELECT + f"WHERE o.stream IN ({_marks(emails)}) AND o.status='active' "
+            f"AND o.journal_date <= ? ORDER BY {_RECENT_FIRST} LIMIT ?",
+            (*emails, now, _RECENT_EMAILS)).fetchall()
+        recent_emails = _obs_items(conn, cfg, rows)
+    return {"today": now, "people": out, "recent_emails": recent_emails}
 
 
 def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
@@ -673,8 +841,8 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
         "JOIN entries e ON e.id=m.entry_id "
         f"WHERE m.entity_id IN ({_marks(ids)}) AND e.status='active'", ids).fetchone()["c"]
     out.update({"handles": [], "observations": [], "upcoming": [], "streams": [],
-                "contact_cards": [], "last_contact": None,
-                "last_in": None, "last_out": None})
+                "contact_cards": [], "linkedin": None, "emails": [],
+                "last_contact": None, "last_in": None, "last_out": None})
     latest_entry = out["mentions"][0] if out["mentions"] else None
     latest_obs = None
     if _observed(conn):
@@ -718,6 +886,28 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
         out["contact_cards"] = [
             {**item, "fields": _card_fields(_loads(r["value_json"]))}
             for item, r in zip(_obs_items(conn, cfg, cards, full=True), cards)]
+        # Where they work, as their LinkedIn connection row says it — the
+        # newest export's row wins (a new job updates the row in place).
+        li = conn.execute(
+            _OBS_SELECT + "WHERE " + involving +
+            f"AND o.stream IN ({_marks(_LINKEDIN)}) "
+            "ORDER BY COALESCE(o.last_modified_at, o.started_at) DESC, o.id DESC "
+            "LIMIT 1", (*args, *_LINKEDIN)).fetchone()
+        if li is not None:
+            d = _loads(li["value_json"])
+            out["linkedin"] = {
+                "uuid": li["uuid"], "tier": "observed", "name": li["title"],
+                "position": d.get("position") or None,
+                "company": d.get("company") or None,
+                "headline": li["body"], "connected_on": li["journal_date"],
+                "import": {"uuid": li["import_uuid"], "connector": li["connector"]}}
+        emails = recall.EMAIL_STREAMS
+        rows = conn.execute(
+            _OBS_SELECT + "WHERE " + involving +
+            f"AND o.stream IN ({_marks(emails)}) AND o.journal_date <= ? "
+            f"ORDER BY {_RECENT_FIRST} LIMIT ?",
+            (*args, *emails, now, _PERSON_EMAILS)).fetchall()
+        out["emails"] = _obs_items(conn, cfg, rows)
         if not is_owner:
             sent_by_them = (
                 "EXISTS (SELECT 1 FROM observation_participants ps "
@@ -918,7 +1108,104 @@ def health(conn: sqlite3.Connection, cfg: Config, days: int = 14,
             "metrics": metrics, "journal": journal,
             "missing": [{"metric": m, "label": recall.HEALTH_METRICS[m]["label"],
                          "latest": latest.get(m)} for m in missing if m in latest],
-            "latest": latest}
+            "latest": latest,
+            "workouts": _workouts_per_week(conn, hi, days),
+            "nutrition": _nutrition_summary(conn, cfg, window, days)}
+
+
+_MIN_WEEKS = 8
+
+
+def _workouts_per_week(conn: sqlite3.Connection, end: date, days: int) -> dict | None:
+    """Logged workouts (the fitness connector's `workout` rows: Strong, Hevy,
+    Strava) per Monday-to-Sunday week, over at least eight weeks ending with
+    `end`'s week — a fortnight is two bars. None when none were imported."""
+    if not _observed(conn) or conn.execute(
+            f"SELECT 1 FROM observations WHERE status='active' "
+            f"AND stream IN ({_marks(_WORKOUT)}) LIMIT 1", _WORKOUT).fetchone() is None:
+        return None
+    weeks = max(_MIN_WEEKS, -(-days // 7))
+    last_monday = end - timedelta(days=end.weekday())
+    first = last_monday - timedelta(weeks=weeks - 1)
+    per: dict[str, dict] = {}
+    for r in conn.execute(
+            "SELECT journal_date, value, unit, uuid FROM observations "
+            f"WHERE status='active' AND stream IN ({_marks(_WORKOUT)}) "
+            "AND journal_date BETWEEN ? AND ? ORDER BY started_at, id",
+            (*_WORKOUT, first.isoformat(), end.isoformat())):
+        d = date.fromisoformat(r["journal_date"])
+        week = (d - timedelta(days=d.weekday())).isoformat()
+        slot = per.setdefault(week, {"sessions": 0, "minutes": 0.0, "uuids": []})
+        slot["sessions"] += 1
+        if r["value"] is not None and r["unit"] == "min":
+            slot["minutes"] += r["value"]
+        slot["uuids"].append(r["uuid"])
+    out = []
+    for i in range(weeks):
+        week = (first + timedelta(weeks=i)).isoformat()
+        slot = per.get(week, {"sessions": 0, "minutes": 0.0, "uuids": []})
+        out.append({"week": week, "sessions": slot["sessions"],
+                    "minutes": round(slot["minutes"], 1), "uuids": slot["uuids"][:20]})
+    latest = conn.execute(
+        f"SELECT MAX(journal_date) AS d FROM observations WHERE status='active' "
+        f"AND stream IN ({_marks(_WORKOUT)})", _WORKOUT).fetchone()["d"]
+    return {"start": first.isoformat(), "end": end.isoformat(), "weeks": out,
+            "sessions": sum(w["sessions"] for w in out),
+            "minutes": round(sum(w["minutes"] for w in out), 1), "latest": latest,
+            "tier": "observed"}
+
+
+def _nutrition_summary(conn: sqlite3.Connection, cfg: Config, window: dict,
+                       days: int) -> dict | None:
+    """`lifecrm nutrients` over the page's window (lifecrm/nutrients.py, the
+    same report): which nutrients came out low, borderline or high against
+    the reference intakes, with the report's not-medical-advice line. None
+    when nothing was logged in the window."""
+    from .. import nutrients
+    if not _observed(conn) or conn.execute(
+            f"SELECT 1 FROM observations WHERE status='active' "
+            f"AND stream IN ({_marks(nutrients.STREAMS)}) "
+            "AND journal_date BETWEEN ? AND ? LIMIT 1",
+            (*nutrients.STREAMS, window["start"], window["end"])).fetchone() is None:
+        return None
+    try:
+        prof = nutrients.profile(cfg)
+    except DomainError as e:
+        return {"error": str(e), "disclaimer": nutrients.DISCLAIMER}
+    report = nutrients.build_report(conn, cfg, {
+        "start": window["start"], "end": window["end"], "days": days,
+        "label": window["label"], "today": today(cfg)}, prof=prof)
+    items = {x["key"]: x for x in report["nutrients"]}
+    uuid_of = {}
+    ids = sorted({i for x in report["nutrients"]
+                  for i in x["cites"]["nutrition_day"] + x["cites"]["food_log"]})
+    for chunk in _chunks(ids):
+        for r in conn.execute(f"SELECT id, uuid FROM observations "
+                              f"WHERE id IN ({_marks(chunk)})", chunk):
+            uuid_of[r["id"]] = r["uuid"]
+
+    def line(key: str) -> dict:
+        x = items[key]
+        ref = x["reference"]
+        cited = x["cites"]["nutrition_day"] + x["cites"]["food_log"]
+        return {"key": key, "label": ref["label"], "average": x["average"],
+                "unit": x["unit"], "percent": x["percent"], "status": x["status"],
+                "reference_kind": ref["kind"], "reference": ref["value"],
+                "upper_kind": ref["upper_kind"], "upper": ref["upper"],
+                "days_over": len(x["days_over"]), "rows": len(cited),
+                "latest_uuid": uuid_of.get(max(cited)) if cited else None,
+                "sources": [{"food": s["food"], "share_percent": s["share_percent"]}
+                            for s in x.get("sources") or []]}
+
+    cov = report["coverage"]
+    return {"disclaimer": report["disclaimer"], "profile": report["profile"]["label"],
+            "start": window["start"], "end": window["end"],
+            "days_counted": cov["days_counted"], "tier": "observed",
+            "low": [line(k) for k in report["low"]],
+            "borderline": [line(k) for k in report["borderline"]],
+            "high": [line(k) for k in report["high"]],
+            "over_on_some_days": [line(k) for k in report["over_on_some_days"]],
+            "meets": len(report["meets"]), "notes": report["notes"]}
 
 
 # ---------------------------------------------------------------- status

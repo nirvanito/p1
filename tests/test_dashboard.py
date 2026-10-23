@@ -147,9 +147,23 @@ JAKE_PH, JAKE_EM = ("phone", JAKE.phone), ("email", JAKE.email)
 MAYA_PH, MOM_PH = ("phone", MAYA.phone), ("phone", MOM.phone)
 PRIYA_PH, SAM_PH = ("phone", PRIYA.phone), ("phone", SAM.phone)
 ROSA = ("app_account", "whatsapp:Tía Rosa")
+# The newer messaging apps and email: handles as their connectors emit them.
+ME_IG, MAYA_IG = ("app_account", "instagram:alex.rivera"), ("app_account",
+                                                             "instagram:maya.climbs")
+ME_FB, MOM_FB = ("app_account", "messenger:Alex Rivera"), ("app_account",
+                                                           "messenger:Linda Rivera")
+ME_TG, SAM_TG = ("app_account", "telegram:user100"), ("app_account",
+                                                      "telegram:user555")
+ME_LI, PRIYA_LI = ("app_account", "linkedin:in/alex-rivera-pm"), ("app_account",
+                                                                  "linkedin:in/priya-n")
+PRIYA_EM = ("email", PRIYA.email)
+OWNER_HANDLES = (ME_PH, ME_EM, ME_IG, ME_FB, ME_TG, ME_LI)
 _DISPLAY = {ME_PH: "you (this phone)", JAKE_PH: JAKE.name, JAKE_EM: JAKE.name,
             MAYA_PH: MAYA.name, MOM_PH: "Mom", PRIYA_PH: PRIYA.name,
-            SAM_PH: SAM.name, ROSA: "Tía Rosa"}
+            SAM_PH: SAM.name, ROSA: "Tía Rosa", MAYA_IG: MAYA.name,
+            MOM_FB: MOM.name, SAM_TG: SAM.name, PRIYA_LI: PRIYA.name,
+            PRIYA_EM: PRIYA.name, ME_IG: ME.name, ME_FB: ME.name, ME_TG: ME.name,
+            ME_LI: ME.name}
 BLED = persona.place("bled")
 VERACRUZ = persona.place("veracruz")
 BLED_DAY = persona.bled_trip_days(date(2026, 7, 27))[1].isoformat()
@@ -280,6 +294,77 @@ def _seed_observed(conn, tag: str = "a") -> list[str]:
             _obs("note", f"{t}29", "2026-07-02T15:00:00Z", title="Gift ideas for Maya",
                  body="- ceramics class voucher (Austin Clay Studio)"),
         ]),
+        # The newer sources (docs/meta_messages.md, telegram.md, linkedin.md,
+        # email.md, fitness.md, spotify.md, google_activity.md, nutrition.md).
+        _import(conn, "meta_messages", [
+            _obs("instagram_dm", f"{t}30", "2026-07-25T18:00:00Z", direction="in",
+                 who=((MAYA_IG, "sender"), (ME_IG, "recipient")), title=MAYA.name,
+                 body="Bouldering Saturday?"),
+            _obs("messenger", f"{t}31", "2026-07-25T19:00:00Z", direction="out",
+                 who=((ME_FB, "sender"), (MOM_FB, "recipient")), title=MOM.name,
+                 body="Call you Sunday"),
+        ], account=ME_IG[1]),
+        _import(conn, "telegram", [
+            _obs("telegram", f"{t}32", "2026-07-26T09:00:00Z", direction="in",
+                 who=((SAM_TG, "sender"), (ME_TG, "recipient")),
+                 title="Saturday Climbers", body="Gym at 9?"),
+        ], account=ME_TG[1]),
+        _import(conn, "linkedin", [
+            _obs("linkedin_message", f"{t}33", "2026-06-20T14:00:00Z", direction="in",
+                 who=((PRIYA_LI, "sender"), (ME_LI, "recipient")), title=PRIYA.name,
+                 body="Congrats on the launch"),
+        ], account=ME_LI[1]),
+        _import(conn, "email", [
+            _obs("email", f"{t}34", "2026-07-21T15:00:00Z", direction="in",
+                 who=((JAKE_EM, "sender"), (ME_EM, "recipient")), title="Bled photos"),
+            _obs("email", f"{t}35", "2026-07-22T16:00:00Z", direction="out",
+                 who=((ME_EM, "sender"), (JAKE_EM, "recipient")),
+                 title="Re: Bled photos"),
+            # Jake only copied on Priya's mail: not contact with Jake
+            _obs("email", f"{t}36", "2026-07-23T13:00:00Z", direction="in",
+                 who=((PRIYA_EM, "sender"), (ME_EM, "recipient"),
+                      (JAKE_EM, "recipient")), title="Offsite dates"),
+            _obs("email", f"{t}37", "2026-07-24T08:00:00Z", direction="self",
+                 who=((ME_EM, "sender"), (ME_EM, "recipient")), title="Passport scan"),
+        ], account=ME.email),
+        _import(conn, "fitness", [
+            _obs("workout", f"{t}38", "2026-07-22T12:00:00Z", title="Push Day",
+                 value=60.0, unit="min", origin_app="strong"),
+            _obs("workout", f"{t}39", "2026-07-24T12:30:00Z", title="Zilker Park 5k",
+                 value=30.0, unit="min", origin_app="strava"),
+            _obs("workout", f"{t}40", "2026-06-10T12:00:00Z", title="Leg Day",
+                 value=45.0, unit="min", origin_app="strong"),
+        ]),
+        _import(conn, "spotify", [
+            _obs("music_play", f"{t}41", "2026-07-20T08:00:00Z", title="Be Sweet",
+                 body="Japanese Breakfast", value=30.5, unit="min",
+                 origin_app="spotify", detail={"plays": 3, "kind": "music"}),
+            _obs("music_play", f"{t}42", "2026-07-21T08:00:00Z",
+                 title="Slovenia's Lakes", body="The Slow Traveler", value=44.0,
+                 unit="min", origin_app="spotify", detail={"plays": 1, "kind": "podcast"}),
+        ]),
+        _import(conn, "google_activity", [
+            _obs("web_search", f"{t}43", "2026-07-20T17:00:00Z",
+                 title="veracruz tacos hours", origin_app="google_search"),
+            _obs("web_search", f"{t}44", "2026-07-27T17:00:00Z",
+                 title="bled castle tickets", origin_app="youtube"),
+        ]),
+        _import(conn, "nutrition", [
+            _obs("nutrition_day", f"{t}45", "2026-07-20T17:00:00Z",
+                 title="Nutrition 2026-07-20", value=2400.0, unit="kcal",
+                 detail={"nutrients": {"energy": [2400.0, "kcal"],
+                                       "protein": [150.0, "g"]}}),
+            _obs("food_log", f"{t}46", "2026-07-21T12:00:00Z", title="Turkey Chili",
+                 value=600.0, unit="kcal",
+                 detail={"nutrients": {"energy": [600.0, "kcal"], "protein": [40.0, "g"]}}),
+            _obs("food_log", f"{t}47", "2026-07-21T19:00:00Z", title="Salmon",
+                 value=900.0, unit="kcal",
+                 detail={"nutrients": {"energy": [900.0, "kcal"], "protein": [55.0, "g"]}}),
+            # a day with a daily summary: its foods are never added again
+            _obs("food_log", f"{t}48", "2026-07-20T12:00:00Z", title="Oatmeal",
+                 value=800.0, unit="kcal",
+                 detail={"nutrients": {"energy": [800.0, "kcal"], "protein": [30.0, "g"]}}),
+        ]),
     ]
 
 
@@ -304,8 +389,9 @@ def _seed(conn) -> dict:
            for p in (ME, JAKE, MAYA, MOM)}
     veracruz = entities.create(conn, "place", VERACRUZ.name)["id"]
     _seed_observed(conn)
-    for handle, key in ((ME_PH, "me"), (ME_EM, "me"), (JAKE_PH, "jake"),
-                        (JAKE_EM, "jake"), (MAYA_PH, "maya"), (MOM_PH, "mom")):
+    for handle, key in ((JAKE_PH, "jake"), (JAKE_EM, "jake"), (MAYA_PH, "maya"),
+                        (MOM_PH, "mom"), (MAYA_IG, "maya"), (MOM_FB, "mom"),
+                        *((h, "me") for h in OWNER_HANDLES)):
         obs.link_handle(conn, *handle, ids[key])
 
     _entry(conn, "2026-06-10", "event", "Bouldering with Maya at Movement",
@@ -496,10 +582,11 @@ def test_seeded_rows_come_back_on_every_observed_card(conn):
     def rows(name, options=None):
         return run(conn, _chart(f"observed.{name}"), options or {})[1]
 
-    assert rows("observed-records") == [{"records": 29}]
-    assert rows("messages-count") == [{"messages": 14}]       # no reaction
+    assert rows("observed-records") == [{"records": 48}]
+    assert rows("messages-count") == [{"messages": 18}]       # no reaction
     assert {r["stream"] for r in rows("texts-per-day")} == {
-        "imessage", "sms", "rcs", "android_sms", "android_mms", "whatsapp"}
+        "imessage", "sms", "rcs", "android_sms", "android_mms", "whatsapp",
+        "instagram_dm", "messenger", "telegram", "linkedin_message"}
     assert rows("calls-per-week") == [{"week": "2026-07-20", "week_end": "2026-07-27",
                                        "calls": 3, "minutes": 27.0}]
     assert rows("ai-chats-per-week") == [
@@ -520,14 +607,16 @@ def test_seeded_rows_come_back_on_every_observed_card(conn):
     assert _places(rows("photo-map")) == ["Lake Bled", "Veracruz All Natural"]
     assert {r["photos"] for r in rows("photo-map")} == {1}
     imports = rows("latest-imports")
-    assert {r["connector"] for r in imports} == {
-        "ios_messages", "android_sms", "whatsapp", "ios_calls", "ai_chat",
-        "calendar", "finance", "photos", "notes"}
+    # the twelve newest of the seventeen runs, newest first
+    assert [r["connector"] for r in imports] == [
+        "nutrition", "google_activity", "spotify", "fitness", "email", "linkedin",
+        "telegram", "meta_messages", "notes", "photos", "finance", "calendar"]
     assert all(r["status"] == "applied" and r["finished"] for r in imports)
-    assert next(r for r in imports if r["connector"] == "ios_messages")["counts"] \
-        == "9 added, 0 updated, 0 identical"
-    # Priya, Sam and Tia Rosa: seen in texts, not linked to anyone yet
-    assert rows("unresolved-handles") == [{"handles": 3}]
+    assert next(r for r in imports if r["connector"] == "email")["counts"] \
+        == "4 added, 0 updated, 0 identical"
+    # Priya (phone, LinkedIn, email), Sam (phone, Telegram) and Tia Rosa:
+    # seen, not linked to anyone yet
+    assert rows("unresolved-handles") == [{"handles": 6}]
 
 
 def test_date_filters_narrow_the_observed_cards(conn):
@@ -536,7 +625,7 @@ def test_date_filters_narrow_the_observed_cards(conn):
     def rows(name, options):
         return run(conn, _chart(f"observed.{name}"), options)[1]
 
-    assert rows("messages-count", FILTERED) == [{"messages": 13}]   # not June
+    assert rows("messages-count", FILTERED) == [{"messages": 16}]   # not June
     assert [r["month"] for r in rows("photos-per-month", FILTERED)] == ["2026-07-01"]
     assert _places(rows("photo-map", FILTERED)) == ["Veracruz All Natural"]
     assert rows("ai-chats-per-week", {"date_start": "2026-07-13"})[0]["vendor"] == "Claude"
@@ -548,13 +637,18 @@ def test_top_people_resolve_through_handles_and_never_include_the_owner(conn):
     _seed(conn)
     rows = run(conn, _chart("observed.top-people"), {})[1]
     # The other party of each message: whom the owner wrote to, who wrote to
-    # the owner. Jake: 5 iMessages + the group MMS; Mom: 2 SMS + 2 WhatsApp.
+    # the owner. Jake: 5 iMessages + the group MMS; Mom: 2 SMS + 2 WhatsApp
+    # + 1 Messenger; Maya: 2 SMS + the MMS + 1 Instagram DM. An unlinked
+    # handle is its own row: Priya by phone and on LinkedIn, Sam by phone and
+    # on Telegram.
     assert rows == [
         {"person": "Jake Morales", "handle": "linked", "messages": 6},
-        {"person": "Linda Rivera", "handle": "linked", "messages": 4},
-        {"person": "Maya Chen", "handle": "linked", "messages": 3},
+        {"person": "Linda Rivera", "handle": "linked", "messages": 5},
+        {"person": "Maya Chen", "handle": "linked", "messages": 4},
         {"person": "Tía Rosa", "handle": "not linked yet", "messages": 2},
         {"person": "Priya Natarajan", "handle": "not linked yet", "messages": 1},
+        {"person": "Priya Natarajan", "handle": "not linked yet", "messages": 1},
+        {"person": "Sam Okafor", "handle": "not linked yet", "messages": 1},
         {"person": "Sam Okafor", "handle": "not linked yet", "messages": 1}]
     assert run(conn, _chart("observed.top-people"), FILTERED)[1][0]["messages"] == 5
 
@@ -562,6 +656,10 @@ def test_top_people_resolve_through_handles_and_never_include_the_owner(conn):
 def test_an_ignored_handle_drops_out_of_top_people(conn):
     _seed(conn)
     obs.ignore_handle(conn, *SAM_PH)
+    rows = run(conn, _chart("observed.top-people"), {})[1]
+    # his Telegram handle is a handle of its own, still listed until ignored too
+    assert [r["person"] for r in rows].count(SAM.name) == 1
+    obs.ignore_handle(conn, *SAM_TG)
     people = {r["person"] for r in run(conn, _chart("observed.top-people"), {})[1]}
     assert SAM.name not in people and "Tía Rosa" in people
 
@@ -576,21 +674,23 @@ def test_people_dashboard_counts_both_tiers_and_leaves_the_owner_out(conn):
     # Jake twice (one entry naming him in two roles counts once), Mom, Maya
     assert rows("journal-mentions") == [{"mentions": 4}]
     assert rows("journal-mentions", FILTERED) == [{"mentions": 3}]
-    assert rows("observed-contacts") == [{"contacts": 15}]
+    # + Maya's Instagram DM, the Messenger text to Mom, and Jake's two emails
+    # (the one he was only copied on is not contact)
+    assert rows("observed-contacts") == [{"contacts": 19}]
     by_tier = {(r["person"], r["tier"]): r["contacts"] for r in rows("contacts-by-tier")}
-    assert by_tier == {("Jake Morales", "observed"): 8, ("Jake Morales", "journal"): 2,
-                       ("Linda Rivera", "observed"): 5, ("Linda Rivera", "journal"): 1,
-                       ("Maya Chen", "observed"): 3, ("Maya Chen", "journal"): 1}
+    assert by_tier == {("Jake Morales", "observed"): 10, ("Jake Morales", "journal"): 2,
+                       ("Linda Rivera", "observed"): 6, ("Linda Rivera", "journal"): 1,
+                       ("Maya Chen", "observed"): 4, ("Maya Chen", "journal"): 1}
     assert rows("last-contact") == [
         {"person": "Jake Morales", "last_contact": "2026-07-26", "via": "imessage",
-         "journal": 2, "observed": 8},
-        {"person": "Linda Rivera", "last_contact": "2026-07-24", "via": "whatsapp",
-         "journal": 1, "observed": 5},
-        {"person": "Maya Chen", "last_contact": "2026-07-24", "via": "android_mms",
-         "journal": 1, "observed": 3}]
+         "journal": 2, "observed": 10},
+        {"person": "Linda Rivera", "last_contact": "2026-07-25", "via": "messenger",
+         "journal": 1, "observed": 6},
+        {"person": "Maya Chen", "last_contact": "2026-07-25", "via": "instagram_dm",
+         "journal": 1, "observed": 4}]
     weeks = rows("contacts-per-week", FILTERED)
     assert {r["person"] for r in weeks} == {"Jake Morales", "Linda Rivera", "Maya Chen"}
-    assert sum(r["contacts"] for r in weeks if r["person"] == "Jake Morales") == 9
+    assert sum(r["contacts"] for r in weeks if r["person"] == "Jake Morales") == 11
     assert all(r["week_end"] > r["week"] for r in weeks)
 
 
