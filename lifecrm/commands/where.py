@@ -6,10 +6,11 @@ it". This walks the platform's known places (platforms.py), the configured
 journal folders and the usual places an export gets saved to, and prints
 each with whether it exists and the command that reads it.
 
-It only looks. Nothing is opened as a database, nothing is imported or
+It only looks. Nothing is opened — not a database, not a zip (exports are
+recognised by the names their apps give them) — nothing is imported or
 written, no iCloud download is requested (intake does that) — and a place
-macOS guards (Messages, iPhone backups, Contacts) is reported as 'no access'
-with the Full Disk Access fix instead of a traceback.
+macOS guards (Messages, Mail, iPhone backups, Contacts) is reported as 'no
+access' with the Full Disk Access fix instead of a traceback.
 """
 
 from __future__ import annotations
@@ -27,7 +28,10 @@ FULL_DISK_ACCESS = ("grant Full Disk Access to your terminal: System Settings �
                     "Privacy & Security › Full Disk Access")
 
 # Exports people save by hand, by the names the apps give them. Matched
-# case-insensitively against the top level of each drop folder.
+# case-insensitively against the top level of each drop folder, by NAME only:
+# nothing is opened (a zip's contents are the connector's to read, and
+# opening a file iCloud has evicted would download it). A pattern ending in
+# '/' matches a folder only. The first kind that matches a name wins.
 EXPORTS = (
     ("health", "Apple Health", ("export.zip", "export *.zip", "export(*).zip",
                                 "export (*).zip", "apple_health_export")),
@@ -37,8 +41,67 @@ EXPORTS = (
     ("takeout", "Google Takeout", ("takeout-*.zip", "takeout")),
     ("whatsapp", "WhatsApp chat export", ("whatsapp chat*.zip", "whatsapp chat*.txt")),
     ("calendar", "calendar export", ("*.ics",)),
+    ("email", "mailbox", ("*.mbox",)),
+    ("meta", "Instagram / Facebook export",
+     ("instagram-*.zip", "instagram_*.zip", "facebook-*.zip", "facebook_*.zip",
+      "messenger-*.zip", "meta-*.zip", "instagram-*/", "facebook-*/",
+      "your_instagram_activity/", "your_facebook_activity/",
+      "your_activity_across_facebook/")),
+    ("telegram", "Telegram Desktop export",
+     ("telegram desktop/", "chatexport_*", "dataexport_*")),
+    ("fitness", "Strong / Hevy / Strava export",
+     ("strong*.csv", "workouts*.csv", "export_*.zip", "export_*/")),
+    ("spotify", "Spotify download",
+     ("my_spotify_data*.zip", "my_spotify_data*/", "spotify*/")),
+    ("reading", "Kindle clippings", ("my clippings*.txt",)),
+    ("reading", "Goodreads export", ("goodreads_library_export*.csv",)),
+    ("nutrition", "Cronometer export", ("servings*.csv", "dailysummary*.csv")),
+    ("nutrition", "MyFitnessPal export", ("nutrition-summary-*.csv",)),
+    ("linkedin", "LinkedIn export", ("*linkedindataexport*",)),
+    ("payments", "Venmo statement", ("venmo*.csv",)),
+    ("payments", "PayPal activity report", ("download.csv", "download (*).csv",
+                                            "paypal*.csv")),
+    ("rides", "Uber data export", ("uber data*",)),
 )
 MAX_LISTED = 8
+
+# The connectors that each read their own part of one Google Takeout. Not
+# browser: it reads a browser's own SQLite History, and Takeout's Chrome
+# history is a JSON file it refuses.
+TAKEOUT_CONNECTORS = ("calendar", "email", "google_activity", "location", "notes",
+                      "photos")
+
+# Per kind: the group's title, a stand-in path for the command when nothing
+# was found, and the command(s) that read one export. Listed in report order.
+EXPORT_GROUPS = {
+    "health": ("Health exports (Apple Health, Health Connect)", "<export.zip>",
+               ("health import",)),
+    "sms": ("SMS Backup & Restore (Android texts and calls)", "<sms-....xml>",
+            ("observe android_sms",)),
+    "takeout": ("Google Takeout", "<takeout-....zip>",
+                tuple(f"observe {c}" for c in TAKEOUT_CONNECTORS)),
+    "whatsapp": ("WhatsApp chat exports", "<WhatsApp Chat ....zip>",
+                 ("observe whatsapp",)),
+    "calendar": ("Calendar exports (.ics)", "<calendar.ics>", ("observe calendar",)),
+    "email": ("Mail archives (.mbox)", "<mailbox.mbox>", ("observe email",)),
+    "meta": ("Instagram and Facebook Messenger exports", "<instagram-....zip>",
+             ("observe meta_messages",)),
+    "telegram": ("Telegram Desktop exports", "<ChatExport_...>", ("observe telegram",)),
+    "fitness": ("Workout exports (Strong, Hevy, Strava)", "<strong.csv>",
+                ("observe fitness",)),
+    "spotify": ("Spotify listening history", "<my_spotify_data.zip>",
+                ("observe spotify",)),
+    "reading": ("Reading (Kindle highlights, Goodreads)", "<My Clippings.txt>",
+                ("observe reading",)),
+    "nutrition": ("Food diary exports (Cronometer, MyFitnessPal)", "<servings.csv>",
+                  ("observe nutrition",)),
+    "linkedin": ("LinkedIn data export", "<Basic_LinkedInDataExport_....zip>",
+                 ("observe linkedin",)),
+    "payments": ("Venmo and PayPal statements", "<VenmoStatement_....csv>",
+                 ("observe payments",)),
+    "rides": ("Uber data export (rides and Eats)", "<Uber Data.zip>",
+              ("observe rides",)),
+}
 
 
 def _app_subfolders() -> tuple[Path, ...]:
@@ -175,6 +238,11 @@ def _mac_groups() -> list[dict]:
         {"title": "Apple Notes", "note": "",
          "items": [_item("NoteStore.sqlite", platforms.mac_notes_db())],
          "commands": ["python -m lifecrm observe notes"]},
+        # Apple Mail's own store: what `observe email` reads with no path
+        # when Downloads holds no Takeout with mail in it.
+        {"title": "Apple Mail", "note": "",
+         "items": [_item("Mail store", platforms.home() / "Library" / "Mail")],
+         "commands": ["python -m lifecrm observe email"]},
     ]
 
 
@@ -202,41 +270,51 @@ def drop_folders(journal_root: Path | None) -> list[Path]:
 
 
 def _export_commands(kind: str, arg: str) -> list[str]:
-    return {
-        "health": [f"python -m lifecrm health import {arg}"],
-        "sms": [f"python -m lifecrm observe android_sms {arg}"],
-        # one Takeout zip feeds several connectors, each reading its own part.
-        # Not browser: it reads a browser's own SQLite History, and Takeout's
-        # Chrome history is a JSON file it refuses.
-        "takeout": [f"python -m lifecrm observe {c} {arg}"
-                    for c in ("calendar", "location", "notes", "photos")],
-        "whatsapp": [f"python -m lifecrm observe whatsapp {arg}"],
-        "calendar": [f"python -m lifecrm observe calendar {arg}"],
-    }[kind]
+    # one Takeout zip feeds several connectors, each reading its own part
+    return [f"python -m lifecrm {verb} {arg}" for verb in EXPORT_GROUPS[kind][2]]
+
+
+def _is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _matches(p: Path, pattern: str) -> bool:
+    name = p.name.lower()
+    if pattern.endswith("/"):
+        return fnmatch.fnmatchcase(name, pattern[:-1]) and _is_dir(p)
+    return fnmatch.fnmatchcase(name, pattern)
+
+
+def _kindle_clippings() -> list[Path]:
+    """A plugged-in Kindle's My Clippings.txt — the reading connector's own
+    probe (a drive letter on Windows, /Volumes on a Mac). It only checks the
+    file is there."""
+    try:
+        from ..connectors.reading import _kindle_volumes
+        return list(_kindle_volumes())
+    except Exception:   # one broken connector module must not hide the report
+        return []
 
 
 def _export_groups(folders: list[Path]) -> list[dict]:
     found: dict[str, list[tuple[str, Path]]] = {}
     for folder in folders:
         for p in _children(folder) or []:
-            name = p.name.lower()
             for kind, label, patterns in EXPORTS:
-                if any(fnmatch.fnmatchcase(name, pat) for pat in patterns):
+                if any(_matches(p, pat) for pat in patterns):
                     found.setdefault(kind, []).append((label, p))
                     break
-    titles = {"health": "Health exports (Apple Health, Health Connect)",
-              "sms": "SMS Backup & Restore (Android texts and calls)",
-              "takeout": "Google Takeout",
-              "whatsapp": "WhatsApp chat exports",
-              "calendar": "Calendar exports (.ics)"}
-    generic = {"health": "<export.zip>", "sms": "<sms-....xml>",
-               "takeout": "<takeout-....zip>", "whatsapp": "<WhatsApp Chat ....zip>",
-               "calendar": "<calendar.ics>"}
+    kindle = [("Kindle (plugged in)", p) for p in _kindle_clippings()]
     groups = []
-    for kind, title in titles.items():
+    for kind, (title, generic, _) in EXPORT_GROUPS.items():
         # dated names (sms-20261021....xml) sort newest first this way
         hits = sorted(found.get(kind, []), key=lambda h: h[1].name.lower(),
                       reverse=True)
+        if kind == "reading":
+            hits = kindle + hits             # the device itself first
         if hits:
             items = [_item(label, p) for label, p in hits[:MAX_LISTED]]
             note = (f"{len(hits)} found; showing the last {MAX_LISTED} by name"
@@ -248,7 +326,9 @@ def _export_groups(folders: list[Path]) -> list[dict]:
             items = []
             looked = [_show(f) for f in folders if _state(f) == "found"]
             note = ("none in " + ", ".join(looked)) if looked else "none found"
-            commands = _export_commands(kind, generic[kind])
+            if kind == "reading":
+                note += "; no Kindle plugged in"
+            commands = _export_commands(kind, generic)
         groups.append({"title": title, "note": note, "items": items,
                        "commands": commands})
     return groups

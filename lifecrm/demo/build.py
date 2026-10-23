@@ -201,9 +201,19 @@ def available_sources() -> list[str]:
     return ordered + sorted(names - set(ordered))
 
 
-def _config_text(root: Path, combo: str) -> str:
+def _owner_age(anchor: date) -> int | None:
+    """The persona's age on the demo's 'today', from their birthday."""
+    me = persona.OWNER
+    if me.birth_year is None:
+        return None
+    before_birthday = me.birthday is not None and (anchor.month, anchor.day) < me.birthday
+    return anchor.year - me.birth_year - (1 if before_birthday else 0)
+
+
+def _config_text(root: Path, combo: str, anchor: date | None = None) -> str:
     sync = root / ("iCloud Drive" if combo == "iphone" else "OneDrive") / "VoiceJournal"
     me = persona.OWNER
+    age = _owner_age(anchor or default_anchor())
     lines = [
         f"# Demo instance ({combo}: {persona.DEVICE[combo]['computer']} + "
         f"{persona.DEVICE[combo]['phone']}). Synthetic data only — safe to delete.",
@@ -236,6 +246,12 @@ def _config_text(root: Path, combo: str) -> str:
         'endpoint = "http://localhost:11434"',
         'model = "llama3.1:8b"',
         "timeout_sec = 120",
+        "",
+        # Whose reference intakes `lifecrm nutrients` compares against: Alex
+        # is a man (his mother calls him "mijo"), born in persona.OWNER's year.
+        "[nutrition]",
+        'sex = "male"',
+        *([f"age = {age}"] if age is not None else []),
         "",
         "[connectors.android_sms]",
         f'account = "{me.phone}"',
@@ -313,8 +329,8 @@ class DemoBuilder:
         (self.root / MARKER).write_text(
             f"lifecrm demo, combo={self.combo}, anchor={self.anchor.isoformat()}\n",
             encoding="utf-8")
-        (self.root / "config.toml").write_text(_config_text(self.root, self.combo),
-                                               encoding="utf-8")
+        (self.root / "config.toml").write_text(
+            _config_text(self.root, self.combo, self.anchor), encoding="utf-8")
         sync = self.root / ("iCloud Drive" if self.combo == "iphone" else "OneDrive") / "VoiceJournal"
         for sub in ("inbox", "inbox-text", "archive", "backups"):
             (sync / sub).mkdir(parents=True, exist_ok=True)

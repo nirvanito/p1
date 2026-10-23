@@ -36,6 +36,31 @@
 /vault/
 /brief*
 /kept*.txt
+# mail: Takeout's mbox, Apple Mail's "Export Mailbox" folder (INBOX.mbox/)
+/*.mbox
+# Instagram / Facebook "Download your information", unzipped here (with or
+# without the folder the zip is named after)
+/instagram-*/
+/facebook-*/
+/your_instagram_activity/
+/your_facebook_activity/
+/your_activity_across_facebook/
+/personal_information/
+# Telegram Desktop's exports and the folder it writes them to
+/ChatExport_*/
+/DataExport_*/
+/Telegram Desktop/
+# Strava's export_<athlete id> folder; Spotify's downloads, unzipped
+/export_*/
+/Spotify*/
+/my_spotify_data*/
+# a Kindle's clippings, or its whole documents folder copied off it
+/My Clippings*.txt
+/Kindle/
+# LinkedIn's and Uber's data exports, unzipped
+/Basic_LinkedInDataExport*/
+/Complete_LinkedInDataExport*/
+/Uber Data/
 
 # --- environment ---
 /.venv/

@@ -3,9 +3,10 @@
 Personal life database: voice notes + dictated quick notes -> local whisper /
 direct text intake -> reviewed extraction (via /log) -> SQLite with full
 provenance, closable loops, entry links and entity relationships; beside it,
-an observed tier of bulk imports (texts, calls, contacts, calendar, notes,
-photos, location, browser, finance, health, AI chats) that is cited, never
-asserted.
+an observed tier of bulk imports (texts, calls, email, Instagram/Messenger/
+Telegram, contacts, LinkedIn, calendar, notes, photos, location, browser,
+Google searches/YouTube, finance, Venmo/PayPal, Uber, workouts, food,
+Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 
 ## Rules
 
@@ -79,12 +80,19 @@ asserted.
   review (evidence pack: --lens week|health|career|relationships|finance|all,
   --week/--start/--end/--days, --json | --write-only | --check BRIEF
   [--out FILE]; read-only, no model),
+  nutrients (the food diary's daily averages vs adult reference intakes for
+  [nutrition] sex/age: low/borderline/high, the foods behind each, every
+  number cited; --days/--start/--end, --sex/--age, --json; read-only, no
+  model, "not medical advice" first),
   demo (--combo android|iphone|both, --dir, --anchor, --force, --with-audio,
   --no-ask, --json),
   observe/connectors/imports/handles (observed tier — bulk imports that never
   pass the review gate; dry-run by default; connectors ai_chat, android_sms,
-  browser, calendar, contacts, finance, ios_calls, ios_messages, location,
-  mac_messages, notes, photos, whatsapp; `imports list/retract/restore` —
+  browser, calendar, contacts, email, finance, fitness, google_activity,
+  ios_calls, ios_messages, linkedin, location, mac_messages, meta_messages,
+  notes, nutrition, payments, photos, reading, rides, spotify, telegram,
+  whatsapp; `connectors` counts each stream's rows per connector (finance and
+  payments share txn); `imports list/retract/restore` —
   restore puts back exactly what retract hid, never what mirroring removed;
   `handles list --suggest` offers entity candidates (splits 'A / B' names,
   skips owner placeholders, falls back to the name on a contact_card holding
@@ -139,7 +147,8 @@ asserted.
   every observation that referenced it, with no backfill pass. See
   `docs/observed-tier.md`. Connectors (each has a doc: `docs/<name>.md`, except
   ai_chat -> `docs/ai-chat.md`, ios_messages/mac_messages -> `docs/texts.md`,
-  ios_calls -> `docs/calls.md`, android_sms -> `docs/android-texts.md`):
+  ios_calls -> `docs/calls.md`, android_sms -> `docs/android-texts.md`;
+  `meta_messages` and `google_activity` keep the underscore):
   - `ai_chat` — Claude/ChatGPT exports; mirrors per vendor + account.
   - `ios_messages` — iPhone backup -> iMessage/SMS/RCS; mirrors.
     `connectors/typedstream.py` decodes `attributedBody` (written from the
@@ -172,6 +181,36 @@ asserted.
     handles; remembers.
   - `browser` — Chrome/Edge/Brave/Safari history -> `browser_visit`, one row
     per (URL, day); remembers.
+  - `email` — Gmail Takeout mbox (read inside the zip), Apple Mail export or
+    `~/Library/Mail`, Thunderbird, .eml -> `email` (own words: quoted reply
+    and signature trimmed); email handles sender/recipient; direction from
+    [connectors.email] addresses, else [owner], else Sent; remembers.
+  - `meta_messages` — Instagram/Facebook "Download your information" (JSON
+    only) -> `instagram_dm` / `messenger`; Meta's Latin-1 mojibake repaired;
+    `instagram:`/`messenger:` app_account handles; remembers.
+  - `telegram` — Telegram Desktop's JSON export (ChatExport_/DataExport_)
+    -> `telegram`; `telegram:user<id>` handles; channels/bots counted, left
+    out; remembers.
+  - `google_activity` — Takeout My Activity + YouTube history (JSON or
+    HTML, streamed) -> `web_search`, `video_watch`; no handles; remembers.
+  - `fitness` — Strong / Hevy CSV, Strava export_<id>.zip -> one `workout`
+    per session, sets in value_json (top_set, weight_kg); remembers.
+  - `spotify` — my_spotify_data.zip (account data + extended history) ->
+    `music_play`, one per track per day; IPs/devices never read; remembers.
+  - `reading` — Kindle My Clippings.txt -> `highlight`, Goodreads CSV ->
+    `book`; finds a plugged-in Kindle; remembers.
+  - `nutrition` — Cronometer servings/dailysummary (MyFitnessPal meal
+    totals) -> `food_log`, `nutrition_day`; stale after 45 days;
+    remembers. `lifecrm/nutrients.py` + `commands/nutrients.py` is the
+    cited report (`lifecrm nutrients`); imports nothing from recall/review.
+  - `linkedin` — the data export -> `linkedin_connection` (MIRRORS per
+    owner profile: Connections.csv is the complete list) and
+    `linkedin_message` (remembers); `linkedin:in/<slug>` handles.
+  - `payments` — Venmo statements, PayPal activity CSV -> `txn` with a
+    `counterparty` handle (venmo:<name> / PayPal email); transfers marked
+    value_json.transfer; remembers.
+  - `rides` — Uber's data export -> `ride` (fare, not a signed txn) and
+    `food_order` (Eats); no handles; remembers.
   macOS-guarded folders need Full Disk Access; a denial is one DomainError
   line saying so (`ios_messages.privacy_guard`).
 - `lifecrm/recall.py` + `lifecrm/llm.py` — `lifecrm ask`: rules parse the
@@ -203,7 +242,7 @@ asserted.
 - `lifecrm/platforms.py` — where things live on Windows vs macOS (cloud
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
-  cli.py: configure, demo, entity_links, filedate, review, verify
+  cli.py: configure, demo, entity_links, filedate, nutrients, review, verify
   (verify-backup), voice, web (serve), where.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export
   generator per source in `demo/sources/`, run through the real CLI into a

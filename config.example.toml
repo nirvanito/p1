@@ -129,6 +129,63 @@ max_loops = 10                     # open tasks/plans listed
 # path = "..."                      # a History / History.db file or a profile folder
 # exclude_domains = ["mybank.example"]
 
+# [connectors.email]                # docs/email.md
+# addresses = ["you@example.com"]   # yours (else [owner] email handles, else inferred from Sent)
+# path = "~/Downloads/takeout-20261022T120000Z-001.zip"   # an .mbox, a folder, a Takeout or ~/Library/Mail
+# since = 2020-01-01                # import only mail from this date on
+# include_lists = false             # true keeps newsletters and mailing-list mail
+# skip_labels = ["Spam", "Trash", "Junk", "Drafts"]   # Gmail labels / mailbox names left out (see the doc for the default list)
+
+# [connectors.meta_messages]        # docs/meta_messages.md
+# me = "Your Name"                  # only if the dry run cannot tell which participant is you
+# include_requests = false          # true imports message requests too
+# platform = "instagram"            # only for an old export that does not say ("messenger" for Facebook)
+# exports_dir = "~/Downloads"       # where exports land when no path is given
+
+# [connectors.telegram]             # docs/telegram.md
+# me = "user123456789"              # only for a one-chat export that cannot tell (your id or name)
+# include_channels = false          # true imports channels and public groups too
+# exports_dir = "~/Downloads/Telegram Desktop"
+
+# [connectors.google_activity]      # docs/google_activity.md
+# path = "~/Downloads/takeout-20261022T120000Z-001.zip"   # a Takeout zip or folder, or one MyActivity file
+
+# [connectors.fitness]              # docs/fitness.md
+# path = "~/Downloads/strong.csv"   # strong.csv, Hevy's workouts.csv, Strava's export_<id>.zip, or a folder
+# weight_unit = "lb"                # or "kg": the unit the app is set to (the file does not say)
+# distance_unit = "mi"              # or "km"; defaults to mi with lb, km with kg
+
+# [connectors.spotify]              # docs/spotify.md
+# path = "~/Downloads/Spotify"      # my_spotify_data.zip, or a folder holding both downloads
+
+# [connectors.reading]              # docs/reading.md
+# path = "~/Documents/Kindle/My Clippings.txt"   # or goodreads_library_export.csv, a folder, a .zip
+
+# [connectors.nutrition]            # docs/nutrition.md
+# path = "~/Downloads/cronometer"   # servings.csv / dailysummary.csv (Cronometer), a Nutrition Summary (MyFitnessPal), a folder or .zip
+
+# [connectors.linkedin]             # docs/linkedin.md
+# profile_url = "https://www.linkedin.com/in/<you>"   # only if the dry run cannot tell which profile is yours
+# path = "~/Downloads/Basic_LinkedInDataExport_10-22-2026.zip"
+
+# [connectors.payments]             # docs/payments.md
+# path = "~/Documents/Statements"   # Venmo / PayPal .csv files, a folder of them, or a .zip
+# me = ["Your Name", "you@example.com"]   # your Venmo name / PayPal email (else [owner])
+# venmo_timezone = "UTC"            # only if Venmo's times turn out to be local
+# paypal_date_order = "mdy"         # mdy | dmy — only if the dry run says it had to guess
+
+# [connectors.rides]                # docs/rides.md
+# path = "~/Downloads/Uber Data.zip"   # Uber's export zip, its folder, or trips_data.csv
+# currency = "usd"                  # Uber Eats' file names none: default is the trips' own
+
+# ---------------------------------------------------------------- nutrition
+# Optional. Whose reference intakes `lifecrm nutrients` compares against
+# (docs/nutrition.md). Unset, each value is the higher of the female and male
+# figure for ages 19-50, and the report says so.
+# [nutrition]
+# sex = "female"                    # "female" | "male"
+# age = 32                          # whole years, 19 or over
+
 # ---------------------------------------------------------------- front ends
 # Optional. The values shown are the defaults, except [voice] voice and
 # piper_model, which are examples (by default the OS's own voice is used and

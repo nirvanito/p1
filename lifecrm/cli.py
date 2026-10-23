@@ -1074,9 +1074,14 @@ def connectors() -> None:
         last = {r["connector"]: r for r in conn.execute(
             "SELECT connector, MAX(started_at) started_at, COUNT(*) runs "
             "FROM imports WHERE status='applied' GROUP BY connector")}
-        counts = {r["stream"]: r["c"] for r in conn.execute(
-            "SELECT stream, COUNT(*) c FROM observations WHERE status='active' "
-            "GROUP BY stream")}
+        # Per connector AND stream: two connectors can write one stream (finance
+        # and payments both write txn; ios_messages and mac_messages share the
+        # message streams), and each counts only the rows its own imports
+        # created — observations.import_id is the creating import.
+        counts = {(r["connector"], r["stream"]): r["c"] for r in conn.execute(
+            "SELECT i.connector, o.stream, COUNT(*) c FROM observations o "
+            "JOIN imports i ON i.id = o.import_id WHERE o.status='active' "
+            "GROUP BY i.connector, o.stream")}
     finally:
         conn.close()
     for cname in sorted(reg):
@@ -1086,7 +1091,7 @@ def connectors() -> None:
                 if row else "never imported")
         typer.echo(f"{cname:12} {when}")
         for s in c.streams:
-            typer.echo(f"  {s:16} {counts.get(s, 0)} active observation(s)")
+            typer.echo(f"  {s:16} {counts.get((cname, s), 0)} active observation(s)")
 
 
 @app.command()

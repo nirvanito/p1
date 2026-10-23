@@ -25,7 +25,10 @@ contacts"), became two Mac pieces. The first is `mac_messages`: `chat.db`
 is read through a snapshot and copied into the DB, never federated. The
 second is the `contacts` connector: Mac Contacts become handle-name
 suggestions and are never auto-linked. What is still open is at the end of
-this file.
+this file. Later the same day thirteen more sources landed in eleven
+connectors — email, Instagram, Messenger, Telegram, Google searches and
+YouTube, workouts, Spotify, Kindle, Goodreads, Cronometer with the
+`lifecrm nutrients` report, LinkedIn, Venmo/PayPal and Uber (5.10).
 
 **Context that will not be in the code:**
 
@@ -387,6 +390,36 @@ deterministic one before it is spoken. See docs/voice.md.*
 - Health Connect sleep is dated by the wake day, like Apple Health
   (0d24569).
 
+5.10 **More sources, 2026-10-22.** At the owner's request, past the source
+ranking: thirteen more sources in eleven connectors, each a pure reader with
+its own doc page and a demo sample on both combos.
+- `email` (989f4e7): Gmail Takeout mbox, Apple Mail (an export or
+  `~/Library/Mail`), Thunderbird, `.eml` → `email`, quoted replies and
+  signatures trimmed; email handles from the headers.
+- `meta_messages` and `telegram` (93f7bf2): Instagram DMs and Messenger
+  from Meta's JSON export → `instagram_dm`, `messenger`; Telegram
+  Desktop's JSON export → `telegram`.
+- `google_activity` (7a8cbce): Takeout's My Activity and YouTube history →
+  `web_search`, `video_watch`.
+- `fitness` (71009e3): Strong, Hevy and Strava → one `workout` per session,
+  the sets inside it.
+- `spotify` and `reading` (68d2d8e): `music_play` per track per day;
+  Kindle highlights and the Goodreads library → `highlight`, `book`.
+- `nutrition` (aa4576f): Cronometer (and MyFitnessPal's meal totals) →
+  `food_log`, `nutrition_day`, and **`lifecrm nutrients`**: the window's
+  average intake beside the adult reference intakes for `[nutrition] sex`
+  and `age`, low / borderline / high with the foods behind each, every
+  number cited, read-only and model-free, "not medical advice" first.
+- `linkedin`, `payments`, `rides` (f38a909): LinkedIn connections and
+  messages; Venmo and PayPal → `txn` with the person on the other side;
+  Uber → `ride`, `food_order`.
+- `ask`, the web UI, export and the review pack read the new streams
+  through recall's shared stream groups (988c827); `lifecrm where` names
+  each new export, and `lifecrm connectors` counts each connector's own
+  rows (`finance` and `payments` share `txn`).
+All remember except LinkedIn connections, which mirror per owner profile
+(Connections.csv is the complete current list).
+
 ---
 
 ## Standing decisions already made (do not relitigate)
@@ -427,7 +460,12 @@ deterministic one before it is spoken. See docs/voice.md.*
    (statements are windows), `android_sms` calls (Android's call log ages
    old calls out, so a full backup is not the whole history), `ios_calls`
    (the same reason: iOS keeps only its newest calls), `location`,
-   `browser`, and photo folders and Takeouts.*
+   `browser`, and photo folders and Takeouts. Added the same day (5.10):
+   `linkedin` connections mirror per owner profile; `email`,
+   `meta_messages`, `telegram`, `google_activity`, `fitness`, `spotify`,
+   `reading`, `nutrition`, `payments`, `rides` and LinkedIn messages
+   remember — each export is a window, a chosen range, or a history the
+   service ages out.*
 3. Export destination for `lifecrm export` (in-repo ignored dir vs outside).
    *Still open. `/archive/`, `/archive-data/` and `/exports/` are gitignored
    (1.7), so either choice is safe.*
@@ -460,7 +498,9 @@ deterministic one before it is spoken. See docs/voice.md.*
   - imports: texts.md, calls.md, android-texts.md, health-connect.md,
     apple-health.md, notes.md, photos.md and finance.md, plus the
     limitations in contacts.md, calendar.md, location.md, browser.md and
-    whatsapp.md;
+    whatsapp.md, and every 5.10 source (email.md, meta_messages.md,
+    telegram.md, google_activity.md, fitness.md, spotify.md, reading.md,
+    nutrition.md, linkedin.md, payments.md, rides.md);
   - front ends: voice.md (microphone, wake word, speakers) and web.md (a
     real phone over the LAN);
   - a real Ollama model through `ask`'s per-sentence citation check.

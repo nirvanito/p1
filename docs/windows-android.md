@@ -221,6 +221,74 @@ takes a `Timeline.json` (or `location-history.json`) in Downloads or OneDrive.
 `lifecrm connectors` lists the connectors this install has, with each one's
 last run. Health has its own walkthrough: [health-connect.md](health-connect.md).
 
+### The newer sources
+
+Each of these is a download on the laptop (or a file the phone saves to
+OneDrive), imported the same way: dry run, read it, `--apply`. `lifecrm
+where` recognises every one of them in Downloads, OneDrive or the journal
+folder by the name the app gives it, and prints the command.
+
+**Email (Gmail).** takeout.google.com → *Deselect all* → **Mail** → export
+once, `.zip` → download `takeout-<date>T<time>Z-001.zip` into Downloads and
+leave it zipped. `lifecrm observe email` (no path) takes the newest Takeout
+there that holds mail. Samsung Email exports nothing; export the account.
+[email.md](email.md)
+
+**Instagram and Messenger.** On the Samsung or at accountscenter.facebook.com:
+Accounts Center → *Your information and permissions* → **Download your
+information** → Messages, *All time*, **Format: JSON**. Download the
+`instagram-….zip` / `facebook-….zip` on the laptop:
+`lifecrm observe meta_messages` (Downloads) or pass the zip or a folder of
+parts. [meta_messages.md](meta_messages.md)
+
+**Telegram.** Only Telegram Desktop exports — install it on the laptop: a
+chat's ⋮ → *Export chat history*, or *Settings › Advanced › Export Telegram
+data*, **Machine-readable JSON**. It writes
+`Downloads\Telegram Desktop\ChatExport_<date>\` or `DataExport_<date>\`:
+`lifecrm observe telegram` reads that folder. [telegram.md](telegram.md)
+
+**Google searches and YouTube.** The same Takeout page: **My Activity** and
+*YouTube and YouTube Music › history*, both in JSON →
+`lifecrm observe google_activity` (newest Takeout in Downloads with activity
+in it). One Takeout can carry Mail, Calendar, Keep and activity together;
+each connector reads its own part. [google_activity.md](google_activity.md)
+
+**Workouts.** Strong: Settings › *Export Strong Data* → `strong.csv`. Hevy:
+Settings › *Export & Import Data* → `workouts.csv`. Strava: strava.com ›
+Settings › My Account › *Request Your Archive* → `export_<id>.zip`. Save the
+phone's file to OneDrive (or mail it to yourself) and run
+`lifecrm observe fitness ["<file>"]`. [fitness.md](fitness.md)
+
+**Spotify.** spotify.com › Account › *Privacy settings* › **Download your
+data** (account data, and the extended history) → `my_spotify_data.zip`;
+put both downloads in one folder and pass it:
+`lifecrm observe spotify "<folder>"`. [spotify.md](spotify.md)
+
+**Kindle and Goodreads.** Plug the Kindle in by USB: `lifecrm observe
+reading` finds `documents\My Clippings.txt` on any removable drive (a newer
+USB-C Kindle shows up as a device, not a drive — copy the file out first).
+Goodreads: *My Books › Import and export › Export Library* →
+`goodreads_library_export.csv` in Downloads. [reading.md](reading.md)
+
+**Food diary.** cronometer.com › Settings › Account › **Export Data** →
+`servings.csv` and `dailysummary.csv` into one folder →
+`lifecrm observe nutrition "<folder>"` (or set `[connectors.nutrition]
+path`), then `lifecrm nutrients` for the cited low / borderline / high
+report — set `[nutrition] sex` and `age` first. [nutrition.md](nutrition.md)
+
+**LinkedIn.** linkedin.com › *Settings & Privacy › Data privacy* › **Get a
+copy of your data** → `Basic_LinkedInDataExport_<date>.zip` in Downloads →
+`lifecrm observe linkedin`. [linkedin.md](linkedin.md)
+
+**Venmo and PayPal.** venmo.com › **Statements** › *Download CSV*;
+paypal.com › Activity › Statements › **Activity report** (CSV). Keep them in
+one folder (your bank statements' folder is fine) →
+`lifecrm observe payments "<folder>"`. [payments.md](payments.md)
+
+**Uber.** Uber's Privacy Center (myprivacy.uber.com, or the app's *Account
+› Settings › Privacy*) › **Download your data** → `Uber Data.zip` →
+`lifecrm observe rides "<zip>"`. [rides.md](rides.md)
+
 **Who is who.** Importers record phone numbers and email addresses
 (*handles*), never guess people. After contacts and texts are in:
 
@@ -313,9 +381,12 @@ Bled trip four years ago, a board deck due). The life is rendered as the
 Samsung-side exports: the phone's notes, SMS Backup & Restore XML, a Health
 Connect export, a contacts `.vcf`, a Takeout with calendar and Keep,
 Samsung Gallery photos, `Timeline.json`, Chrome history, a WhatsApp export,
-Chase CSVs and AI chat exports. It imports them through the same commands
-as above, and never touches your own data. It prints the demo root; point
-any command at it with `--root`:
+Chase CSVs and AI chat exports, and the newer sources: a Gmail Takeout, a
+Takeout of My Activity and YouTube history, Instagram and Facebook exports,
+a Telegram Desktop export, Strong and Strava, Spotify, Kindle clippings and
+Goodreads, Cronometer, LinkedIn, Venmo statements and Uber. It imports them
+through the same commands as above, and never touches your own data. It
+prints the demo root; point any command at it with `--root`:
 
 ```
 lifecrm --root "<demo root>" status

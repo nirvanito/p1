@@ -7,8 +7,11 @@ with `/log`: meals, workouts, work, people, places, mood, tasks, ideas.
 Nothing lands until you have reviewed the diff, and every record points to
 the sentence that produced it. Next to that confirmed journal, importers copy
 what your apps already hold into the same SQLite file: texts, calls,
-contacts, calendar, notes, photo metadata, location visits, browser history,
-bank statements, health data and AI chats. These imported records are
+email, Instagram, Messenger and Telegram messages, contacts, LinkedIn,
+calendar, notes, photo metadata, location visits, browser history, Google
+searches and YouTube, bank statements, Venmo and PayPal, Uber rides,
+workouts, food diaries, Spotify, Kindle highlights and Goodreads, health
+data and AI chats. These imported records are
 cited, never asserted as fact. You then ask questions on the command line,
 on a web page on your phone, or by voice, and every fact in the answer
 carries the id of the row it came from. There is no recurring cost: whisper
@@ -109,8 +112,9 @@ Every import is a **dry run by default**. It prints per-stream counts, date
 spans and sample rows. Read them, then run the same command with `--apply`.
 Re-running is always safe, because records dedupe on the source's own ids.
 With no path, every connector except `ai_chat` looks in its usual place
-(`finance` needs `[connectors.finance] path`). `lifecrm where` lists what
-this machine has, with the command for each.
+(`finance`, `nutrition`, `payments` and `rides` need a `path` under their
+`[connectors.<name>]` table). `lifecrm where` lists what this machine has,
+with the command for each.
 
 **Windows laptop + Samsung:**
 
@@ -129,11 +133,22 @@ this machine has, with the command for each.
 | WhatsApp | ⋮ › More › Export chat, Quick Share to the laptop | `lifecrm observe whatsapp <zip>`, after setting `[connectors.whatsapp] me` | [whatsapp.md](docs/whatsapp.md) |
 | Bank and card | the bank's CSV or OFX/QFX download | `lifecrm observe finance <file or folder>` | [finance.md](docs/finance.md) |
 | AI chats | Claude / ChatGPT data export | `lifecrm observe ai_chat <zip>` | [ai-chat.md](docs/ai-chat.md) |
+| Email | Gmail: Google Takeout › Mail → `takeout-….zip` in Downloads | `lifecrm observe email [zip]` | [email.md](docs/email.md) |
+| Instagram and Messenger | Accounts Center › Download your information, **JSON** → `instagram-….zip`, `facebook-….zip` | `lifecrm observe meta_messages [zip or folder]` | [meta_messages.md](docs/meta_messages.md) |
+| Telegram | Telegram Desktop on the laptop › Export chat history / Export Telegram data, machine-readable JSON | `lifecrm observe telegram [folder]` | [telegram.md](docs/telegram.md) |
+| Google searches and YouTube | Google Takeout › My Activity + YouTube history | `lifecrm observe google_activity [zip]` | [google_activity.md](docs/google_activity.md) |
+| Workouts | Strong / Hevy export from the app, Strava's archive from strava.com | `lifecrm observe fitness [file]` | [fitness.md](docs/fitness.md) |
+| Spotify | spotify.com › Account › Privacy settings › Download your data → `my_spotify_data.zip` | `lifecrm observe spotify [zip or folder]` | [spotify.md](docs/spotify.md) |
+| Kindle highlights, Goodreads | the Kindle by USB (`documents\My Clippings.txt`); Goodreads › Export Library | `lifecrm observe reading [file]` | [reading.md](docs/reading.md) |
+| Food diary | cronometer.com › Settings › Account › Export Data → `servings.csv`, `dailysummary.csv` | `lifecrm observe nutrition <folder>`, then `lifecrm nutrients` | [nutrition.md](docs/nutrition.md) |
+| LinkedIn | Settings & Privacy › Data privacy › Get a copy of your data | `lifecrm observe linkedin [zip]` | [linkedin.md](docs/linkedin.md) |
+| Venmo and PayPal | venmo.com › Statements › Download CSV; paypal.com › Activity › Statements | `lifecrm observe payments <file or folder>` | [payments.md](docs/payments.md) |
+| Uber rides and Eats | Uber's Privacy Center › Download your data → `Uber Data.zip` | `lifecrm observe rides <zip>` | [rides.md](docs/rides.md) |
 
 **MacBook + iPhone:** first grant Full Disk Access to your terminal (System
 Settings › Privacy & Security › Full Disk Access). Without it, macOS blocks
-Messages, call history, Contacts, Photos, Notes, Safari and iPhone backups,
-and the import says so in one line.
+Messages, call history, Contacts, Photos, Notes, Mail, Safari and iPhone
+backups, and the import says so in one line.
 
 | source | where it lives | command | guide |
 |---|---|---|---|
@@ -152,6 +167,17 @@ and the import says so in one line.
 | Bank and card | Apple Card CSV, or the bank's CSV or OFX/QFX | `lifecrm observe finance <file or folder>` | [finance.md](docs/finance.md) |
 | Location visits | only Google Maps Timeline on the iPhone. Apple's Significant Locations cannot be exported | `lifecrm observe location <file>` | [location.md](docs/location.md) |
 | AI chats | Claude / ChatGPT data export | `lifecrm observe ai_chat <zip>` | [ai-chat.md](docs/ai-chat.md) |
+| Email | Apple Mail's own store (`~/Library/Mail`), a Mailbox › Export Mailbox… folder, or a Gmail Takeout | `lifecrm observe email [path]` | [email.md](docs/email.md) |
+| Instagram and Messenger | Accounts Center › Download your information, **JSON** → `instagram-….zip`, `facebook-….zip` | `lifecrm observe meta_messages [zip or folder]` | [meta_messages.md](docs/meta_messages.md) |
+| Telegram | the Telegram Desktop app on the Mac › Export chat history / Export Telegram data, machine-readable JSON | `lifecrm observe telegram [folder]` | [telegram.md](docs/telegram.md) |
+| Google searches and YouTube | Google Takeout › My Activity + YouTube history | `lifecrm observe google_activity [zip]` | [google_activity.md](docs/google_activity.md) |
+| Workouts | Strong / Hevy export saved to iCloud Drive, Strava's archive from strava.com | `lifecrm observe fitness [file]` | [fitness.md](docs/fitness.md) |
+| Spotify | spotify.com › Account › Privacy settings › Download your data → `my_spotify_data.zip` | `lifecrm observe spotify [zip or folder]` | [spotify.md](docs/spotify.md) |
+| Kindle highlights, Goodreads | a Kindle at `/Volumes/Kindle` (USB-C models: copy the file off first); Goodreads › Export Library | `lifecrm observe reading [file]` | [reading.md](docs/reading.md) |
+| Food diary | cronometer.com › Settings › Account › Export Data → `servings.csv`, `dailysummary.csv` | `lifecrm observe nutrition <folder>`, then `lifecrm nutrients` | [nutrition.md](docs/nutrition.md) |
+| LinkedIn | Settings & Privacy › Data privacy › Get a copy of your data | `lifecrm observe linkedin [zip]` | [linkedin.md](docs/linkedin.md) |
+| Venmo and PayPal | venmo.com › Statements › Download CSV; paypal.com › Activity › Statements | `lifecrm observe payments <file or folder>` | [payments.md](docs/payments.md) |
+| Uber rides and Eats | Uber's Privacy Center › Download your data → `Uber Data.zip` | `lifecrm observe rides <zip>` | [rides.md](docs/rides.md) |
 
 Use one route for texts per phone: the Mac's `chat.db` or an iPhone backup,
 not both by turns. Each one mirrors its own source.
@@ -228,7 +254,7 @@ quick note for intake and `/log`. It never writes the database
 
 ```
 lifecrm where                                # what this machine has that can be imported
-lifecrm connectors                           # connectors and their last run
+lifecrm connectors                           # connectors, their last run, each one's own rows per stream
 lifecrm observe <connector> [path]           # dry run
 lifecrm observe <connector> [path] --apply
 lifecrm imports list
@@ -249,7 +275,17 @@ and future, in one decision. Nothing is linked automatically.
 lifecrm health import [path]                 # Health Connect zip or Apple Health export; dry run
 lifecrm health import [path] --apply
 lifecrm health retract --source-file "<name as reported>"   # undo; and: health restore
+lifecrm nutrients                            # what am I low on: 30 days of the food diary vs the reference intakes
+lifecrm nutrients --days 14 --json           # or --start/--end; --sex/--age override [nutrition]
 ```
+
+`nutrients` averages each nutrient per day from the `nutrition` connector's
+records and sets it beside the adult Dietary Reference Intakes for
+`[nutrition] sex` and `age`: low (under 70%), borderline, high (over an
+upper level), with the foods behind each and the observation ids every
+number came from. It is read-only and uses no model. It is a comparison
+with reference values, not medical advice, and it recommends nothing
+([docs/nutrition.md](docs/nutrition.md)).
 
 **Weekly review and advisors**
 
@@ -352,9 +388,14 @@ old file is kept under `data/`. Every setting is in
   preceded by a snapshot, and refused when it would remove a large share of
   the archive at once (`--allow-mass-removal` overrides). A record that a
   journal entry or a relationship cites is hidden instead of deleted.
-  WhatsApp exports, calls (iPhone and Android: each phone's call log ages old
-  calls out), bank statements, location, browser history, photo folders and
-  Takeouts *remember*, because a missing record there is not evidence of deletion.
+  LinkedIn connections mirror the owner's profile (Connections.csv is the
+  complete current list). WhatsApp exports, calls (iPhone and Android: each
+  phone's call log ages old calls out), bank statements, location, browser
+  history, photo folders and Takeouts *remember*, because a missing record
+  there is not evidence of deletion. So do email, Instagram, Messenger,
+  Telegram, LinkedIn messages, Google activity, workouts, Spotify, Kindle and
+  Goodreads, the food diary, Venmo and PayPal, and Uber: each export is a
+  window, a chosen range or a history the service ages out.
 - **Health** comes from Health Connect or Apple Health into
   `health_records`, keyed on the source's own record ids (or a stable hash
   for Apple). It updates only from newer records and surfaces conflicts
@@ -413,7 +454,14 @@ guide ends with what to check on the first real run:
   [calendar](docs/calendar.md#known-limitations),
   [location](docs/location.md#known-limitations),
   [browser](docs/browser.md#known-limitations) and
-  [WhatsApp](docs/whatsapp.md#known-limitations).
+  [WhatsApp](docs/whatsapp.md#known-limitations). The newer sources say
+  what is unverified in their own guides: [email](docs/email.md),
+  [Instagram and Messenger](docs/meta_messages.md),
+  [Telegram](docs/telegram.md), [Google activity](docs/google_activity.md),
+  [workouts](docs/fitness.md), [Spotify](docs/spotify.md),
+  [reading](docs/reading.md), [nutrition](docs/nutrition.md),
+  [LinkedIn](docs/linkedin.md), [Venmo and PayPal](docs/payments.md) and
+  [Uber](docs/rides.md).
 - Front ends: [voice](docs/voice.md#not-yet-verified-on-real-hardware) (a
   real microphone, the wake word, speakers). For the web UI on a real phone,
   see [web.md](docs/web.md#on-your-phone). No real Ollama model has been

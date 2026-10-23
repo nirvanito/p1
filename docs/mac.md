@@ -116,10 +116,14 @@ unzipped archives) and Finder's `Icon` file are ignored.
 
 A read-only report: the journal folders (and how many notes are waiting),
 iPhone backups, the Messages database, Contacts stores, the Photos library,
-the Notes store, and any Health, Takeout, WhatsApp or calendar export sitting
-in `~/Downloads` or iCloud Drive — each with whether it exists, whether macOS
-lets you read it (`no access` = [Full Disk Access](#5-full-disk-access)), and
-the exact command that imports it. `--json` gives the same for scripts.
+the Notes store, Apple Mail's store, a plugged-in Kindle, and any export
+sitting in `~/Downloads` or iCloud Drive — Health, Takeout, WhatsApp,
+calendar, mailboxes, Instagram/Facebook, Telegram, Strong/Hevy/Strava,
+Spotify, Goodreads, Cronometer, LinkedIn, Venmo/PayPal, Uber — each with
+whether it exists, whether macOS lets you read it (`no access` = [Full Disk
+Access](#5-full-disk-access)), and the exact command that imports it. It
+recognises exports by name and opens none of them. `--json` gives the same
+for scripts.
 
 ## 3. The iPhone
 
@@ -187,6 +191,7 @@ What needs it:
 | `~/Pictures/Photos Library.photoslibrary` (Photos) | same |
 | `~/Library/Group Containers/group.com.apple.notes` (Notes) | same |
 | `~/Library/Application Support/CallHistoryDB` (Calls — the iPhone's, with *Calls from iPhone* on) | same |
+| `~/Library/Mail` (Apple Mail's store) | `no access` in `where`; `observe email` stops with one line naming the fix |
 | iCloud Drive, `~/Downloads` | a one-time "would like to access" prompt instead — allow it |
 
 **Scheduled jobs (launchd) cannot show that prompt.** If a scheduled run's
@@ -282,6 +287,26 @@ backup are separate connectors, and each mirrors its own source — alternating
 them for the same phone number makes each look like it deleted what only the
 other holds.
 
+### The newer sources
+
+The same dry run, then `--apply`. `where` finds each in `~/Downloads` or
+iCloud Drive by the name the app gives it.
+
+| source | where it comes from on the Mac + iPhone | command |
+|---|---|---|
+| Email | Apple Mail's own store `~/Library/Mail` (every account Mail syncs; needs Full Disk Access), or Mail › select mailboxes › **Mailbox › Export Mailbox…** (a folder of `<Mailbox>.mbox`), or a Gmail Takeout `takeout-….zip`. The iPhone's Mail app exports nothing | `observe email` (Takeout in Downloads first, else the Mail store) or `observe email "<folder or zip>"` — see [email.md](email.md) |
+| Instagram and Messenger | on the iPhone or the web: Accounts Center › *Your information and permissions* › **Download your information** › Messages, *All time*, **Format: JSON**; download the zips on the Mac | `observe meta_messages` (Downloads) or pass the zip — see [meta_messages.md](meta_messages.md) |
+| Telegram | the **Telegram Desktop** app on the Mac (not the App Store's "Telegram"): a chat's ⋮ › *Export chat history*, or *Settings › Advanced › Export Telegram data*, **Machine-readable JSON** → `~/Downloads/Telegram Desktop/` | `observe telegram` — see [telegram.md](telegram.md) |
+| Google searches and YouTube | takeout.google.com › **My Activity** + *YouTube and YouTube Music › history* (JSON or HTML) → `takeout-….zip` | `observe google_activity` — see [google_activity.md](google_activity.md) |
+| Workouts | Strong (`strong.csv`) or Hevy (`workouts.csv`) from the app's export, saved to iCloud Drive; Strava's `export_<id>.zip` from strava.com | `observe fitness` (one export in Downloads / iCloud Drive) or pass the file — see [fitness.md](fitness.md) |
+| Spotify | spotify.com › Account › *Privacy settings* › **Download your data** → `my_spotify_data.zip` (and the extended history's) | `observe spotify "<folder holding both>"` — see [spotify.md](spotify.md) |
+| Kindle highlights | an older Kindle mounts at `/Volumes/Kindle` and is found with no path; a USB-C Kindle speaks MTP, so copy `documents/My Clippings.txt` off it first (OpenMTP, Android File Transfer) | `observe reading` or `observe reading "<My Clippings.txt>"` — see [reading.md](reading.md) |
+| Goodreads | goodreads.com › *My Books › Import and export* › **Export Library** → `goodreads_library_export.csv` | `observe reading ~/Downloads/goodreads_library_export.csv` |
+| Food diary (Cronometer) | cronometer.com › Settings › Account › **Export Data** → `servings.csv`, `dailysummary.csv` in one folder | `observe nutrition "<folder>"`, then `nutrients` (set `[nutrition] sex` and `age`) — see [nutrition.md](nutrition.md) |
+| LinkedIn | linkedin.com › *Settings & Privacy › Data privacy* › **Get a copy of your data** → `Basic_LinkedInDataExport_<date>.zip` | `observe linkedin` — see [linkedin.md](linkedin.md) |
+| Venmo and PayPal | venmo.com › **Statements** › *Download CSV*; paypal.com › Activity › Statements › **Activity report** (`Download.CSV`) | `observe payments "<folder>"` — see [payments.md](payments.md) |
+| Uber rides and Eats | Uber's Privacy Center (or the app: *Account › Settings › Privacy*) › **Download your data** → `Uber Data.zip` | `observe rides "<zip>"` — see [rides.md](rides.md) |
+
 Then name the people: `handles list --suggest` matches phone numbers and
 addresses against your contacts' names and prints a `handles link` command
 for each candidate. Nothing is ever linked automatically.
@@ -312,8 +337,11 @@ To see a fully populated system before your own data exists:
 
 builds a separate demo project from the built-in persona (Alex Rivera in
 Austin — journal, texts, calls, contacts, photos, notes, calendar, Safari,
-WhatsApp, Apple Card, AI chats, Apple Health) in each source's real export
-format, imported through the same connectors your data uses. It prints the
+WhatsApp, Apple Card, AI chats, Apple Health, and the newer sources: an
+Apple Mail export, Google activity, Instagram, Messenger, Telegram, Strong
+and Strava, Spotify, Kindle and Goodreads, Cronometer, LinkedIn, Venmo and
+PayPal, Uber) in each source's real export format, imported through the
+same connectors your data uses. It prints the
 demo root and the commands to try against it; [demo.md](demo.md) has the
 rest.
 

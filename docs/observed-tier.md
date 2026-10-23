@@ -7,9 +7,28 @@ layer (`lifecrm/domain/observations.py`), the connector contract
 tested. Every planned connector has been built since (2026-09-24 and
 2026-10-22): texts (`ios_messages`, `mac_messages`, `android_sms`,
 `whatsapp`), calls (`ios_calls`), `contacts`, `calendar`, `notes`,
-`finance`, `photos`, `location` and `browser`. `lifecrm connectors` lists
-them, and each has its own doc page. This page remains the design they all
-follow.
+`finance`, `photos`, `location` and `browser`. Eleven more followed on
+2026-10-22, each with its own page:
+
+| connector | streams | from | deletions |
+|---|---|---|---|
+| [`email`](email.md) | `email` | Gmail Takeout mbox, Apple Mail (export or `~/Library/Mail`), Thunderbird, `.eml` | remembers |
+| [`meta_messages`](meta_messages.md) | `instagram_dm`, `messenger` | Instagram / Facebook "Download your information" (JSON) | remembers |
+| [`telegram`](telegram.md) | `telegram` | Telegram Desktop's export (machine-readable JSON) | remembers |
+| [`google_activity`](google_activity.md) | `web_search`, `video_watch` | Takeout's My Activity and YouTube history | remembers |
+| [`fitness`](fitness.md) | `workout` | Strong / Hevy CSV, Strava's `export_<id>.zip` | remembers |
+| [`spotify`](spotify.md) | `music_play` | `my_spotify_data.zip` (account data, extended history) | remembers |
+| [`reading`](reading.md) | `highlight`, `book` | Kindle's `My Clippings.txt`, Goodreads' library CSV | remembers |
+| [`nutrition`](nutrition.md) | `food_log`, `nutrition_day` | Cronometer `servings.csv` / `dailysummary.csv`, MyFitnessPal's Nutrition Summary | remembers |
+| [`linkedin`](linkedin.md) | `linkedin_connection`, `linkedin_message` | LinkedIn's data export | connections **mirror** per owner profile; messages remember |
+| [`payments`](payments.md) | `txn` (with the person on the other side) | Venmo statements, PayPal activity CSV | remembers |
+| [`rides`](rides.md) | `ride`, `food_order` | Uber's data export (trips, Eats) | remembers |
+
+`lifecrm connectors` lists them all, each stream with the active rows its
+own imports created (`finance` and `payments` both write `txn`, and each
+counts only its own). `lifecrm nutrients` reads the nutrition streams into
+a cited report beside the reference intakes (docs/nutrition.md). This page
+remains the design they all follow.
 
 ## The problem this solves
 
@@ -262,7 +281,7 @@ CLI, mirroring `health import` (dry-run by default, `--apply` to write):
 ```
 lifecrm observe <connector> [<target>]         # dry-run report
 lifecrm observe <connector> [<target>] --apply
-lifecrm connectors                             # connectors and last run time
+lifecrm connectors                             # connectors, last run time, rows per stream
 lifecrm imports list
 lifecrm imports retract <import-uuid>
 lifecrm imports restore <import-uuid>          # puts back exactly what retract hid
@@ -324,7 +343,7 @@ connector gets the same guards:
   handles pointing at a merged entity, `imports` stuck in `running`. New warning:
   `<connector>_data_age`, the observed-tier equivalent of the capture-liveness
   gap. For a connector that declares `stale_after_days` (ios_messages, ios_calls
-  and android_sms at 14 days, finance at 45) and has active records, doctor
+  and android_sms at 14 days, finance and nutrition at 45) and has active records, doctor
   warns when its newest active record is older than that limit. It measures the
   newest record, not the newest run, so re-importing an old backup does not
   make the data fresh.

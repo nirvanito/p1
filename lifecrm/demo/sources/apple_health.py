@@ -18,7 +18,9 @@ Who records what is a one-person iPhone + Apple Watch household:
   schedule's InBed samples — so every night has two recorders and the
   importer must not count it twice.
 - Health (typed into the Health app): the morning weigh-ins.
-- MyFitnessPal: meals, with protein/fat/carbs and the food's name.
+- Cronometer: meals, with protein/fat/carbs and the food's name — the
+  food diary whose own export the nutrition sample is, so the two agree on
+  which app logged the meals.
 
 A real iPhone + Watch export has steps from BOTH devices, and the import
 report flags exactly that ('steps origins: … recorded by more than one').
@@ -47,13 +49,13 @@ from .. import persona
 WATCH = "Alex’s Apple Watch"
 PHONE = "Alex’s iPhone"
 HEALTH_APP = "Health"
-FOOD_APP = "MyFitnessPal"
+FOOD_APP = "Cronometer"
 
 _WATCH_DEV = ("<<HKDevice: 0x30282a9e0>, name:Apple Watch, manufacturer:Apple Inc., "
               "model:Watch, hardware:Watch7,4, software:10.6>")
 _PHONE_DEV = ("<<HKDevice: 0x30282b1c0>, name:iPhone, manufacturer:Apple Inc., "
               "model:iPhone, hardware:iPhone16,1, software:17.6.1>")
-_VERSIONS = {WATCH: "10.6", PHONE: "17.6.1", HEALTH_APP: "17.6.1", FOOD_APP: "24.31.0"}
+_VERSIONS = {WATCH: "10.6", PHONE: "17.6.1", HEALTH_APP: "17.6.1", FOOD_APP: "4.31.2"}
 _DEVICES = {WATCH: _WATCH_DEV, PHONE: _PHONE_DEV}
 
 _KM_PER_MI = 1.609344

@@ -10,8 +10,21 @@ Two setups are supported end to end, and the demo builds either one:
 
 | combo | computer | phone | what it imports |
 |---|---|---|---|
-| `android` | Windows laptop | Samsung Galaxy | Health Connect export, SMS Backup & Restore (texts + calls), Google Contacts `.vcf`, Google Calendar Takeout, Google Keep Takeout, Chase CSVs, Samsung Gallery photos (EXIF), Google Maps Timeline, Chrome history, WhatsApp (Android format), Claude + ChatGPT exports |
-| `iphone` | MacBook | iPhone | Apple Health `export.zip`, the Mac's Messages `chat.db`, Call History, the Mac's Contacts store, Apple Calendar `.ics`, Apple Notes `NoteStore.sqlite`, Apple Card CSVs + a credit union `.qfx`, Mac Photos library, Safari history, WhatsApp (iOS format), Claude + ChatGPT exports |
+| `android` | Windows laptop | Samsung Galaxy | Health Connect export, SMS Backup & Restore (texts + calls), Google Contacts `.vcf`, Google Calendar Takeout, Google Keep Takeout, Chase CSVs, Samsung Gallery photos (EXIF), Google Maps Timeline, Chrome history, WhatsApp (Android format), Claude + ChatGPT exports, a Gmail Takeout (`Mail/*.mbox`), Google Takeout My Activity + YouTube history (JSON), Venmo statements |
+| `iphone` | MacBook | iPhone | Apple Health `export.zip`, the Mac's Messages `chat.db`, Call History, the Mac's Contacts store, Apple Calendar `.ics`, Apple Notes `NoteStore.sqlite`, Apple Card CSVs + a credit union `.qfx`, Mac Photos library, Safari history, WhatsApp (iOS format), Claude + ChatGPT exports, an Apple Mail "Export Mailbox" folder, Google Takeout My Activity + YouTube history (HTML), Venmo statements + a PayPal activity download |
+
+Both combos also import the sources that are the same file whichever
+phone you carry: Instagram and Facebook "Download your information" zips
+(JSON), a Telegram Desktop export, Strong's `strong.csv` and Strava's
+`export_<id>.zip`, both Spotify downloads (`my_spotify_data.zip` and
+`my_spotify_data (1).zip`), a Kindle's `My Clippings.txt` and Goodreads'
+library CSV, Cronometer's `servings.csv` and `dailysummary.csv`, a LinkedIn
+data export, and Uber's `Uber Data.zip` (rides and an Eats order). Each has
+its own guide: [email](email.md), [meta_messages](meta_messages.md),
+[telegram](telegram.md), [google_activity](google_activity.md),
+[fitness](fitness.md), [spotify](spotify.md), [reading](reading.md),
+[nutrition](nutrition.md), [linkedin](linkedin.md),
+[payments](payments.md) and [rides](rides.md).
 
 The iPhone combo has no location sample, because Apple's Significant
 Locations cannot be exported ([location.md](location.md)).
@@ -93,27 +106,44 @@ six weeks:
 - a **health** series: sleep, steps, weight, workouts and heart rate. It
   agrees with the journal ("slept badly, maybe five and a half hours"), and
   it dips in the last week as launches pile up.
+- the rest of a life's exports, telling the same story: Priya's advice on
+  the deck by email and her congratulations on LinkedIn, where she is now VP
+  Product; the "Bled crew" planning the trip on Instagram and Sam's climbing
+  group on Telegram; the searches and YouTube videos behind each plan; bench
+  with Sam at 185 lb in Strong and the Zilker 5k in Strava; the Slovenia
+  podcast on Spotify; highlights from *The Overstory*; a Cronometer diary
+  that leaves vitamin D and magnesium low and sodium over on the taco
+  nights; Alex's share of the Bled place, sent to Jake on Venmo; and the
+  Uber to Uchi.
 
 People, places, phone numbers and emails are all fictional (`example.com`,
 `555-01xx`).
 
 The demo writes its own `config.toml` in the demo root: the persona's
 timezone and the 05:00 rollover, the synthetic sync folders, each
-connector's account, and an `[owner]` table that says who the owner is:
+connector's account, an `[owner]` table that says who the owner is, and a
+`[nutrition]` table that says whose reference intakes `nutrients` uses:
 
 ```toml
 [owner]
 name = "Alex Rivera"
 handles = ["email:alex.rivera@example.com", "phone:+15125550100"]
+
+[nutrition]
+sex = "male"
+age = 32          # from the persona's birthday, on the demo's "today"
 ```
 
-`handles` uses the `kind:value` shape that `handles link` takes.
+`handles` uses the `kind:value` shape that `handles link` takes. The newer
+connectors need nothing else: email, payments and LinkedIn find the owner
+through `[owner]`, and the Meta and Telegram exports name their own
+account.
 
 ## Things to try
 
 Replace `<demo>` with the path the build printed, for example `demo/android`.
-The build ends by printing the answers to ten sample questions and several
-of these commands with the root filled in.
+The build ends by printing the answers to the sample questions
+(`persona.QUESTIONS`) and several of these commands with the root filled in.
 
 ```bash
 python -m lifecrm --root <demo> serve                     # web UI: Ask, Today, People, Loops
@@ -130,6 +160,27 @@ python -m lifecrm --root <demo> review --lens health      # the weekly evidence 
 python -m lifecrm --root <demo> voice --text "how did I sleep last week"
 python -m lifecrm --root <demo> doctor
 ```
+
+From the newer sources, on either combo:
+
+```bash
+python -m lifecrm --root <demo> ask "what advice did Priya give me over email"
+python -m lifecrm --root <demo> ask "what's my bench PR"
+python -m lifecrm --root <demo> ask "what am I low on"
+python -m lifecrm --root <demo> ask "how much did I pay Jake"
+python -m lifecrm --root <demo> ask "what did I highlight in The Overstory"
+python -m lifecrm --root <demo> ask "what did I search for about Bled"
+python -m lifecrm --root <demo> ask "when did I last take an Uber"
+python -m lifecrm --root <demo> ask "where does Priya work"
+python -m lifecrm --root <demo> nutrients                 # the cited nutrient report behind "what am I low on"
+python -m lifecrm --root <demo> connectors                # each connector's own rows per stream
+```
+
+`nutrients` reads the Cronometer diary for the last 30 days against the
+reference intakes for a 32-year-old man: vitamin D and magnesium come out
+low, fiber borderline, and sodium over its limit on the two taco nights at
+Veracruz, each line citing its rows. It is a comparison with reference
+values, not medical advice ([nutrition.md](nutrition.md)).
 
 The build already wrote an Obsidian vault to `<demo>/vault` (open that
 folder as a vault in Obsidian). Running
@@ -168,9 +219,15 @@ prints each one:
   cross-day closures). This is only acceptable because the data is
   synthetic. Real diffs are never applied unreviewed.
 - **Handle decisions.** "This phone number is Jake" is one decision per
-  identifier. The demo makes those decisions from the persona and leaves a
-  few unresolved, such as WhatsApp's "Tía Rosa", so the review queue has
-  something in it.
+  identifier. The demo makes those decisions from the persona: phone
+  numbers and email addresses by value, Instagram, Messenger, Telegram,
+  LinkedIn and Venmo accounts by the name the export gives them. It leaves
+  the strangers unresolved, so the review queue has something in it: Tía
+  Rosa's number on WhatsApp and her Facebook account (Rosa Treviño), the
+  airline's booking address, Acme's product-team list and the office's
+  calendar location — five on the iPhone combo. The Android combo adds five
+  Timeline places no entity stands for (Home, Work and three unnamed
+  stops).
 
 ## Safety
 
