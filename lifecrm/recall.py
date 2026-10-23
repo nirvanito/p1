@@ -92,7 +92,15 @@ JOURNAL_METRICS: dict[str, dict] = {
 }
 
 MONEY_WORDS = ("spent", "spend", "spending", "cost", "costs", "paid", "pay",
-               "money", "bought", "buy", "purchase", "purchased", "purchases")
+               "money", "bought", "buy", "purchase", "purchased", "purchases",
+               # money between people: 'what do I owe Sam', 'did Maya pay me back'
+               "owe", "owes", "owed", "owing", "reimburse", "reimbursed", "repay",
+               "repaid", "split")
+# The payment apps by name: a money question either way ('how much did I
+# venmo Jake'), and the app's own rows are what it asks about ('how much did
+# I spend on Venmo' — the bank's 'VENMO' rows are the same money).
+PAYMENT_APPS = {"venmo": "venmo", "venmoed": "venmo", "venmod": "venmo",
+                "paypal": "paypal", "paypaled": "paypal", "paypalled": "paypal"}
 
 # (question words) -> (health metrics, journal metrics). Matched on whole
 # tokens, so 'resting' never fires 'rest'.
@@ -1841,13 +1849,27 @@ _CHANNEL_WORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (CALL_STREAMS, ("call", "called", "calls", "calling", "phone", "phoned",
                     "ring", "rang", "facetime", "facetimed")),
     (TEXT_STREAMS, ("text", "texted", "texts", "texting", "message", "messaged",
-                    "messages", "whatsapp", "imessage", "sms", "dm", "dms")),
+                    "messages", "whatsapp", "imessage", "sms", "dm", "dms", "instagram",
+                    "messenger", "telegram")),
+    # 'Emailed Priya the draft': a journal entry that says it was an email.
+    (EMAIL_STREAMS, ("email", "emailed", "emails", "emailing", "e-mail", "e-mailed",
+                     "mail", "mailed")),
 )
+# The streams a person is in touch with you over: what 'when did I last
+# email Priya' or 'did Jake text me' narrows contact to.
+CHANNEL_STREAMS = TEXT_STREAMS + CALL_STREAMS + EMAIL_STREAMS
 # The span of a search that was not clipped to the window.
 ALL_RECORDS = "all records"
 # Dated by the day only (a placeholder time): never print a clock time.
 _UNTIMED = ("contact card", "note", "transaction", "book", "nutrition day",
             "LinkedIn connection")
+
+# Mail. 'sent', 'reply' and 'wrote' are left out: a text is sent and
+# answered too. 'e-mail' is the two words 'e mail' here (`_key`), and
+# "Jake's email" is his address, not a message (`_EMAIL_ADDRESS_RE`).
+_EMAIL_WORDS = frozenset({"email", "emails", "emailed", "emailing", "e mail", "e mails",
+                          "e mailed", "mail", "mails", "mailed", "inbox", "gmail", "cc",
+                          "ccd", "cced", "bcc"})
 
 # Question words that narrow the observed search to some streams.
 STREAM_WORDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
@@ -1875,11 +1897,124 @@ STREAM_WORDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
                 "bank"}), ("txn",)),
     (frozenset({"website", "websites", "browsed", "browsing", "webpage"}),
      ("browser_visit",)),
+    (_EMAIL_WORDS, EMAIL_STREAMS),
+    (frozenset({"instagram", "insta", "ig"}), ("instagram_dm",)),
+    (frozenset({"messenger", "facebook", "fb"}), ("messenger",)),
+    (frozenset({"telegram", "tg"}), ("telegram",)),
+    (frozenset({"linkedin"}), ("linkedin_connection", "linkedin_message")),
+    (frozenset({"inmail", "inmails"}), ("linkedin_message",)),
+    # What the owner did, from the activity exports. None of these streams
+    # has other people in it, so a question that names a person keeps them
+    # as words ('did Jake watch the video') — `_activity_streams`.
+    (frozenset({"search", "searches", "searched", "searching", "googled", "googling",
+                "google"}), ("web_search",)),
+    (frozenset({"youtube", "video", "videos", "watched", "watching"}), ("video_watch",)),
+    (frozenset({"workout", "workouts", "strava", "hevy", "pr", "prs", "pb", "pbs"}),
+     ("workout",)),
+    (frozenset({"spotify", "podcast", "podcasts", "song", "songs", "music", "album",
+                "albums", "artist", "artists"}), ("music_play",)),
+    (frozenset({"highlight", "highlights", "highlighted", "highlighting", "kindle",
+                "underlined", "clipping", "clippings"}), ("highlight",)),
+    (frozenset({"books", "goodreads", "shelf", "shelves", "to read"}), ("book",)),
+    (frozenset({"cronometer"}), ("food_log", "nutrition_day")),
+    (frozenset({"uber", "ubers", "lyft", "taxi", "taxis", "cab", "cabs", "rideshare"}),
+     ("ride",)),
+    (frozenset({"ubereats", "doordash", "grubhub", "postmates", "takeout", "take out"}),
+     ("food_order",)),
 ]
+
+# Streams that hold only what the owner did — no other person takes part.
+ACTIVITY_STREAMS = frozenset({"web_search", "video_watch", "workout", "music_play",
+                              "highlight", "book", "food_log", "nutrition_day", "ride",
+                              "food_order"})
+# Words that may mean a record kind, but often do not: they choose it only
+# when no stronger word did and the question names nobody and nothing.
+# 'alone' words also need the question to have no other topic: 'what did I
+# read' is books, 'what did I read about may' is a search for may; 'what did
+# I eat yesterday' is the food log, 'what did I eat at Veracruz' is Veracruz.
+# 'keep' words stay a search term once they chose the kind ('when did I last
+# run' finds the runs among the workouts), under the name the records use.
+_WEAK_WORDS: tuple[tuple[frozenset[str], tuple[str, ...], bool], ...] = (
+    (frozenset({"listen", "listened", "listening", "listens", "track", "tracks"}),
+     ("music_play",), False),
+    (frozenset({"watch"}), ("video_watch",), False),
+    (frozenset({"quote", "quotes"}), ("highlight",), False),
+    (frozenset({"rated", "rate", "rating", "ratings"}), ("book",), False),
+    (frozenset({"read", "reading", "reread", "finished"}), ("book",), True),
+    (frozenset({"gym", "lift", "lifted", "lifting", "lifts", "exercise", "exercised",
+                "exercises", "training", "trained", "run", "runs", "ran", "running",
+                "jog", "jogged", "jogging", "hike", "hiked", "hiking", "hikes", "swim",
+                "swam", "swimming"}), ("workout",), False),
+    (frozenset({"eat", "ate", "eaten", "eating", "food", "foods", "meal", "meals",
+                "breakfast", "brunch", "lunch", "dinner", "snack", "snacks"}),
+     ("food_log",), True),
+    (frozenset({"ride", "rides", "rode"}), ("ride",), True),
+    (frozenset({"delivery", "delivered", "order", "ordered", "orders"}),
+     ("food_order",), True),
+    (frozenset({"connection", "connections", "connected"}), ("linkedin_connection",),
+     True),
+)
+# What names a ride or a food order in a money question, not what it was.
+_FARE_WORDS = frozenset({"uber", "ubers", "lyft", "taxi", "taxis", "cab", "cabs",
+                         "rideshare", "ride", "rides", "ubereats", "eats", "doordash",
+                         "grubhub", "postmates", "takeout", "delivery", "order", "orders",
+                         "fare", "fares", "trip", "trips"})
+# Exercise words choose the workouts and are always the topic ('bench PR').
+_EXERCISE_WORDS = frozenset({"bench", "squat", "squats", "deadlift", "deadlifts"})
+# The name the records use for an activity word: the Strava run says "Run".
+_ACTIVITY_TERMS = {"ran": "run", "runs": "run", "running": "run", "jogged": "run",
+                   "jog": "run", "jogging": "run", "hiked": "hike", "hiking": "hike",
+                   "hikes": "hike", "swam": "swim", "swimming": "swim",
+                   "squats": "squat", "deadlifts": "deadlift"}
+_KEPT_WEAK = frozenset(_ACTIVITY_TERMS) | {"run", "hike", "swim"}
+# How one does an activity, never what it was about: 'when did I last TAKE
+# an Uber', 'what did I LISTEN to'. Dropped once only activity streams are
+# asked about.
+_ACTIVITY_VERBS = frozenset({
+    "take", "took", "taken", "taking", "get", "got", "getting", "grab", "grabbed",
+    "catch", "caught", "have", "had", "having", "use", "used", "using", "order",
+    "ordered", "ordering", "play", "played", "playing", "listen", "listened",
+    "listening", "watch", "watched", "watching", "read", "reading", "eat", "ate",
+    "eaten", "eating", "search", "searched", "searching", "look", "looked", "make",
+    "made", "spend", "spent", "log", "logged", "finish", "finished", "start", "started",
+    "highlight", "highlighted", "save", "saved", "like", "liked", "rate", "rated"})
+# Phrases that choose a kind where single words cannot: (pattern, streams,
+# the words it used up).
+_ACTIVITY_PHRASES: tuple[tuple[re.Pattern, tuple[str, ...], frozenset[str]], ...] = (
+    (re.compile(r"\buber\s*eats?\b"), ("food_order",), frozenset({"uber", "eats", "eat"})),
+    (re.compile(r"\b(?:in|on|from|with|using|via)\s+strong\b|\bstrong\s+app\b"),
+     ("workout",), frozenset({"strong", "app"})),
+    (re.compile(r"\bpersonal\s+(?:best|record)s?\b|\bone[\s-]rep\s+max\b|\b1rm\b"),
+     ("workout",), frozenset({"personal", "best", "bests", "record", "records", "rep",
+                              "max", "one", "1rm"})),
+    (re.compile(r"\bwork(?:ed|ing)?\s+out\b"), ("workout",),
+     frozenset({"work", "worked", "working", "out"})),
+    (re.compile(r"\blook(?:ed|ing)?\s+up\b"), ("web_search",),
+     frozenset({"look", "looked", "looking", "up"})),
+    (re.compile(r"\b(?:a|the|my|this|that|what|which|any|good|favou?rite|last|first|"
+                r"next|new|audio|e)\s+book\b|\bbook\s+(?:about|by|club|list|review|"
+                r"recommendation)s?\b"), ("book",), frozenset({"book"})),
+    (re.compile(r"\breading\s+list\b|\bwant\s+to\s+read\b"), ("book",),
+     frozenset({"reading", "list", "want", "read"})),
+)
+# 'quote' is a price as often as a passage; 'watch' a thing worn.
+_NOT_A_QUOTE = re.compile(r"\b(?:price|insurance|repair|a|get)\s+quotes?\b"
+                          r"|\bquotes?\s+(?:for|from|on)\b")
+_NOT_A_WATCH = re.compile(r"\b(?:my|the|a|apple|smart|galaxy|garmin|pixel)\s+watch\b"
+                          r"|\bwatch\s+(?:out|face|band|strap|battery)\b")
+# 'a bike ride' is a workout, not an Uber.
+_NOT_A_CAR = re.compile(r"\b(?:bike|bicycle|horse|horseback|train|bus)\s+rides?\b"
+                        r"|\brode\s+(?:my|a|the)\s+(?:bike|bicycle|horse)\b")
+# "Jake's email" (or "his email address") is where to write to him — his
+# card — not a message he sent.
+_EMAIL_ADDRESS_RE = re.compile(
+    r"\be-?mail\s+(?:address|addresses|addy|id)\b"
+    r"|(?:'s|\b(?:his|her|their|my|your))\s+e-?mails?\s*\??\s*$")
 
 _OUT_VERBS = frozenset({"ask", "asked", "tell", "told", "say", "said", "text",
                         "texted", "send", "sent", "message", "messaged",
                         "write", "wrote", "call", "called", "email", "emailed",
+                        "e mail", "e mailed", "mail", "mailed", "cc", "ccd",
                         "phoned", "rang", "facetime", "facetimed"})
 # Calls only when used as a verb (`_CALL_VERB_RE`); otherwise a phone is a
 # number on a card and a ring is jewellery.
@@ -1894,7 +2029,9 @@ _ASKS_WHEN = re.compile(r"^\W*(?:(?:hey|so|ok|okay|and|but|um)\W+)*"
                         r"|is there\b|was there\b|were there\b|any\b)")
 _IN_VERBS = _OUT_VERBS | {"says", "tells", "texts", "suggest", "suggested",
                           "recommend", "recommended", "reply", "replied",
-                          "answer", "answered"}
+                          "answer", "answered", "emails",
+                          # 'what advice did Priya give me over email'
+                          "give", "gave"}
 # May stand between who and the verb: 'when did Maya last text me'.
 _VERB_ADVERBS = frozenset({"last", "ever", "recently", "first", "most", "just",
                            "also", "finally", "actually", "really"})
@@ -1908,10 +2045,104 @@ _CONTACT_VERBS = frozenset({"talk", "talked", "spoke", "speak", "spoken",
 _RECENT_RE = re.compile(r"\b(?:last|latest|most recent(?:ly)?|recently)\b")
 # A phone is profile only as a thing someone has ('phone number', "Maya's
 # phone"); 'when did Jake last phone me' is a call.
+# An email is profile only as an address someone has ("Jake's email",
+# 'her email address'); 'what did Priya say over email' asks for mail.
 _PROFILE_RE = re.compile(
-    r"\b(?:favou?rites?|birthday|born|hometown|number|email|e-mail|address|"
+    r"\b(?:favou?rites?|birthday|born|hometown|number|address|"
     r"lives?|living|grew|grow|raised|from)\b|\bphone\s*(?:#|no\b)|'s\s+(?:phone|cell|mobile)\b"
+    r"|\be-?mail\s+(?:address(?:es)?|addy|id)\b|'s\s+e-?mails?\s*\??\s*$"
     r"|\bwho(?:'s| is)\b|\btell me about\b")
+# Where someone works: their newest LinkedIn connection row and their card.
+_WORK_RE = re.compile(
+    r"\bwhere\s+(?:does|did|do|is|was)\s+[\w'’ .-]+?\s+work(?:ing)?\b"
+    r"|\bwho\s+(?:does|did)\s+[\w'’ .-]+?\s+work\s+for\b"
+    r"|\bwhat\s+(?:does|did)\s+[\w'’ .-]+?\s+do\s+for\s+(?:a\s+)?(?:living|work)\b"
+    r"|(?:'s|\b(?:his|her|their))\s+(?:job|job\s+title|title|employer|company|position|"
+    r"role|work)\b|\bworks?\s+(?:at|for)\b")
+_WORK_WORDS = frozenset({"work", "works", "working", "worked", "job", "title", "employer",
+                         "company", "position", "role", "living", "employed"})
+# 'who do I know at Acme': connections and cards that name the company.
+_KNOW_AT_RE = re.compile(r"\bwho\s+(?:else\s+)?(?:do|does|did)\s+(?:i|we)\s+know\s+"
+                         r"(?:at|from|who\s+works?\s+(?:at|for))\s+\S"
+                         r"|\bwho\s+(?:works?|worked)\s+(?:at|for)\s+\S"
+                         r"|\bwho\s+(?:in\s+my\s+network|of\s+my\s+connections)\b")
+# 'what's my bench PR', 'my best squat', 'heaviest deadlift'.
+_BEST_RE = re.compile(r"\b(?:prs?|pbs?|personal\s+(?:best|record)s?|best|heaviest|"
+                      r"max(?:imum)?|1rm|one[\s-]rep\s+max|strongest|most\s+weight)\b")
+_BEST_WORDS = frozenset({"pr", "prs", "pb", "pbs", "personal", "best", "bests", "record",
+                         "records", "heaviest", "max", "maximum", "1rm", "rep", "one",
+                         "strongest", "most", "weight", "lift", "lifts", "lifted",
+                         "lifting", "ever", "lb", "lbs", "kg"})
+# A count or a total of something done: 'how many workouts this month',
+# 'how often did I take an Uber', 'how long did I listen to X'.
+_COUNT_RE = re.compile(r"\bhow\s+(?:many|often|long)\b|\bhow\s+much\s+time\b"
+                       r"|\bnumber\s+of\b|\bin\s+total\b|\btotal\b")
+# Nutrients by the words people use: the nutrition connector's keys.
+_NUTRIENT_WORDS = {
+    "protein": "protein", "proteins": "protein", "fiber": "fiber", "fibre": "fiber",
+    "sodium": "sodium", "salt": "sodium", "sugar": "sugars", "sugars": "sugars",
+    "carbs": "carbohydrate", "carb": "carbohydrate", "carbohydrate": "carbohydrate",
+    "carbohydrates": "carbohydrate", "fat": "fat", "fats": "fat", "iron": "iron",
+    "magnesium": "magnesium", "calcium": "calcium", "potassium": "potassium",
+    "zinc": "zinc", "caffeine": "caffeine", "cholesterol": "cholesterol",
+    "alcohol": "alcohol", "folate": "folate", "selenium": "selenium", "copper": "copper",
+    "choline": "choline", "phosphorus": "phosphorus", "manganese": "manganese",
+    "thiamin": "thiamin", "riboflavin": "riboflavin", "niacin": "niacin",
+    "iodine": "iodine", "b12": "vitamin_b12", "b6": "vitamin_b6"}
+_VITAMIN_RE = re.compile(r"\bvitamin\s+(a|b1|b2|b3|b5|b6|b7|b12|c|d|e|k)\b")
+_VITAMIN_KEYS = {"a": "vitamin_a", "b1": "thiamin", "b2": "riboflavin", "b3": "niacin",
+                 "b5": "pantothenic_acid", "b6": "vitamin_b6", "b7": "biotin",
+                 "b12": "vitamin_b12", "c": "vitamin_c", "d": "vitamin_d", "e": "vitamin_e",
+                 "k": "vitamin_k"}
+# 'what am I low on', 'what nutrients am I deficient in', 'how's my nutrition'.
+_NUTRIENT_FLAGS_RE = re.compile(
+    r"\b(?:low|short|lacking|deficient)\s+(?:on|in)\b|\bdeficien(?:t|cy|cies)\b"
+    r"|\b(?:micro)?nutrients?\b|\bnutrition(?:al)?\b|\bvitamins\b|\bminerals?\b"
+    r"|\bnot\s+(?:getting|eating)\s+enough\b|\b(?:too\s+much|over(?:\s+the)?\s+limit)\s+"
+    r"(?:of\s+)?(?:salt|sodium|sugar)\b")
+# A nutrient named in a question about eating it, not one about what a chat
+# said of it ('what did ChatGPT say about protein').
+_INTAKE_RE = re.compile(r"\b(?:eat|ate|eaten|eating|intake|consumed?|consuming|get|getting|"
+                        r"got|had|have|having|enough|much|average|averag(?:ed|ing)|daily|"
+                        r"per\s+day|a\s+day|diet|low|high|deficient|total)\b")
+
+
+def _activity_filter(intent: dict) -> tuple[str, list] | None:
+    """SQL narrowing an activity search to the kind or shelf asked for."""
+    parts, args = [], []
+    kinds = intent.get("kinds") or []
+    if kinds:
+        parts.append("(o.stream <> 'music_play' OR (CASE WHEN json_valid(o.value_json) "
+                     "THEN json_extract(o.value_json, '$.kind') END) IN "
+                     f"({','.join('?' for _ in kinds)}))")
+        args += kinds
+    if intent.get("shelf"):
+        parts.append("(o.stream <> 'book' OR (CASE WHEN json_valid(o.value_json) THEN "
+                     "json_extract(o.value_json, '$.exclusive_shelf') END) = ?)")
+        args.append(intent["shelf"])
+    return (" AND ".join(parts), args) if parts else None
+
+
+def _nutrition_intent(q: str, keys: list[str], streams: list[str],
+                      entities: list[dict]) -> dict | None:
+    """A question the nutrient report answers: the nutrients it names (keys
+    of lifecrm/nutrients.py), or `flags` for 'what am I low on'. None for
+    anything else — and for a question asking another kind of record about
+    a nutrient ('what did ChatGPT say about protein')."""
+    if set(streams) - {"food_log", "nutrition_day"}:
+        return None
+    if re.search(r"\bbody\s*fat\b", q):
+        return None
+    names = {t for e in entities for t in e["tokens"]}
+    named = [_NUTRIENT_WORDS[k] for k in keys if k in _NUTRIENT_WORDS and k not in names]
+    named += [_VITAMIN_KEYS[m.group(1)] for m in _VITAMIN_RE.finditer(q)]
+    named = list(dict.fromkeys(named))
+    flags = bool(_NUTRIENT_FLAGS_RE.search(q))
+    if named and (_INTAKE_RE.search(q) or flags):
+        return {"keys": named, "flags": flags}
+    if flags and not named:
+        return {"keys": [], "flags": True}
+    return None
 # A question after someone's numbers: their card's phones and emails lead.
 _NUMBERS_RE = re.compile(r"\b(?:phone|number|numbers|cell|mobile|e-?mail|emails|"
                          r"contact (?:info|details))\b", re.IGNORECASE)
@@ -1970,13 +2201,39 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
     person_pos = {p for e in persons for p in e["positions"]}
     streams: list[str] = []
     stream_keys: set[str] = set()
+    # The activity exports hold no other people: beside a name their words
+    # are words ('did Jake send the video', 'what did Sam say about the gym').
+    activity_ok = not persons
+    used_by_phrase: set[str] = set()
+    if activity_ok:
+        for rx, group, used in _ACTIVITY_PHRASES:
+            if rx.search(q):
+                used_by_phrase |= used
+                stream_keys |= used & set(keys)
+                streams += [s for s in group if s not in streams]
+    address = bool(_EMAIL_ADDRESS_RE.search(q))
     for i, k in enumerate(keys):
         if i in person_pos:            # a person called Claude is a person
             continue
+        if k in used_by_phrase:        # 'Uber Eats' is a food order, not a ride
+            continue
+        if activity_ok and k in _EXERCISE_WORDS:
+            streams += [s for s in ("workout",) if s not in streams]
+            continue
         for vocab, group in STREAM_WORDS:
             if k in vocab:
+                if address and group == EMAIL_STREAMS:
+                    continue           # "Jake's email" is his address
+                if not activity_ok and set(group) <= ACTIVITY_STREAMS:
+                    continue
                 stream_keys.add(k)
                 streams += [s for s in group if s not in streams]
+    # 'Who do I know at Acme': the people records that name a company.
+    know_at = bool(_KNOW_AT_RE.search(q))
+    if know_at:
+        streams += [s for s in ("linkedin_connection", "contact_card") if s not in streams]
+    # 'Where does Priya work': her newest LinkedIn row and her card.
+    work = bool(persons and _WORK_RE.search(q))
 
     def verb_after(pos: int, verbs: frozenset[str]) -> int | None:
         # 'Maya texted me', and with an adverb between: 'when did Maya last
@@ -2023,7 +2280,8 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
         direction = "in"
 
     loops = bool(_LOOPS_RE.search(q))
-    money = "money" in journal or "txn" in streams
+    apps = sorted({PAYMENT_APPS[k] for k in keys if k in PAYMENT_APPS})
+    money = "money" in journal or "txn" in streams or bool(apps)
     # In a money question a stream's name may be the merchant ('how much did
     # I spend on ChatGPT', 'on WhatsApp'): only the transaction words go.
     drop = set(INTENT_WORDS) | (stream_keys & _TXN_WORDS if money else stream_keys)
@@ -2036,14 +2294,66 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
         drop |= LOOP_WORDS
     if money:
         # '$50', 'more than 100 dollars': an amount, never a merchant.
-        drop |= set(MONEY_WORDS) | _AMOUNT_WORDS | _COMPARE_WORDS
+        drop |= set(MONEY_WORDS) | _AMOUNT_WORDS | _COMPARE_WORDS | set(PAYMENT_APPS)
     else:
         drop |= RECAP_WORDS
+    if work:
+        drop |= _WORK_WORDS
     topic_words = words if topic_words is None else topic_words
     numbers = (_numeric_merchants(topic_words, question if topic_text is None else topic_text)
                if money else frozenset())
-    topic = _terms(topic_words, frozenset(drop), keep_short=money, numbers=numbers)
+
+    def topic_of(drop_set: set[str]) -> list[str]:
+        return _terms(topic_words, frozenset(drop_set), keep_short=money, numbers=numbers)
+
+    topic = topic_of(drop)
+    # A word that may name a kind of record chooses it only when nothing
+    # else did, and nothing is named (`_WEAK_WORDS`).
+    weak_all = frozenset().union(*(v for v, _, _ in _WEAK_WORDS))
+    if not streams and not entities and not money and not loops:
+        others = [t for t in topic if t not in weak_all and t not in _ACTIVITY_VERBS
+                  and t not in _EXERCISE_WORDS]
+        for vocab, group, alone in _WEAK_WORDS:
+            hit = vocab & set(keys)
+            if not hit or (alone and others):
+                continue
+            if (group == ("highlight",) and _NOT_A_QUOTE.search(q)) \
+                    or (group == ("video_watch",) and _NOT_A_WATCH.search(q)) \
+                    or (group == ("ride",) and _NOT_A_CAR.search(q)):
+                continue
+            stream_keys |= hit - _KEPT_WEAK
+            streams += [s for s in group if s not in streams]
+    nutrition = None if money else _nutrition_intent(q, keys, streams, entities)
+    if nutrition:
+        # The nutrient report answers it: its words are not a topic.
+        streams += [s for s in ("nutrition_day", "food_log") if s not in streams]
+        stream_keys |= {k for k in keys if k in _NUTRIENT_WORDS or k in weak_all} | (
+            set(keys) & {"low", "short", "lacking", "deficient", "deficiency",
+                         "deficiencies", "nutrient", "nutrients", "nutrition", "nutritional",
+                         "vitamin", "vitamins", "mineral", "minerals", "enough", "intake",
+                         "micronutrients", "getting"})
+    activity = bool(streams) and set(streams) <= ACTIVITY_STREAMS and not money
+    if activity:
+        # 'when did I last TAKE an Uber', 'what did I LISTEN to': how, not what.
+        # A weak word of a kind that was not chosen stays a word ('how long
+        # did I listen to Japanese Breakfast' is not about breakfast).
+        chosen = frozenset().union(*(v for v, group, _ in _WEAK_WORDS
+                                     if set(group) & set(streams)))
+        drop |= (_ACTIVITY_VERBS - weak_all) | (chosen - _KEPT_WEAK - _EXERCISE_WORDS) \
+            | (_ACTIVITY_VERBS & chosen)
+    best = activity and "workout" in streams and bool(_BEST_RE.search(q))
+    if best:
+        drop |= _BEST_WORDS
+    if know_at:
+        drop |= _WORK_WORDS | {"know", "knows", "network", "connections"}
+    drop |= stream_keys if not money else set()
+    topic = topic_of(drop)
+    if "workout" in streams:
+        # The records' own word: a Strava run says "Run", not "ran".
+        topic = list(dict.fromkeys(_ACTIVITY_TERMS.get(t, t) for t in topic))
     display = {w["term"].strip("'"): w["raw"] for w in topic_words}
+    for v in _ACTIVITY_TERMS.values():
+        display.setdefault(v, v)
     merchant = None
     unused: list[str] = []
     if money:
@@ -2062,19 +2372,60 @@ def parse_intent(question: str, words: list[dict], entities: list[dict],
                   and w["term"].strip("'") not in _MONEY_FRAME
                   and w["key"] not in entity_tokens
                   and not re.fullmatch(r"[\d.,:/-]+(?:st|nd|rd|th|s)?", w["term"])]
-    channel = set(streams) & set(TEXT_STREAMS + CALL_STREAMS)
+    # 'What podcast did I listen to': Spotify's kind. 'What books did I read
+    # this year' / 'what's on my reading list': Goodreads' shelf.
+    kinds: list[str] = []
+    if "music_play" in streams:
+        kinds = [k for k, rx in (("podcast", r"\b(?:podcasts?|episodes?)\b"),
+                                 ("audiobook", r"\baudiobooks?\b"),
+                                 ("music", r"\b(?:songs?|music|tracks?|albums?)\b"))
+                 if re.search(rx, q)]
+    shelf = None
+    if "book" in streams:
+        shelf = ("to-read" if re.search(r"\bto[\s-]read\b|\breading\s+list\b|\bwant\s+to\s+read\b"
+                                        r"|\bread\s+next\b", q)
+                 else "currently-reading" if re.search(r"\bcurrently\s+reading\b|\bam\s+i\s+"
+                                                       r"reading\b|\bi'?m\s+reading\b", q)
+                 else "read" if re.search(r"\b(?:read|finished|finish)\b", q) else None)
+    channel = set(streams) & set(CHANNEL_STREAMS)
+    # 'When did I last take an Uber', 'when did I last run': the newest one.
+    last_of = activity and bool((_RECENT_RE.search(q) and re.search(r"\bwhen\b", q))
+                                or "last time" in q)
     return {
         "streams": streams,
         "direction": direction,
         "senders": senders if direction == "in" else [],
         "recency": bool(_RECENT_RE.search(q) and (set(keys) & _CONTACT_VERBS or call_verb))
         or "last time" in q
-        or bool(re.search(r"\b(?:was|were) (?:i|we) (?:last|most recently)\b", q)),
+        or bool(re.search(r"\b(?:was|were) (?:i|we) (?:last|most recently)\b", q))
+        or last_of,
         # 'Did Jake call me this week', 'when did Jake call': a channel named
         # for a person and nothing to find in what was said — the contact
         # (or that there was none) is the answer, not their card.
         "contact": bool(channel and persons and not topic and _ASKS_WHEN.search(q)),
-        "profile": bool(_PROFILE_RE.search(q)),
+        "profile": bool(_PROFILE_RE.search(q)) or work,
+        # 'where does Priya work': the newest LinkedIn connection row.
+        "work": work,
+        # 'who do I know at Acme': connections and cards naming the company.
+        "know_at": know_at,
+        # Only activity exports asked about (searches, workouts, rides, ...).
+        "activity": activity,
+        # 'when did I last take an Uber': the newest record leads.
+        "last_of": last_of,
+        # 'how many workouts this month', 'how long did I listen to X'.
+        "count": activity and bool(_COUNT_RE.search(q)
+                                   or (re.search(r"\bhow\s+much\b", q)
+                                       and set(streams) & {"music_play", "workout"})),
+        # 'what's my bench PR': the heaviest top set (`workout_best`).
+        "best": best,
+        # 'what am I low on', 'how much protein did I eat': the nutrient
+        # report (lifecrm/nutrients.py).
+        "nutrition": nutrition,
+        # 'how much did I spend on Venmo': the app's own rows.
+        "apps": apps,
+        # Listening narrowed to podcasts / music / audiobooks; books to a shelf.
+        "kinds": kinds if 0 < len(kinds) < 3 else [],
+        "shelf": shelf,
         "loops": loops,
         # 'what's due this week': open loops with a due date by then.
         "due": loops and bool(_DUE_RE.search(q) or _OVERDUE_RE.search(q)),
@@ -2124,7 +2475,8 @@ _TXN_WORDS = next(vocab for vocab, group in STREAM_WORDS if group == ("txn",))
 _MONEY_FRAME = (frozenset(STOPWORDS) | TIME_WORDS | frozenset(MONEY_WORDS) | _AMOUNT_WORDS
                 | _COMPARE_WORDS | _UNIT_AFTER | INTENT_WORDS | RECAP_WORDS | LOOP_WORDS
                 | _TXN_WORDS | _SLOT_STOP | _SLOT_FILLER | _NOT_MERCHANT | _SLOT_TRIGGER
-                | _SPEND_NOUNS | frozenset({"money", "much", "many", "amount", "total"}))
+                | _SPEND_NOUNS | frozenset({"money", "much", "many", "amount", "total"})
+                | frozenset(PAYMENT_APPS))
 
 
 def _merchant_slot(words: list[dict], person_keys: set[str],
@@ -2296,8 +2648,11 @@ def _who(o: dict) -> str | None:
     if o["stream"] in AI_STREAMS:
         bot = AI_NAMES.get(o["stream"], "the assistant")
         return f"you → {bot}" if o["direction"] == "out" else f"{bot} → you"
-    if o["kind"] in ("contact card", "note", "photo", "transaction", "web visit"):
+    if o["kind"] in ("contact card", "note", "photo", "transaction", "web visit",
+                     "LinkedIn connection") or o["stream"] in ACTIVITY_STREAMS:
         return None
+    if o["direction"] == "self":
+        return "you → yourself"
     if o["kind"] == "place visit":
         places = _places(o)
         return f"at {_names(places)}" if places else None
@@ -2415,6 +2770,8 @@ def _obs_items(conn: sqlite3.Connection, cfg: Config, rows: list, *,
                                              f"{p['handle_kind']}:{value}")})
         keys = r.keys()
         snippet = r["snippet"] if "snippet" in keys and r["snippet"] else None
+        if r["stream"] == "highlight":
+            snippet = None             # the passage itself, never a fragment of it
         kind = stream_label(r["stream"])
         item = {"id": None, "tier": "observed", "uuid": r["uuid"],
                 "stream": r["stream"], "kind": kind, "date": r["journal_date"],
@@ -2442,7 +2799,8 @@ def search_observations(conn: sqlite3.Connection, cfg: Config, *,
                         direction: str | None = None,
                         family: list[int] | None = None, sender_only: bool = False,
                         limit: int = 6, recency: bool = False,
-                        via: str = "search", around: str | None = None) -> list[dict]:
+                        via: str = "search", around: str | None = None,
+                        extra: tuple[str, list] | None = None) -> list[dict]:
     """Full-text search over the observed tier (status active only).
 
     Terms are AND-ed first and the result topped up with an OR search, so a
@@ -2476,6 +2834,10 @@ def search_observations(conn: sqlite3.Connection, cfg: Config, *,
         clause, fargs = _party_clause(family, sender_only)
         where.append(clause)
         args += fargs
+    if extra and extra[0]:
+        # A kind or shelf asked for (`_activity_filter`).
+        where.append(extra[0])
+        args += list(extra[1])
     w = " AND ".join(where)
     rows: list = []
     if not terms:
@@ -2622,9 +2984,49 @@ def contact_cards(conn: sqlite3.Connection, cfg: Config, family: list[int],
     return _obs_items(conn, cfg, rows, via="card", cap=500)
 
 
+# Money moved between your own accounts (a Venmo cash-out, a PayPal bank
+# deposit: `transfer: true`) is not money spent or received — the bank
+# statement shows the same money arriving or leaving.
+_NOT_TRANSFER = ("(CASE WHEN json_valid(o.value_json) THEN "
+                 "json_extract(o.value_json, '$.transfer') END) IS NOT 1")
+# A bank posts a Venmo or PayPal payment a few days after the app does.
+_POSTING_LAG_DAYS = 3
+
+
+def payment_coverage(conn: sqlite3.Connection) -> dict[str, tuple[str, str]]:
+    """{app: (first, last)} — the days the payments imports hold rows for."""
+    try:
+        rows = conn.execute(
+            "SELECT o.origin_app AS app, MIN(o.journal_date) AS a, MAX(o.journal_date) AS b "
+            "FROM observations o JOIN imports i ON i.id = o.import_id "
+            "WHERE o.stream = 'txn' AND o.status = 'active' AND i.connector = 'payments' "
+            "AND o.origin_app IN ('venmo', 'paypal') GROUP BY o.origin_app").fetchall()
+    except sqlite3.Error:
+        return {}
+    return {r["app"]: (r["a"], r["b"]) for r in rows}
+
+
+def _double_count_clause(coverage: dict[str, tuple[str, str]]) -> tuple[str, list]:
+    """The bank's side of a payment the app already holds. A card or bank
+    statement says 'VENMO PAYMENT 1023849' for money the Venmo statement
+    shows with who it went to; counting both counts it twice. The app's row
+    is kept — it names the person — and a bank row whose title starts with
+    VENMO (or PAYPAL) is left out on the days a payments import covers,
+    from its first row to `_POSTING_LAG_DAYS` after its last. Outside that
+    range the bank row is all there is, and it counts."""
+    parts, args = [], []
+    for app, (first, last) in sorted(coverage.items()):
+        end = (date.fromisoformat(last) + timedelta(days=_POSTING_LAG_DAYS)).isoformat()
+        parts.append("(i.connector <> 'payments' AND UPPER(COALESCE(o.title, '')) LIKE ? "
+                     "AND o.journal_date BETWEEN ? AND ?)")
+        args += [f"{app.upper()}%", first, end]
+    return (" OR ".join(parts), args) if parts else ("", [])
+
+
 def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
              display: str, window: dict, limit: int = 10,
-             groups: list[list[str]] = ()) -> tuple[list[dict], list[dict]]:
+             groups: list[list[str]] = (), apps: list[str] = ()
+             ) -> tuple[list[dict], list[dict]]:
     """Transaction totals (stream txn: value = amount, negative = money out,
     unit = currency) — one M-item per currency, plus the transactions
     themselves as O-items.
@@ -2635,9 +3037,19 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
     a named place's or organisation's name and aliases ('H-E-B Mueller',
     'H-E-B', 'HEB'): any one of them is that merchant. A question that named
     a merchant is never answered with everyone's total — no match is no
-    data."""
-    where = ["o.stream = 'txn'", "o.status = 'active'", "o.value IS NOT NULL"]
+    data. `apps` ('venmo', 'paypal') keeps only that app's own rows.
+
+    Transfers between your own accounts are left out, and so is the bank's
+    copy of a Venmo or PayPal payment the payments import holds
+    (`_double_count_clause`); the metric says how many bank rows that was."""
+    where = ["o.stream = 'txn'", "o.status = 'active'", "o.value IS NOT NULL",
+             _NOT_TRANSFER]
     args: list = []
+    if apps:
+        where.append(f"o.origin_app IN ({','.join('?' for _ in apps)})")
+        args += list(apps)
+    coverage = payment_coverage(conn)
+    dup_sql, dup_args = _double_count_clause(coverage)
     named = bool(terms or any(groups))
     all_records = named and not window["explicit"]
     if not all_records:
@@ -2651,6 +3063,12 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
     else:
         source = "FROM observations o JOIN imports i ON i.id = o.import_id"
     w = " AND ".join(where)
+    dropped = 0
+    if dup_sql:
+        dropped = conn.execute(f"SELECT COUNT(*) AS c {source} WHERE {w} AND ({dup_sql})",
+                               [*args, *dup_args]).fetchone()["c"]
+        w = f"{w} AND NOT ({dup_sql})"
+        args = [*args, *dup_args]
     totals = conn.execute(
         f"SELECT UPPER(COALESCE(o.unit, '')) AS cur, COUNT(*) AS n, "
         f"SUM(CASE WHEN o.value < 0 THEN 1 ELSE 0 END) AS n_spent, "
@@ -2673,7 +3091,9 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
     rows = conn.execute(
         f"SELECT {_OBS_COLS}, NULL AS snippet {source} WHERE {w} "
         f"ORDER BY {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
-    label = f'spending matching "{display}"' if named else "spending"
+    app_names = " and ".join(_APP_NAMES.get(a, a) for a in apps)
+    label = (f'spending matching "{display}"' if named else "spending") \
+        + (f" on {app_names}" if apps else "")
     metrics = []
     for t in totals:
         series = [{"date": d["day"], "value": round(d["spent"], 2), "records": d["n"]}
@@ -2703,8 +3123,435 @@ def spending(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
             "span": span, "terms": list(terms) + [g[0] for g in groups if g],
             "terms_display": display,
             "transactions": [],
+            # The bank's copies of app payments left out, and the days the
+            # app's own rows cover (`_double_count_clause`).
+            "bank_copies_dropped": dropped,
+            "payments_cover": {a: list(c) for a, c in sorted(coverage.items())}
+            if dropped else {},
             "trend_pct": None})
     return metrics, _obs_items(conn, cfg, rows, via="spending")
+
+
+_APP_NAMES = {"venmo": "Venmo", "paypal": "PayPal"}
+
+
+def person_payments(conn: sqlite3.Connection, cfg: Config, *, family: list[int],
+                    labels: list[str], name: str, window: dict, terms: list[str] = (),
+                    apps: list[str] = (), limit: int = 10
+                    ) -> tuple[list[dict], list[dict]]:
+    """Money between you and one person: the `txn` rows whose counterparty
+    handle you linked to them (a Venmo name, a PayPal email), plus bank rows
+    that name them and carry no counterparty at all ('ZELLE TO JAKE
+    MORALES'). Negative is money you paid them, positive money they paid
+    you. Every record unless the question named a time — like a named
+    merchant. One M-item per currency with both directions and the net,
+    which is a flow of payments, never a debt: nothing here records what
+    anyone owes. Transfers and the bank's copies of app payments are left
+    out, as in `spending`."""
+    marks = ",".join("?" for _ in family)
+    party = ("EXISTS (SELECT 1 FROM observation_participants p "
+             "JOIN entity_handles h ON h.kind = p.handle_kind AND h.value = p.handle_value "
+             f"WHERE p.observation_id = o.id AND p.role = 'counterparty' "
+             f"AND h.entity_id IN ({marks}) AND h.confirmed_at IS NOT NULL AND h.ignored = 0)")
+    no_party = ("NOT EXISTS (SELECT 1 FROM observation_participants p "
+                "WHERE p.observation_id = o.id AND p.role = 'counterparty')")
+    phrases = sorted({_phrase(label) for label in labels} - {""})
+    who = [party]
+    args: list = list(family)
+    if phrases:
+        who.append(f"({no_party} AND o.id IN (SELECT rowid FROM observations_fts "
+                   f"WHERE observations_fts MATCH ?))")
+        args.append(_fts_expr(phrases))
+    where = ["o.stream = 'txn'", "o.status = 'active'", "o.value IS NOT NULL",
+             _NOT_TRANSFER, f"({' OR '.join(who)})"]
+    if terms:
+        where.append("o.id IN (SELECT rowid FROM observations_fts WHERE observations_fts "
+                     "MATCH ?)")
+        args.append(_match_expr(list(terms), prefix=True))
+    if apps:
+        where.append(f"o.origin_app IN ({','.join('?' for _ in apps)})")
+        args += list(apps)
+    if window["explicit"]:
+        where.append("o.journal_date BETWEEN ? AND ?")
+        args += [window["start"], window["end"]]
+    dup_sql, dup_args = _double_count_clause(payment_coverage(conn))
+    if dup_sql:
+        where.append(f"NOT ({dup_sql})")
+        args += dup_args
+    w = " AND ".join(where)
+    source = "FROM observations o JOIN imports i ON i.id = o.import_id"
+    totals = conn.execute(
+        f"SELECT UPPER(COALESCE(o.unit, '')) AS cur, COUNT(*) AS n, "
+        f"SUM(CASE WHEN o.value < 0 THEN 1 ELSE 0 END) AS n_paid, "
+        f"SUM(CASE WHEN o.value > 0 THEN 1 ELSE 0 END) AS n_received, "
+        f"SUM(CASE WHEN o.value < 0 THEN -o.value ELSE 0 END) AS paid, "
+        f"SUM(CASE WHEN o.value > 0 THEN o.value ELSE 0 END) AS received, "
+        f"MIN(o.journal_date) AS first, MAX(o.journal_date) AS last, "
+        f"GROUP_CONCAT(DISTINCT i.source_file) AS sources "
+        f"{source} WHERE {w} GROUP BY cur ORDER BY n DESC, cur", args).fetchall()
+    if not totals:
+        return [], []
+    days: dict[str, list] = {}
+    for r in conn.execute(
+            f"SELECT UPPER(COALESCE(o.unit, '')) AS cur, o.journal_date AS day, "
+            f"SUM(o.value) AS net, COUNT(*) AS n {source} WHERE {w} "
+            f"GROUP BY cur, day ORDER BY cur, day", args):
+        days.setdefault(r["cur"], []).append(r)
+    rows = conn.execute(f"SELECT {_OBS_COLS}, NULL AS snippet {source} WHERE {w} "
+                        f"ORDER BY {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
+    metrics = []
+    for t in totals:
+        series = [{"date": d["day"], "value": round(d["net"], 2), "records": d["n"]}
+                  for d in days.get(t["cur"], [])]
+        span = ({"start": t["first"], "end": t["last"], "label": ALL_RECORDS}
+                if not window["explicit"] else
+                {"start": window["start"], "end": window["end"], "label": window["label"]})
+        metrics.append({
+            **_series_stats(series), "metric": "txn_person",
+            "label": f"payments with {name}", "person": name, "unit": t["cur"],
+            "origin": "transactions, observed", "tier": "observed",
+            "table": "observations", "count": t["n"],
+            "paid": round(t["paid"], 2), "paid_count": t["n_paid"],
+            "received": round(t["received"], 2), "received_count": t["n_received"],
+            # Positive: they paid you more than you paid them.
+            "net": round(t["received"] - t["paid"], 2),
+            "per_day_agg": "sum", "span": span, "terms": list(terms),
+            "source_files": sorted(set((t["sources"] or "").split(",")) - {""}),
+            "transactions": [], "trend_pct": None})
+    return metrics, _obs_items(conn, cfg, rows, via="payments")
+
+
+def _series_stats(series: list[dict]) -> dict:
+    """The keys every M-item carries for the web UI and the evidence line:
+    days, total, mean, min/max/latest with their dates, the series itself
+    (never empty: a statistic of no days is not made)."""
+    values = [s["value"] for s in series]
+    lo = min(series, key=lambda s: s["value"])
+    hi = max(series, key=lambda s: s["value"])
+    return {"days": len(series), "total": round(sum(values), 2),
+            "mean": round(sum(values) / len(values), 2),
+            "min": lo["value"], "min_date": lo["date"],
+            "max": hi["value"], "max_date": hi["date"],
+            "latest": series[-1]["value"], "latest_date": series[-1]["date"],
+            "series": series}
+
+
+def _weight(top: dict) -> str:
+    """A top set as the app wrote it: '185 lb × 5'."""
+    w, unit, reps = top.get("weight"), top.get("unit") or "", top.get("reps")
+    load = f"{w:g} {unit}".strip() if isinstance(w, (int, float)) else "bodyweight"
+    return f"{load} × {reps}" if isinstance(reps, (int, float)) else load
+
+
+def workout_best(conn: sqlite3.Connection, cfg: Config, *, terms: list[str],
+                 window: dict, limit: int = 6) -> tuple[list[dict], list[dict]]:
+    """'What's my bench PR': the heaviest top set of an exercise across the
+    workouts (value_json.exercises[].top_set, weight_kg comparing lb and kg),
+    then the most reps. An exercise whose name starts with the word ('Bench
+    Press (Barbell)') is preferred to one that only contains it ('Incline
+    Bench Press'). With no exercise named, each exercise's best. Every
+    record unless the question named a time. M-items per exercise; the
+    workouts behind them are O-items."""
+    where = ["o.stream = 'workout'", "o.status = 'active'", "json_valid(o.value_json)",
+             "json_extract(e.value, '$.top_set') IS NOT NULL"]
+    args: list = []
+    for t in terms:
+        where.append("LOWER(json_extract(e.value, '$.name')) LIKE ?")
+        args.append(f"%{t.lower()}%")
+    if window["explicit"]:
+        where.append("o.journal_date BETWEEN ? AND ?")
+        args += [window["start"], window["end"]]
+    first = terms[0].lower() if terms else ""
+    rows = conn.execute(
+        "SELECT o.id, o.journal_date, o.title, o.origin_app, "
+        "json_extract(e.value, '$.name') AS exercise, "
+        "json_extract(e.value, '$.top_set') AS top "
+        "FROM observations o, json_each(o.value_json, '$.exercises') e "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY (LOWER(json_extract(e.value, '$.name')) LIKE ?) DESC, "
+        "COALESCE(json_extract(e.value, '$.top_set.weight_kg'), -1) DESC, "
+        "COALESCE(json_extract(e.value, '$.top_set.reps'), 0) DESC, o.journal_date DESC, o.id",
+        [*args, f"{first}%"]).fetchall()
+    if not rows:
+        return [], []
+    by_name: dict[str, list] = {}
+    for r in rows:
+        by_name.setdefault(r["exercise"], []).append(r)
+    names = list(by_name)[:1] if terms else list(by_name)[:limit]
+    ids = sorted({r["id"] for n in names for r in by_name[n]})
+    obs_rows = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+        f"JOIN imports i ON i.id = o.import_id WHERE o.id IN ({','.join('?' for _ in ids)}) "
+        f"ORDER BY {_RECENT_FIRST}", ids).fetchall()
+    items = _obs_items(conn, cfg, obs_rows, via="workout")
+    by_id = {r["id"]: it for r, it in zip(obs_rows, items)}
+    metrics = []
+    for n in names:
+        sets = by_name[n]
+        best = sets[0]
+        top = json.loads(best["top"])
+        sessions = sorted(sets, key=lambda r: (r["journal_date"], r["id"]), reverse=True)
+        series = [{"date": r["journal_date"],
+                   "value": json.loads(r["top"]).get("weight_kg") or 0, "records": 1}
+                  for r in sorted(sets, key=lambda r: (r["journal_date"], r["id"]))]
+        metrics.append({
+            **_series_stats(series), "metric": "workout_best",
+            "label": f"best {n}", "exercise": n, "unit": "kg",
+            "origin": "workouts, observed", "tier": "observed", "table": "observations",
+            "per_day_agg": "max", "best": _weight(top), "best_kg": top.get("weight_kg"),
+            "best_date": best["journal_date"], "best_workout": best["title"],
+            "best_app": best["origin_app"], "best_uuid": by_id[best["id"]]["uuid"],
+            "sessions": [{"date": r["journal_date"], "workout": r["title"],
+                          "top": _weight(json.loads(r["top"])),
+                          "uuid": by_id[r["id"]]["uuid"]} for r in sessions[:limit]],
+            "count": len(sets),
+            "span": ({"start": window["start"], "end": window["end"],
+                      "label": window["label"]} if window["explicit"] else
+                     {"start": series[0]["date"], "end": series[-1]["date"],
+                      "label": ALL_RECORDS}),
+            "source_files": sorted({by_id[r["id"]]["source_file"] for r in sets
+                                    if by_id[r["id"]]["source_file"]}),
+            "transactions": [], "trend_pct": None})
+    return metrics, items
+
+
+# What an activity total counts, by stream: (noun, what its value is).
+_ACTIVITY_NOUNS = {"workout": "workout", "ride": "ride", "food_order": "food order",
+                   "music_play": "listening record", "video_watch": "video",
+                   "web_search": "search", "book": "book", "highlight": "highlight",
+                   "food_log": "food entry", "nutrition_day": "logged day"}
+
+
+def activity_total(conn: sqlite3.Connection, cfg: Config, *, streams: list[str],
+                   terms: list[str], window: dict, extra: tuple[str, list] | None = None,
+                   limit: int = 10, all_records: bool = False
+                   ) -> tuple[list[dict], list[dict]]:
+    """'How many workouts this month', 'how long did I listen to Japanese
+    Breakfast', 'how often did I take an Uber': how many records, and the
+    sum of their value per unit (minutes, a ride's fare), with plays for
+    listening. Named words search every record unless a time was named, the
+    rule of a named merchant (`all_records` asks for it with no words too).
+    M-items per stream; the records are O-items."""
+    where = [f"o.stream IN ({','.join('?' for _ in streams)})", "o.status = 'active'"]
+    args: list = list(streams)
+    if terms:
+        where.append("o.id IN (SELECT rowid FROM observations_fts WHERE observations_fts "
+                     "MATCH ?)")
+        args.append(_match_expr(list(terms), prefix=True))
+    windowed = window["explicit"] or not (terms or all_records)
+    if windowed:
+        where.append("o.journal_date BETWEEN ? AND ?")
+        args += [window["start"], window["end"]]
+    if extra and extra[0]:
+        where.append(extra[0])
+        args += extra[1]
+    w = " AND ".join(where)
+    totals = conn.execute(
+        "SELECT o.stream, COALESCE(o.unit, '') AS unit, COUNT(*) AS n, SUM(o.value) AS total, "
+        "SUM(CASE WHEN json_valid(o.value_json) THEN "
+        "COALESCE(json_extract(o.value_json, '$.plays'), 0) ELSE 0 END) AS plays, "
+        "MIN(o.journal_date) AS first, MAX(o.journal_date) AS last, "
+        "GROUP_CONCAT(DISTINCT i.source_file) AS sources "
+        f"FROM observations o JOIN imports i ON i.id = o.import_id WHERE {w} "
+        "GROUP BY o.stream, unit ORDER BY n DESC, o.stream", args).fetchall()
+    if not totals:
+        return [], []
+    rows = conn.execute(f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+                        f"JOIN imports i ON i.id = o.import_id WHERE {w} "
+                        f"ORDER BY {_RECENT_FIRST} LIMIT ?", [*args, limit]).fetchall()
+    metrics = []
+    for t in totals:
+        series = [{"date": r["day"], "value": round(r["v"] or 0, 2), "records": r["n"]}
+                  for r in conn.execute(
+                      "SELECT o.journal_date AS day, SUM(COALESCE(o.value, 0)) AS v, "
+                      "COUNT(*) AS n FROM observations o JOIN imports i ON i.id = o.import_id "
+                      f"WHERE {w} AND o.stream = ? AND COALESCE(o.unit, '') = ? "
+                      "GROUP BY day ORDER BY day", [*args, t["stream"], t["unit"]])]
+        noun = _ACTIVITY_NOUNS.get(t["stream"], stream_label(t["stream"]))
+        metrics.append({
+            **_series_stats(series), "metric": "activity_total",
+            "label": f"{noun}s" + (f' matching "{" ".join(terms)}"' if terms else ""),
+            "stream": t["stream"], "noun": noun, "unit": t["unit"],
+            "origin": f"{stream_label(t['stream'])} records, observed", "tier": "observed",
+            "table": "observations", "per_day_agg": "sum", "count": t["n"],
+            "sum": round(t["total"], 2) if t["total"] is not None else None,
+            "plays": int(t["plays"]) if t["stream"] == "music_play" and t["plays"] else None,
+            "span": ({"start": window["start"], "end": window["end"],
+                      "label": window["label"]} if windowed else
+                     {"start": t["first"], "end": t["last"], "label": ALL_RECORDS}),
+            "terms": list(terms),
+            "source_files": sorted(set((t["sources"] or "").split(",")) - {""}),
+            "transactions": [], "trend_pct": None})
+    return metrics, _obs_items(conn, cfg, rows, via="total")
+
+
+def linkedin_rows(conn: sqlite3.Connection, cfg: Config, family: list[int],
+                  labels: list[str], limit: int = 1) -> list[dict]:
+    """A person's LinkedIn connection row — through a linked handle (their
+    profile URL or email) or titled with their exact name — from the newest
+    import first: the export says where they work as of that download."""
+    where, args = [], []
+    if family:
+        clause, fargs = _party_clause(family)
+        where.append(clause)
+        args += fargs
+    if labels:
+        where.append(f"o.title COLLATE NOCASE IN ({','.join('?' for _ in labels)})")
+        args += labels
+    if not where:
+        return []
+    rows = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+        f"JOIN imports i ON i.id = o.import_id WHERE o.stream = 'linkedin_connection' "
+        f"AND o.status = 'active' AND ({' OR '.join(where)}) "
+        f"ORDER BY i.id DESC, o.started_at DESC, o.id DESC LIMIT ?", [*args, limit]).fetchall()
+    return _obs_items(conn, cfg, rows, via="work")
+
+
+# At most this many of a nutrient report's day records become O-items.
+MAX_NUTRITION_DAYS = 62
+
+
+def nutrient_evidence(conn: sqlite3.Connection, cfg: Config, *, keys: list[str],
+                      flags: bool, window: dict, today: date) -> dict:
+    """'What am I low on', 'how much protein did I eat this week': the
+    nutrient report (lifecrm/nutrients.py) over the question's window — up
+    to today, the last 30 days when none was named — as M-items, with the
+    day records each average came from as O-items.
+
+    Returns {report, metrics, items, error}. `keys` are the nutrients the
+    question named; without them (`flags`) the report's low, borderline and
+    high nutrients and the ones over an upper level on some days. Each
+    metric's `cite_uuids` are its days, for build_evidence to number."""
+    from . import nutrients as nut
+    from .domain.util import DomainError
+    end = min(window["end"], today.isoformat())
+    start = min(window["start"], end)
+    earliest = (date.fromisoformat(end) - timedelta(days=nut.MAX_DAYS - 1)).isoformat()
+    start = max(start, earliest)
+    try:
+        nwin = nut.resolve_window(cfg, start=start, end=end, today=today)
+        nwin["label"] = window["label"]
+        report = nut.build_report(conn, cfg, nwin)
+    except DomainError as e:
+        return {"report": None, "metrics": [], "items": [], "error": str(e)}
+    compared = {x["key"]: x for x in report["nutrients"]}
+    uncompared = {x["key"]: x for x in report["no_reference"] + report["not_compared"]}
+    day_ids = sorted({i for x in report["nutrients"]
+                      for i in x["cites"]["nutrition_day"] + x["cites"]["food_log"]})
+    if not day_ids or not report["coverage"]["days_counted"]:
+        return {"report": report, "metrics": [], "items": [], "error": None}
+    rows = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+        f"JOIN imports i ON i.id = o.import_id WHERE o.id IN "
+        f"({','.join('?' for _ in day_ids)}) ORDER BY o.journal_date, o.stream DESC, o.id",
+        day_ids).fetchall()
+    counted = set(report["coverage"]["dates"])
+    # The report cites, per day, the daily summary it used — or, on a day
+    # without one, the foods it summed. The same rows give the per-day values.
+    per_day: dict[str, dict[str, float]] = {}
+    keep = []
+    for r in rows:
+        if r["journal_date"] not in counted:
+            continue
+        slot = per_day.setdefault(r["journal_date"], {})
+        try:
+            data = json.loads(r["value_json"]) if r["value_json"] else {}
+        except ValueError:
+            data = {}
+        for k, pair in ((data.get("nutrients") if isinstance(data, dict) else None)
+                        or {}).items():
+            if isinstance(pair, list) and len(pair) == 2 \
+                    and isinstance(pair[0], (int, float)) and not isinstance(pair[0], bool):
+                slot[k] = slot.get(k, 0.0) + float(pair[0])
+        keep.append(r)
+    keep = keep[:MAX_NUTRITION_DAYS]
+    items = _obs_items(conn, cfg, keep, via="nutrition")
+    uuid_of = {r["id"]: it["uuid"] for r, it in zip(keep, items)}
+    cov, prof = report["coverage"], report["profile"]
+    n = cov["days_counted"]
+    shown_keys = list(keys) if keys else list(dict.fromkeys(
+        report["low"] + report["borderline"] + report["high"] + report["over_on_some_days"]))
+    energy = [{"date": d, "value": round(v.get("energy", 0.0)), "records": 1}
+              for d, v in sorted(per_day.items())]
+    summary = {
+        **_series_stats(energy), "metric": "nutrient_report", "label": "nutrient report",
+        "unit": "kcal", "origin": "nutrition records, observed", "tier": "observed",
+        "table": "observations", "per_day_agg": "sum",
+        "window": {"start": nwin["start"], "end": nwin["end"], "label": window["label"],
+                   "days": nwin["days"]},
+        "days_counted": n, "from_daily_summary": cov["from_daily_summary"],
+        "from_food_log": cov["from_food_log"], "skipped": cov["skipped"],
+        "profile": prof["label"], "status_counts": {
+            s: len(report[s]) for s in ("low", "borderline", "high", "meets")},
+        "cite_uuids": [uuid_of[r["id"]] for r in keep],
+        "source_files": sorted({it["source_file"] for it in items if it["source_file"]}),
+        "transactions": [], "trend_pct": None}
+    metrics = [summary]
+    for key in shown_keys:
+        x = compared.get(key) or uncompared.get(key)
+        if x is None:
+            continue
+        series = [{"date": d, "value": round(v[key], 2), "records": 1}
+                  for d, v in sorted(per_day.items()) if key in v]
+        if not series:
+            continue
+        cites = (x.get("cites") or {})
+        ids = cites.get("nutrition_day", []) + cites.get("food_log", [])
+        over = [{"date": o["date"], "value": o["value"],
+                 "uuids": [uuid_of[i] for i in o["ids"] if i in uuid_of]}
+                for o in x.get("days_over") or []]
+        label = x["label"] if x.get("reference") else key.replace("_", " ").capitalize()
+        metrics.append({
+            **_series_stats(series), "metric": "nutrient", "key": key,
+            "label": label, "unit": x["unit"],
+            "origin": "nutrition records, observed", "tier": "observed",
+            "table": "observations", "per_day_agg": "avg",
+            "average": x["average"], "days_counted": n,
+            "days_with_value": x["days_with_value"],
+            "in_all": round(sum(s["value"] for s in series), 1),
+            "percent": x.get("percent"), "status": x.get("status"),
+            "reference": ({k: x["reference"][k] for k in
+                           ("kind", "value", "upper", "upper_kind", "source")}
+                          if x.get("reference") else None),
+            "why_not_compared": x.get("why"),
+            "sources": x.get("sources") or x.get("sources_on_days_over") or [],
+            "days_over": over,
+            "cite_uuids": [uuid_of[i] for i in ids if i in uuid_of] or summary["cite_uuids"],
+            "source_files": summary["source_files"],
+            "transactions": [], "trend_pct": None})
+    return {"report": report, "metrics": metrics, "items": items, "error": None,
+            "missing": [k for k in keys if k not in compared and k not in uncompared]}
+
+
+def food_day(conn: sqlite3.Connection, cfg: Config, window: dict,
+             limit: int = 60) -> tuple[list[dict], list[dict]]:
+    """'What did I eat yesterday': the food log of the window in the order it
+    was eaten, and the day totals the diary keeps (nutrition_day)."""
+    rows = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+        f"JOIN imports i ON i.id = o.import_id WHERE o.stream = ? AND o.status = 'active' "
+        f"AND o.journal_date BETWEEN ? AND ? ORDER BY o.journal_date, o.started_at, o.id "
+        f"LIMIT ?", ["food_log", window["start"], window["end"], limit]).fetchall()
+    days = conn.execute(
+        f"SELECT {_OBS_COLS}, NULL AS snippet FROM observations o "
+        f"JOIN imports i ON i.id = o.import_id WHERE o.stream = ? AND o.status = 'active' "
+        f"AND o.journal_date BETWEEN ? AND ? ORDER BY o.journal_date, o.id",
+        ["nutrition_day", window["start"], window["end"]]).fetchall()
+    return _obs_items(conn, cfg, rows, via="food"), _obs_items(conn, cfg, days, via="food")
+
+
+def food_entries(conn: sqlite3.Connection, window: dict, limit: int = 8) -> list[dict]:
+    """Journal entries of the window filed under food — what the owner said
+    they ate, beside what the diary app logged."""
+    rows = conn.execute(
+        f"SELECT {_ENTRY_COLS} FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
+        f"WHERE e.status = 'active' AND e.journal_date BETWEEN ? AND ? AND e.id IN "
+        f"(SELECT ec.entry_id FROM entry_categories ec JOIN categories c "
+        f"ON c.id = ec.category_id WHERE c.name IN ('food', 'meal', 'meals', 'nutrition', "
+        f"'diet')) ORDER BY e.journal_date, COALESCE(e.occurred_at, ''), e.id LIMIT ?",
+        (window["start"], window["end"], limit)).fetchall()
+    return _entry_items(conn, rows, "food")
 
 
 def _stream_counts(conn: sqlite3.Connection, streams: list[str]) -> dict[str, int]:
@@ -2764,6 +3611,10 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     intent = parse_intent(question, words, entities, health, journal,
                           topic_words=topic_words, topic_text=topic_question)
     terms = intent["topic_terms"]
+    if intent.get("last_of") or intent.get("best"):
+        # 'When did I last run', 'what's my bench PR': a record answers it;
+        # the minutes a watch counted per day do not.
+        health, journal = [], []
     # 'What's on my calendar this week', 'what do I need to do this month':
     # the rest of the period counts. Nothing else is dated in the future, so
     # metrics and entries are unchanged by it.
@@ -2802,10 +3653,15 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
                  if intent["money"] else [])
     merchant_keys = {t for e in merchants for t in e["tokens"]}
     money_terms = [t for t in terms if _key(t) not in merchant_keys]
+    # A person named with nothing else bought is the other side of payments
+    # ('how much did I pay Jake', 'did Maya pay me back', 'what do I owe
+    # Sam'): the transactions with them as counterparty (`person_payments`).
+    payees: list[dict] = []
     if intent["money"] and not merchants and not money_terms:
         owner_ids = _owner_identity(conn, cfg)[2] if observed else frozenset()
         merchants = [e for e in entities
                      if e["type"] == "person" and e["id"] not in owner_ids]
+        payees = list(merchants)
         merchant_keys = {t for e in merchants for t in e["tokens"]}
     groups = [sorted({_phrase(label) for label in _labels(conn, e)} - {""})
               for e in merchants]
@@ -2821,18 +3677,34 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     named_merchant = searchable or bool(intent.get("merchant")) \
         or bool(intent["money"] and intent.get("unused"))
 
+    def add_listed(found: list[dict], items: list[dict], by_unit: bool = True) -> None:
+        ids = [O.add(t) for t in items]
+        for m in found:
+            m["transactions"] = [i for i, t in zip(ids, items)
+                                 if not by_unit or (t["unit"] or "").upper() == m["unit"]]
+            metrics.append(m)
+
     # ---- money: transactions first, then what the journal says was spent
     if intent["money"]:
-        if observed:
+        if observed and payees:
+            for p in payees:
+                found, txns = person_payments(
+                    conn, cfg, family=_entity_family(conn, p["id"]),
+                    labels=_labels(conn, p), name=p["name"], window=window,
+                    apps=intent.get("apps") or (),
+                    limit=ask_setting(cfg, "max_transactions", 10))
+                add_listed(found, txns)
+                if not found:
+                    no_data.append(f'transactions matching "{money_display}" or paid to or '
+                                   f"by {p['name']}"
+                                   + ("" if window["explicit"] else f" ({ALL_RECORDS})"))
+        elif observed:
             found, txns = (spending(conn, cfg, terms=money_terms, groups=groups,
                                     display=money_display, window=window,
-                                    limit=ask_setting(cfg, "max_transactions", 10))
+                                    limit=ask_setting(cfg, "max_transactions", 10),
+                                    apps=intent.get("apps") or ())
                            if searchable or not named_merchant else ([], []))
-            ids = [O.add(t) for t in txns]
-            for m in found:
-                m["transactions"] = [i for i, t in zip(ids, txns)
-                                     if (t["unit"] or "").upper() == m["unit"]]
-                metrics.append(m)
+            add_listed(found, txns)
             if not found:
                 what = (f'transactions matching "{money_display}"'
                         if named_merchant else "transactions")
@@ -2840,6 +3712,76 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
                                if named_merchant and not window["explicit"] else what)
         else:
             no_data.append("transactions (no observed tier in this database)")
+        # 'How much did I spend on Uber': the app's own fares and order
+        # prices, a line of their own — never added to the spending total,
+        # because the card statement holds the same charges.
+        fares = [s for s in intent["streams"] if s in ("ride", "food_order")]
+        if observed and fares:
+            words = _FARE_WORDS
+            found, items = activity_total(
+                conn, cfg, streams=fares, terms=[t for t in money_terms if t not in words],
+                window=window, all_records=True,
+                limit=ask_setting(cfg, "max_transactions", 10))
+            for m in found:
+                m["label"] += " (the app's own prices, apart from the spending total)"
+            add_listed(found, items, by_unit=False)
+            for m in found:
+                m["transactions"] = [i for i in m["transactions"]
+                                     if O.items[int(i[1:]) - 1]["stream"] == m["stream"]]
+
+    # ---- nutrients: the report lifecrm/nutrients.py prints, cited
+    nutrition = None
+    if intent.get("nutrition"):
+        nutrition = {"keys": intent["nutrition"]["keys"],
+                     "flags": intent["nutrition"]["flags"], "disclaimer": None}
+        if observed:
+            ne = nutrient_evidence(conn, cfg, keys=nutrition["keys"],
+                                   flags=nutrition["flags"], window=window, today=today)
+            if ne["report"]:
+                nutrition["disclaimer"] = ne["report"]["disclaimer"]
+            if ne["error"]:
+                no_data.append(f"nutrient report ({ne['error']})")
+            ids_by_uuid = {it["uuid"]: O.add(it) for it in ne["items"]}
+            for m in ne["metrics"]:
+                m["transactions"] = [ids_by_uuid[u] for u in m.pop("cite_uuids")
+                                     if u in ids_by_uuid]
+                for o in m.get("days_over") or ():
+                    o["ids"] = [ids_by_uuid[u] for u in o.pop("uuids") if u in ids_by_uuid]
+                metrics.append(m)
+            if ne["report"] and not ne["metrics"]:
+                no_data.append("nutrition records (food_log, nutrition_day)")
+            no_data += [f"{k.replace('_', ' ')} (nutrient report)"
+                        for k in ne.get("missing") or ()]
+        # The report answers what the food-energy and calorie metrics would
+        # only approximate; a question about protein is not one about calories
+        # burned.
+        health = [h for h in health if h not in ("nutrition", "total_calories")]
+        journal = [j for j in journal if j not in ("calories", "servings")]
+
+    # ---- what the activity exports say: a best lift, a count, a total
+    activity_filter = _activity_filter(intent)
+    activity_listed = False
+    if observed and intent.get("best"):
+        found, items = workout_best(conn, cfg, terms=terms, window=window)
+        ids = {t["uuid"]: O.add(t) for t in items}
+        for m in found:
+            m["transactions"] = [ids[s["uuid"]] for s in m["sessions"] if s["uuid"] in ids]
+            m["best_id"] = ids.get(m["best_uuid"])
+            metrics.append(m)
+        activity_listed = bool(found)
+        if not found:
+            no_data.append(f'workouts with an exercise matching "{intent["topic_display"]}"'
+                           if terms else "workouts with a top set")
+    elif observed and intent.get("count") and intent.get("activity") and not nutrition:
+        found, items = activity_total(
+            conn, cfg, streams=[s for s in intent["streams"] if s in ACTIVITY_STREAMS],
+            terms=terms, window=window, extra=activity_filter,
+            limit=ask_setting(cfg, "max_transactions", 10))
+        add_listed(found, items, by_unit=False)
+        for m in found:
+            m["transactions"] = [i for i in m["transactions"]
+                                 if O.items[int(i[1:]) - 1]["stream"] == m["stream"]]
+        activity_listed = bool(found)
 
     for name in health:
         found = _metric_series(conn, table="health_records", metric=name,
@@ -2861,7 +3803,7 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         if found:
             metrics.append(found)
         elif not (spec.get("twin") in answered_by
-                  or name == "money" and "txn_spend" in answered_by):
+                  or name == "money" and answered_by & {"txn_spend", "txn_person"}):
             # Spending answered from transactions, or steps from the sensor:
             # the journal not also stating it is not a gap worth reporting.
             no_data.append(missing_label(spec["label"], "journal")
@@ -2883,7 +3825,7 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     # A question narrowed to calls or texts is answered by calls or texts:
     # 'Tacos at Veracruz with Jake' is not when Jake last called. A journal
     # entry still counts when it says it was one ('Called Mom on the way').
-    channel = set(intent["streams"]) & set(TEXT_STREAMS + CALL_STREAMS)
+    channel = set(intent["streams"]) & set(CHANNEL_STREAMS)
     channel_words = ([w for streams, ws in _CHANNEL_WORDS if channel & set(streams)
                       for w in ws] if channel else [])
     # A place's visits answer a question about the place, unless it asked
@@ -2909,6 +3851,11 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             handles = _linked_handles(conn, family)
             ent["handles_linked"] = len(handles)
         if observed and ent["type"] == "person":
+            if intent.get("work"):
+                # 'Where does Priya work': what LinkedIn's export says now,
+                # beside what her card said when it was last edited.
+                ent["work"] = [O.add(o) for o in linkedin_rows(
+                    conn, cfg, family, _labels(conn, ent))]
             ent["cards"] = [O.add(c) for c in contact_cards(
                 conn, cfg, family, _labels(conn, ent))]
             if handles:
@@ -2955,12 +3902,36 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
     # A window reaching past today ('next week', the rest of 'this week')
     # lists what is nearest today first, not what is furthest away.
     around = today.isoformat() if window["end"] > today.isoformat() else None
+    # 'What did I eat yesterday': the day's food log in full, its day total,
+    # and the journal's food entries — a short window only.
+    food = None
+    if observed and "food_log" in intent["streams"] and not nutrition \
+            and window["explicit"] and not terms \
+            and date.fromisoformat(window["end"]) - date.fromisoformat(window["start"]) \
+            <= timedelta(days=2):
+        foods, totals = food_day(conn, cfg, window)
+        # 'What did I have for dinner on the 13th': that meal's foods.
+        meal = next((m for m in ("breakfast", "brunch", "lunch", "dinner", "snack")
+                     if re.search(rf"\b{m}e?s?\b", question.lower())), None)
+        if meal:
+            foods = [o for o in foods
+                     if str(o["detail"].get("meal") or "").lower().startswith(meal)] or foods
+        food = {"items": [O.add(o) for o in foods], "days": [O.add(o) for o in totals],
+                "entries": [E.add(e) for e in food_entries(conn, window)]}
+    # 'What did I highlight in The Overstory' lists the book's highlights,
+    # in reading order — more than a search's handful.
+    highlights = intent["streams"] == ["highlight"] and bool(terms)
     if observed and not intent["metric_only"] and not intent["money"] \
-            and not person_filtered and (terms or intent["streams"]):
-        obs_hits = [O.add(o) for o in search_observations(
+            and not person_filtered and (terms or intent["streams"]) \
+            and not nutrition and not activity_listed and food is None:
+        found = search_observations(
             conn, cfg, terms=terms, window=window,
             streams=intent["streams"] or None, direction=intent["direction"],
-            limit=max_obs, recency=intent["recency"], around=around)]
+            limit=max(max_obs, 20) if highlights else max_obs,
+            recency=intent["recency"], around=around, extra=activity_filter)
+        if highlights:
+            found.sort(key=lambda o: (o["date"], o["started_at"] or ""))
+        obs_hits = [O.add(o) for o in found]
     elif observed and intent["loops"] and window["explicit"] and not terms \
             and not intent["due"]:
         # 'What are my plans this weekend': what the calendar holds then is
@@ -3002,11 +3973,15 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
         (window["start"], window["end"])).fetchone()["c"]
 
     has_evidence = bool(metrics or E.items or passages or O.items)
-    asked_for_numbers = bool(health or journal or intent["money"])
+    asked_for_numbers = bool(health or journal or intent["money"] or nutrition
+                             or intent.get("best") or intent.get("count"))
     return {"question": question, "window": window, "metrics": metrics,
             "entries": E.items, "passages": passages, "observations": O.items,
             "entities": entities, "ambiguous": ambiguous, "no_data": no_data,
             "match": match, "intent": intent, "loops": loops,
+            # The nutrient report's frame (its disclaimer), the food log of a
+            # day, and a book's highlights listed in full.
+            "nutrition": nutrition, "food": food, "highlights": highlights,
             "loops_total": loops_total, "loops_open": loops_open,
             "obs_hits": obs_hits, "entry_hits": entry_hits, "recap": recap,
             "observed_tier": observed, "today": today.isoformat(),
@@ -3094,6 +4069,43 @@ def _obs_value(o: dict) -> str | None:
     if o["kind"] == "calendar":
         loc = d.get("location")
         return f"at {loc}" if loc else None
+    stream = o.get("stream")
+    if stream in ("ride", "food_order"):
+        # A fare or an order's price: a cost, not a signed transaction.
+        bits = [fmt_money(v, o["unit"])] if v is not None else []
+        if isinstance(d.get("distance_mi"), (int, float)):
+            bits.append(f"{d['distance_mi']:g} mi")
+        return ", ".join(bits) or None
+    if stream == "workout":
+        bits = [f"{v:g} {o['unit'] or 'min'}"] if v is not None else []
+        if isinstance(d.get("distance_km"), (int, float)):
+            bits.append(f"{d['distance_km']:g} km")
+        if o.get("origin_app"):
+            bits.append(f"in {o['origin_app'].capitalize()}")
+        return ", ".join(bits) or None
+    if stream == "music_play":
+        bits = [f"{v:g} {o['unit'] or 'min'}"] if v is not None else []
+        if isinstance(d.get("plays"), int) and d["plays"] > 1:
+            bits.append(f"{d['plays']} plays")
+        if d.get("kind") in ("podcast", "audiobook"):
+            bits.append(d["kind"])
+        return ", ".join(bits) or None
+    if stream == "highlight":
+        where = (f"page {d['page']}" if d.get("page")
+                 else f"location {d['location']}" if d.get("location") else "")
+        what = "note" if d.get("kind") == "note" else "bookmark" \
+            if d.get("kind") == "bookmark" else "highlight"
+        return f"{what}, {where}" if where else what
+    if stream == "book":
+        bits = [f"by {d['author']}"] if d.get("author") else []
+        if v is not None:
+            bits.append(f"rated {v:g} {o['unit'] or 'stars'}")
+        if d.get("exclusive_shelf"):
+            bits.append(f"shelf {d['exclusive_shelf']}")
+        return ", ".join(bits) or None
+    if stream in ("web_search", "video_watch"):
+        product = d.get("product")
+        return f"on {product}" if product and product not in ("Search",) else None
     if v is not None and o["kind"] not in ("text", "AI chat", "contact card", "note"):
         return f"{v:g} {o['unit'] or ''}".strip()
     return None
@@ -3121,6 +4133,147 @@ def _obs_line(o: dict) -> str:
     return line + " (observed, not confirmed)"
 
 
+def _bank_copies(m: dict) -> str:
+    cover = "; ".join(f"{_APP_NAMES.get(a, a)} {c[0]} to {c[1]}"
+                      for a, c in (m.get("payments_cover") or {}).items())
+    return (f"{m['bank_copies_dropped']} bank row(s) titled VENMO or PAYPAL left out as "
+            f"copies of app payments (the payments import covers {cover}, plus "
+            f"{_POSTING_LAG_DAYS} days for posting)")
+
+
+def _span_text(span: dict) -> str:
+    return f"{span['label']} ({span['start']} to {span['end']})"
+
+
+def _listed(m: dict, word: str = "listed") -> str:
+    return f"; {word}: {', '.join(m['transactions'])}" if m.get("transactions") else ""
+
+
+def _payments_text(m: dict) -> str:
+    """'you paid Jake Morales $150.00 in 1 payment(s), Jake Morales paid you
+    $14.88 in 1; net $135.12 from you to Jake Morales' — evidence and
+    answer say it the same way."""
+    who, cur = m["person"], m["unit"]
+    bits = []
+    if m["paid_count"]:
+        bits.append(f"you paid {who} {fmt_money(m['paid'], cur)} in "
+                    f"{m['paid_count']} payment(s)")
+    if m["received_count"]:
+        bits.append(f"{who} paid you {fmt_money(m['received'], cur)} in "
+                    f"{m['received_count']} payment(s)")
+    net = m["net"]
+    flow = ("you and they are even" if not net else
+            f"net {fmt_money(abs(net), cur)} from you to {who}" if net < 0 else
+            f"net {fmt_money(net, cur)} from {who} to you")
+    return ", ".join(bits) + f"; {flow}"
+
+
+def _line_payments(m: dict) -> str:
+    return (f"[{m['id']}] {m['label']} — {m['count']} transaction(s), "
+            f"{_span_text(m['span'])}: {_payments_text(m)} — payments made, not a debt: "
+            f"nothing records what is owed (source: {m['origin']})" + _listed(m))
+
+
+def _best_text(m: dict) -> str:
+    return (f"{m['best']} on {m['best_date']} in \"{m['best_workout']}\""
+            + (f" ({m['best_app'].capitalize()})" if m.get("best_app") else ""))
+
+
+def _line_best(m: dict) -> str:
+    kg = f" ({m['best_kg']:g} kg)" if isinstance(m.get("best_kg"), (int, float)) else ""
+    sessions = "; ".join(f"{s['date']} {s['top']}" for s in m["sessions"])
+    return (f"[{m['id']}] {m['label']} ({m['origin']}) — heaviest top set "
+            f"{_best_text(m)}{kg}, of {m['count']} workout(s) with this exercise, "
+            f"{_span_text(m['span'])}; top sets: {sessions}" + _listed(m))
+
+
+def _total_text(m: dict) -> str:
+    text = f"{m['count']} {m['noun']}(s)"
+    if m.get("sum") is not None and m["stream"] in ("ride", "food_order"):
+        text += f", {fmt_money(m['sum'], m['unit'])} in all"      # fares, prices
+    elif m.get("sum") is not None and m["unit"] \
+            and m["stream"] in ("workout", "music_play", "food_log", "nutrition_day"):
+        text += f", {m['sum']:g} {m['unit']} in all"               # minutes, kcal
+    if m.get("plays"):
+        text += f", {m['plays']} play(s)"
+    return text
+
+
+def _line_total(m: dict) -> str:
+    return (f"[{m['id']}] {m['label']} ({m['origin']}) — {_total_text(m)}, "
+            f"{_span_text(m['span'])}" + _listed(m))
+
+
+def _nfmt(v: float) -> str:
+    from . import nutrients as nut
+    return nut.fmt(v)
+
+
+def _line_report(m: dict) -> str:
+    w, c = m["window"], m["status_counts"]
+    skipped = "; ".join(f"skipped {s['date']} ({s['why']})" for s in m["skipped"])
+    return (f"[{m['id']}] {m['label']} ({m['origin']}) — {w['start']} to {w['end']} "
+            f"({w['label']}): {m['days_counted']} of {w['days']} day(s) counted, "
+            f"{m['from_daily_summary']} from daily summaries, {m['from_food_log']} summed "
+            f"from the food log" + (f"; {skipped}" if skipped else "")
+            + f"; reference intakes for {m['profile']}; low is below 70% of the "
+            f"reference, borderline 70-100%; {c['low']} low, {c['borderline']} borderline, "
+            f"{c['high']} high, {c['meets']} meet the reference" + _listed(m, "days"))
+
+
+def _nutrient_text(m: dict, label: bool = True) -> str:
+    """'Vitamin D 5.80 µg/day, 38.6% of the RDA 15.0 µg' — and above an
+    upper level, or with no reference to compare."""
+    ref = m.get("reference")
+    text = (f"{m['label']} " if label else "") + f"{_nfmt(m['average'])} {m['unit']}/day"
+    if ref and m.get("status") == "high":
+        return text + f", above the {ref['upper_kind']} {_nfmt(ref['upper'])} {m['unit']}"
+    if ref and m.get("percent") is not None:
+        return text + f", {m['percent']:.1f}% of the {ref['kind']} {_nfmt(ref['value'])} " \
+                      f"{m['unit']}"
+    return text
+
+
+def _over_text(m: dict) -> str:
+    ref, n = m["reference"], m["days_counted"]
+    days = ", ".join(f"{o['date']} {_nfmt(o['value'])} {m['unit']}"
+                     + (f" ({', '.join(o['ids'])})" if o.get("ids") else "")
+                     for o in m["days_over"])
+    return (f"above the {ref['upper_kind']} {_nfmt(ref['upper'])} {m['unit']} on "
+            f"{len(m['days_over'])} of {n} days: {days}")
+
+
+def _line_nutrient(m: dict) -> str:
+    line = (f"[{m['id']}] {m['label']} (nutrient report, observed) — "
+            f"{_nutrient_text(m, label=False)} "
+            f"on average over {m['days_counted']} day(s) counted, {_nfmt(m['in_all'])} "
+            f"{m['unit']} in all")
+    if m["days_with_value"] < m["days_counted"]:
+        line += f" (a value on {m['days_with_value']} of {m['days_counted']} days)"
+    if m.get("status"):
+        line += (f"; {m['status']} (low is below 70% of the reference, borderline "
+                 f"70-100%, high is above the upper level)")
+    elif m.get("why_not_compared"):
+        line += f"; not compared: {m['why_not_compared']}"
+    else:
+        line += "; no reference intake to compare with"
+    if m.get("sources"):
+        line += "; most from: " + ", ".join(f"{s['food']} {s['share_percent']}%"
+                                            for s in m["sources"])
+    if m.get("days_over"):
+        line += f"; {_over_text(m)}"
+    return line + _listed(m, "days")
+
+
+_NEW_METRIC_LINES = {"txn_person": _line_payments, "workout_best": _line_best,
+                     "activity_total": _line_total, "nutrient_report": _line_report,
+                     "nutrient": _line_nutrient}
+_INDEX_TEXT = {"txn_person": _payments_text, "workout_best": _best_text,
+               "activity_total": _total_text,
+               "nutrient_report": lambda m: f"{m['days_counted']} day(s) counted",
+               "nutrient": _nutrient_text}
+
+
 def _card_text(o: dict) -> str | None:
     """A contact card's numbers and addresses, as one clause."""
     card = o.get("card") or {}
@@ -3141,9 +4294,14 @@ def _metric_line(m: dict) -> str:
         if m["largest"]:
             line += f"; largest {fmt_money(m['largest'], m['unit'])}"
         line += f" (source: {m['origin']})"
+        if m.get("bank_copies_dropped"):
+            line += f"; {_bank_copies(m)}"
         if m["transactions"]:
             line += f"; listed: {', '.join(m['transactions'])}"
         return line
+    special = _NEW_METRIC_LINES.get(m["metric"])
+    if special:
+        return special(m)
     agg = "per-day total" if m["per_day_agg"] == "sum" else "per-day average"
     line = (f"[{m['id']}] {m['label']} — {m['days']} day(s), {agg}: "
             f"mean {fmt_value(m['mean'], m['unit'])}, "
@@ -3221,11 +4379,17 @@ def _evidence_lines(bundle: dict) -> tuple[list[str], dict[str, str]]:
             what = ("last contact" if ent["type"] == "person"
                     else "last visit" if lc["latest"].startswith("O") else "last mentioned")
             bits.append(f"{what} {lc['latest']} ({lc['date']})")
+        if ent.get("work"):
+            bits.append(f"LinkedIn connection {', '.join(ent['work'])}")
         if ent.get("cards"):
             bits.append(f"contact card {', '.join(ent['cards'])}")
         if ent.get("facts"):
             bits.append(f"entries {', '.join(ent['facts'])}")
         context.append("; ".join(bits))
+    nutrition = bundle.get("nutrition")
+    if nutrition and nutrition.get("disclaimer"):
+        # The report's own first line: a comparison, never medical advice.
+        context.append(f"NUTRITION: {nutrition['disclaimer']}")
     for amb in bundle.get("ambiguous", []):
         context.append(f"AMBIGUOUS: \"{amb['matched']}\" fits "
                        + ", ".join(c["name"] for c in amb["candidates"])
@@ -3250,7 +4414,8 @@ def render_evidence(bundle: dict, max_series: int = 14) -> str:
     for m in bundle["metrics"]:
         lines.append(by_id[m["id"]])
         series = m["series"][-max_series:]
-        fmt = (lambda v: fmt_money(v, m["unit"])) if m["metric"] == "txn_spend" \
+        fmt = (lambda v: fmt_money(v, m["unit"], signed=m["metric"] == "txn_person")) \
+            if m["metric"] in ("txn_spend", "txn_person") \
             else (lambda v: fmt_value(v, m["unit"]))
         lines.append("     " + "; ".join(f"{s['date']} {fmt(s['value'])}" for s in series))
     for key in ("entries", "passages", "observations"):
@@ -3258,6 +4423,10 @@ def render_evidence(bundle: dict, max_series: int = 14) -> str:
             lines.append(by_id[item["id"]])
     lines += context[1:]
     return "\n".join(lines)
+
+
+_MESSAGE_APPS = {"instagram_dm": "Instagram", "messenger": "Messenger",
+                 "telegram": "Telegram", "linkedin_message": "LinkedIn"}
 
 
 def _obs_phrase(o: dict) -> str:
@@ -3272,10 +4441,16 @@ def _obs_phrase(o: dict) -> str:
         title = f' (in "{o["title"]}")' if o["title"] else ""
         return f'{verb}{title}: "{ex}"'
     if kind == "text":
-        who = (f"you texted {others or 'someone'}" if o["direction"] == "out"
-               else f"{senders or others or 'someone'} texted you")
+        app = _MESSAGE_APPS.get(o["stream"])
+        if app:
+            # 'Priya messaged you on LinkedIn', not 'texted'.
+            who = (f"you messaged {others or 'someone'} on {app}" if o["direction"] == "out"
+                   else f"{senders or others or 'someone'} messaged you on {app}")
+        else:
+            who = (f"you texted {others or 'someone'}" if o["direction"] == "out"
+                   else f"{senders or others or 'someone'} texted you")
         group = f' in "{o["title"]}"' if o["title"] else ""
-        return f'{who}{group}: "{ex}"'
+        return f'{who}{group}: "{ex}"' if ex else f"{who}{group} (no text)"
     if kind == "call":
         dur = _obs_value(o)
         if dur == "missed":
@@ -3298,7 +4473,42 @@ def _obs_phrase(o: dict) -> str:
         coords = (_obs_value(o) or "").removeprefix("at ")
         return ("place visit" + (f" at {where}" if where else "")
                 + (f" ({coords})" if coords else ""))
+    title = o["title"] or ""
     extra = _obs_value(o)
+    said = f': "{ex}"' if ex else ""
+    if kind == "email":
+        subject = f' "{title}"' if title else ""
+        if o["direction"] == "out":
+            return f"you emailed {_names(_people(o)) or 'someone'}{subject}{said}"
+        if o["direction"] == "self":
+            return f"you emailed yourself{subject}{said}"
+        return f"{senders or others or 'someone'} emailed you{subject}{said}"
+    stream = o["stream"]
+    if stream == "web_search":
+        return f'you searched "{title}"' + (f" {extra}" if extra else "")
+    if stream == "video_watch":
+        return (f'you watched "{title}"' + (f" ({ex})" if ex else "")
+                + (f" {extra}" if extra else ""))
+    if stream == "music_play":
+        return (f'you listened to "{title}"' + (f" ({ex})" if ex else "")
+                + (f", {extra}" if extra else ""))
+    if stream == "highlight":
+        return f'{extra or "highlight"} in "{title}"{said}'
+    if stream == "book":
+        return f'book "{title}"' + (f", {extra}" if extra else "")
+    if stream == "food_log":
+        return f'food log "{title}"' + (f" ({ex})" if ex else "") \
+            + (f", {extra}" if extra else "")
+    if stream == "nutrition_day":
+        return f'food diary day total "{title}"' + (f", {extra}" if extra else "")
+    if stream == "ride":
+        return f'ride "{title}"' + (f" ({extra})" if extra else "") + said
+    if stream == "food_order":
+        return f'food order from "{title}"' + (f" ({extra})" if extra else "") + said
+    if stream == "workout":
+        return f'workout "{title}"' + (f" ({extra})" if extra else "") + said
+    if kind == "LinkedIn connection":
+        return f'LinkedIn connection {title}' + said
     text = f'{kind} "{o["title"]}"' if o["title"] else kind
     if extra:
         text += f" {extra}"
@@ -3313,12 +4523,160 @@ def _contact_kind(intent: dict) -> str:
     """What 'nothing recorded shows ...' was looking for: a call, a text,
     or any contact."""
     streams = set(intent.get("streams") or ())
-    calls, texts = streams & set(CALL_STREAMS), streams & set(TEXT_STREAMS)
-    if calls and not texts:
-        return "a call with"
-    if texts and not calls:
-        return "a text with"
-    return "contact with"
+    kinds = [k for k, group in (("a call with", CALL_STREAMS), ("a text with", TEXT_STREAMS),
+                                ("an email with", EMAIL_STREAMS)) if streams & set(group)]
+    return kinds[0] if len(kinds) == 1 else "contact with"
+
+
+def _sentence_case(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _q(text: str) -> str:
+    return f'"{text}"'
+
+
+def _highlight_phrase(o: dict) -> str:
+    """'highlight, page 41: "A forest is not a collection of trees..."'."""
+    return f'{_obs_value(o) or "highlight"}: "{_plain(o["snippet"], 300)}"' \
+        if o.get("snippet") else (_obs_value(o) or "highlight")
+
+
+def _food_sentences(bundle: dict, items: dict, used: set[str]) -> list[str]:
+    """'What did I eat yesterday': the food log meal by meal, the diary's
+    day total, and what the journal says was eaten — each cited."""
+    food, w = bundle["food"], bundle["window"]
+    by_meal: dict[tuple[str, str], list[str]] = {}
+    for i in food["items"]:
+        o = items[i]
+        by_meal.setdefault((o["date"], o["detail"].get("meal") or "other"), []).append(i)
+    out = []
+    if by_meal:
+        parts = []
+        for (day, meal), ids in by_meal.items():
+            used.update(ids)
+            parts.append(f"{day} {meal}: " + ", ".join(
+                f"{items[i]['title']} ("
+                + ", ".join(x for x in (items[i]["detail"].get("amount"), _obs_value(items[i]))
+                            if x) + f") [{i}]" for i in ids))
+        out.append(f"Food log for {w['label']} (observed, not confirmed): "
+                   + "; ".join(parts) + ".")
+    if food["days"]:
+        used.update(food["days"])
+        out.append("Day total in the food diary: " + "; ".join(
+            f"{items[i]['date']} {_obs_value(items[i]) or ''} [{i}]" for i in food["days"])
+            + ".")
+    if food["entries"]:
+        used.update(food["entries"])
+        out.append("In your journal: " + "; ".join(
+            f"{items[i]['date']} {items[i]['title']} [{i}]" for i in food["entries"]) + ".")
+    if not out:
+        out.append(f"Nothing in the food log or the journal's food entries for {w['label']}.")
+    return out
+
+
+def _metric_sentences(m: dict, items: dict, used: set[str]) -> list[str]:
+    """The answer's sentences for the metrics the new sources add: payments
+    with a person, a best lift, a count or total of something done, the
+    nutrient report. Every number in them is on the metric's own evidence
+    line or on the records they cite."""
+    mid = m["id"]
+
+    def cite_list(ids: list[str], render) -> str:
+        used.update(ids)
+        return "; ".join(f"{render(i)} [{i}]" for i in ids)
+
+    if m["metric"] == "txn_person":
+        span = m["span"]
+        text = (f"{_sentence_case(_payments_text(m))} — payments made, not a debt "
+                f"({span['label']}, {span['start']} to {span['end']}) [{mid}]")
+        listed = m["transactions"][:6]
+        if listed:
+            text += ": " + cite_list(listed, lambda i: (
+                f"{items[i]['date']} {items[i]['title'] or ''} "
+                f"{fmt_money(items[i]['value'], items[i]['unit'], signed=True)}"))
+        return [text + "."]
+    if m["metric"] == "workout_best":
+        best = m.get("best_id")
+        out = [f"Your best {m['exercise']} on record: {_best_text(m)} [{mid}]"
+               + (f" [{best}]" if best else "") + "."]
+        if best:
+            used.add(best)
+        others = [i for i in m["transactions"] if i != best][:5]
+        if others:
+            tops = {s["date"]: s["top"] for s in m["sessions"]}
+            out.append("Other sessions: " + cite_list(others, lambda i: (
+                f"{items[i]['date']} \"{items[i]['title'] or ''}\" "
+                f"{tops.get(items[i]['date'], '')}".rstrip())) + f" [{mid}].")
+        return out
+    if m["metric"] == "activity_total":
+        text = f"{_sentence_case(m['label'])}: {_total_text(m)}, {_span_text(m['span'])} [{mid}]"
+        listed = m["transactions"][:6]
+        if listed:
+            text += ": " + cite_list(listed, lambda i: f"{items[i]['date']} "
+                                                       f"{_obs_phrase(items[i])}")
+        return [text + "."]
+    if m["metric"] == "nutrient_report":
+        w = m["window"]
+        return [f"Over {w['start']} to {w['end']} ({w['label']}), {m['days_counted']} of "
+                f"{w['days']} day(s) were counted from the food diary, against the "
+                f"reference intakes for {m['profile']} [{mid}]."]
+    return []
+
+
+def _nutrient_answer(bundle: dict, used: set[str]) -> list[str]:
+    """'What am I low on': low, borderline, high and over-on-some-days,
+    each nutrient cited; 'how much protein did I eat': that nutrient."""
+    nutrition = bundle.get("nutrition") or {}
+    ms = [m for m in bundle["metrics"] if m["metric"] == "nutrient"]
+    report = next((m for m in bundle["metrics"] if m["metric"] == "nutrient_report"), None)
+    out: list[str] = []
+    for m in ms:
+        used.add(m["id"])
+    if nutrition.get("keys"):
+        for m in ms:
+            text = (f"{_nutrient_text(m)} on average over {m['days_counted']} day(s), "
+                    f"{_nfmt(m['in_all'])} {m['unit']} in all")
+            if m.get("status") in ("low", "borderline"):
+                text += (f" — {m['status']} (low is below 70% of the reference, "
+                         f"borderline 70-100%)")
+            elif m.get("status") == "meets":
+                text += " — meets the reference"
+            elif not m.get("reference"):
+                text += " (no reference intake to compare with)"
+            out.append(f"{text} [{m['id']}].")
+            out += _over_sentences(m, used)
+        return out
+    groups = (("low", "Below 70% of the reference intake: "),
+              ("borderline", "Borderline, 70-100% of the reference intake: "),
+              ("high", "Above the upper level on average: "))
+    for status, head in groups:
+        hit = [m for m in ms if m.get("status") == status]
+        if hit:
+            out.append(head + "; ".join(f"{_nutrient_text(m)} [{m['id']}]" for m in hit)
+                       + ".")
+    for m in ms:
+        if m.get("status") != "high":
+            out += _over_sentences(m, used)
+    if report and not ms:
+        c = report["status_counts"]
+        out.append(f"Nothing is below 70% of its reference intake and nothing is above an "
+                   f"upper level: {c['meets']} nutrients meet the reference [{report['id']}].")
+    return out
+
+
+def _over_sentences(m: dict, used: set[str]) -> list[str]:
+    if not m.get("days_over") or not m.get("reference"):
+        return []
+    ref = m["reference"]
+    days = []
+    for o in m["days_over"]:
+        used.update(o.get("ids") or ())
+        days.append(f"{o['date']} {_nfmt(o['value'])} {m['unit']}"
+                    + "".join(f" [{i}]" for i in o.get("ids") or ()))
+    return [f"{m['label']} went above the {ref['upper_kind']} {_nfmt(ref['upper'])} "
+            f"{m['unit']} on {len(m['days_over'])} of {m['days_counted']} days: "
+            + ", ".join(days) + f" [{m['id']}]."]
 
 
 def deterministic_answer(bundle: dict) -> str:
@@ -3337,8 +4695,20 @@ def deterministic_answer(bundle: dict) -> str:
         x = items[i]
         return _obs_phrase(x) if i.startswith("O") else _entry_phrase(x)
 
+    nutrition = bundle.get("nutrition") or {}
+    if nutrition.get("disclaimer"):
+        # The nutrient report's first line, kept: a comparison with reference
+        # intakes, never medical advice.
+        out.append(nutrition["disclaimer"])
     for m in bundle["metrics"]:
         used.add(m["id"])
+        if m["metric"] == "nutrient":
+            continue                    # `_nutrient_answer`, after the report line
+        if m["metric"] in _NEW_METRIC_LINES:
+            out += _metric_sentences(m, items, used)
+            if m["metric"] == "nutrient_report":
+                out += _nutrient_answer(bundle, used)
+            continue
         if m["metric"] == "txn_spend":
             span = m["span"]
             spent_n = m.get("spent_count", m["count"])
@@ -3358,6 +4728,8 @@ def deterministic_answer(bundle: dict) -> str:
                     for i in listed)
                 used.update(listed)
             out.append(text + ".")
+            if m.get("bank_copies_dropped"):
+                out.append(f"{_sentence_case(_bank_copies(m))} [{m['id']}].")
             continue
         trend = ""
         if m.get("trend_pct"):
@@ -3417,14 +4789,29 @@ def deterministic_answer(bundle: dict) -> str:
         # 'When did Jake call', 'did Jake call me this week', and 'what did
         # Jake text me over the weekend' when he texted nothing then: the
         # contact leads, or that there was none — never their card.
-        channel_asked = bool(set(intent.get("streams") or ())
-                             & set(TEXT_STREAMS + CALL_STREAMS))
+        channel_asked = bool(set(intent.get("streams") or ()) & set(CHANNEL_STREAMS))
         want_history = intent.get("recency") or intent.get("contact")
         want_contact = want_history \
             or (channel_asked and no_hits and not intent.get("profile"))
         want_profile = intent.get("profile")
         fallback = no_hits and not want_contact and not want_profile
         sentences = []
+        if intent.get("work"):
+            # Where they work: LinkedIn's export as of its download, then
+            # their card as last edited — two sources, two moments, each
+            # quoted as what it said.
+            for i in ent.get("work", []):
+                sentences.append(f'LinkedIn lists {name} as "{_plain(items[i]["snippet"])}" '
+                                 f"(connected {items[i]['date']}) [{i}].")
+                used.add(i)
+            if not ent.get("work"):
+                sentences.append(f"No LinkedIn connection on record for {name}.")
+            for c in ent.get("cards", []):
+                used.add(c)
+                sentences.append(f"{name}'s contact card: "
+                                 f'"{_plain(items[c]["snippet"], 300)}" [{c}].')
+            out.extend(sentences)
+            continue
         if want_contact or fallback:
             if lc:
                 sentences.append(f"Last contact with {name}: {lc['date']}, "
@@ -3468,9 +4855,36 @@ def deterministic_answer(bundle: dict) -> str:
     hits = [i for e in bundle["entities"] for i in e.get("hits", [])] \
         + [i for e in bundle["entities"] for i in e.get("visits", [])] \
         + bundle.get("obs_hits", [])
-    hits = [i for i in dict.fromkeys(hits) if i not in used][:4]
+    hits = [i for i in dict.fromkeys(hits) if i not in used]
+    # A list of what you did ('what did I search for about Bled') shows what
+    # the search found; a book's highlights are listed in full.
+    hits = hits[:20] if bundle.get("highlights") \
+        else hits[:6] if intent.get("activity") or intent.get("know_at") else hits[:4]
     observed = []
-    if hits:
+    food = bundle.get("food")
+    if food:
+        observed += _food_sentences(bundle, items, used)
+    if hits and intent.get("last_of"):
+        # 'When did I last take an Uber': the newest leads.
+        first, rest = hits[0], hits[1:]
+        label = stream_label(items[first]["stream"])
+        observed.append(f"Last {label} on record (observed, not confirmed): "
+                        f"{items[first]['date']}, {phrase(first)} [{first}].")
+        if rest:
+            observed.append("Before that: " + "; ".join(
+                f"{items[i]['date']} {phrase(i)} [{i}]" for i in rest) + ".")
+    elif hits and bundle.get("highlights"):
+        books = list(dict.fromkeys(items[i]["title"] for i in hits if items[i]["title"]))
+        observed.append(f"Highlights and notes in {', '.join(_q(b) for b in books)} "
+                        f"(observed, not confirmed): " + "; ".join(
+                            f"{items[i]['date']} {_highlight_phrase(items[i])} [{i}]"
+                            for i in hits) + ".")
+        used.update(hits)
+    elif hits and intent.get("know_at"):
+        observed.append(f'People on record at "{intent.get("topic_display") or "?"}" '
+                        f"(observed, not confirmed): " + "; ".join(
+                            f"{phrase(i)} [{i}]" for i in hits) + ".")
+    elif hits:
         observed.append("Imported records (observed, not confirmed): " + "; ".join(
             f"{items[i]['date']} {phrase(i)} [{i}]" for i in hits) + ".")
 
@@ -3495,7 +4909,7 @@ def deterministic_answer(bundle: dict) -> str:
             f"{p['date']} [{p['id']}]" for p in bundle["passages"]) + ".")
     for ent in bundle["entities"]:
         if not (ent.get("facts") or ent.get("cards") or ent.get("last_contact")
-                or ent.get("hits") or ent.get("visits")):
+                or ent.get("hits") or ent.get("visits") or ent.get("work")):
             out.append(f"{ent['name']} is known, but nothing recorded mentions them.")
     for amb in bundle.get("ambiguous", []):
         out.append(f"\"{amb['matched']}\" could be "
@@ -3613,6 +5027,10 @@ def _merge(facts: list[dict]) -> dict:
         out["dates"] |= f["dates"]
         out["md"] |= f["md"]
         out["times"] |= {(h, m) for h, m, _ in f["times"]}
+        # Evidence that says '3:30pm' (an email's invitation) supports the
+        # answer quoting '3:30pm' or '15:30' — the same time on a 24-hour clock.
+        out["times"] |= {(h + 12, m) for h, m, ampm in f["times"] if ampm == "p" and h < 12}
+        out["times"] |= {(0, m) for h, m, ampm in f["times"] if ampm == "a" and h == 12}
         out["nums"] |= {abs(v) for v, _ in f["nums"]}
     return out
 
@@ -3771,6 +5189,8 @@ def evidence_index(bundle: dict) -> dict:
             index[m["id"]] = (f"{m['label']}: {fmt_money(m['total'], m['unit'])} over "
                               f"{m.get('spent_count', m['count'])} transaction(s), "
                               f"{m['origin']}")
+        elif m.get("metric") in _INDEX_TEXT:
+            index[m["id"]] = f"{m['label']}: {_INDEX_TEXT[m['metric']](m)}, {m['origin']}"
         else:
             index[m["id"]] = (f"{m['label']}: mean {fmt_value(m['mean'], m['unit'])} "
                               f"over {m['days']} day(s), {m['origin']}")

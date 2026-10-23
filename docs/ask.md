@@ -46,10 +46,10 @@ Nothing about this costs money or leaves the machine.
 
 | id | what it is | tier |
 |---|---|---|
-| `M#` | a statistic: a sensor metric, a journal measurement, or a transaction total | sensor and transactions: observed; journal: confirmed |
+| `M#` | a statistic: a sensor metric, a journal measurement, a transaction total, the payments with one person, a best lift, a count or total of something you did, a nutrient average | sensor, transactions and the activity exports: observed; journal: confirmed |
 | `E#` | a journal entry you reviewed and applied | confirmed |
 | `P#` | a passage of your own transcribed words | confirmed |
-| `O#` | an **observed** record: a text, call, calendar event, AI chat turn, transaction, contact card, note, photo | observed |
+| `O#` | an **observed** record: a text, call, email, calendar event, AI chat turn, transaction, contact card, note, photo, search, video, workout, track or podcast, highlight, book, food-log entry, ride, food order, LinkedIn connection | observed |
 
 `O#` items come from the bulk importers (`lifecrm observe ...`). Nobody
 reviewed them, so the evidence marks every one `(observed, not confirmed)`,
@@ -73,15 +73,28 @@ Streams are grouped so the answer can say what a record is:
 
 | label | streams |
 |---|---|
-| text | `imessage`, `sms`, `rcs`, `android_sms`, `android_mms`, `whatsapp` |
+| text | `imessage`, `sms`, `rcs`, `android_sms`, `android_mms`, `whatsapp`, `instagram_dm`, `messenger`, `telegram`, `linkedin_message` |
 | call | `ios_call`, `android_call` (value = seconds; 0 = missed) |
+| email | `email` (title = the subject, body = the sender's own words) |
 | calendar | `calendar_event` (location from the record's details) |
 | contact card | `contact_card` (title = the person, body = notes, address, birthday) |
 | note | `note` |
-| transaction | `txn` (value = amount, negative = money out, unit = currency) |
+| transaction | `txn` (value = amount, negative = money out, unit = currency; Venmo and PayPal rows name the counterparty) |
 | photo | `photo` (latitude/longitude from the record's details) |
 | place visit / web visit | `place_visit`, `browser_visit` |
 | AI chat | `claude_chat`, `chatgpt_chat` |
+| search / video | `web_search` (title = what you searched), `video_watch` (title = the video, body = the channel) |
+| workout | `workout` (value = minutes; the exercises and their top sets in the details) |
+| listening | `music_play` (value = minutes, with plays; a track, podcast episode or audiobook) |
+| highlight / book | `highlight` (title = the book, body = the passage), `book` (Goodreads: rating, shelf) |
+| food / nutrition day | `food_log` (one food, value = kcal), `nutrition_day` (a day's totals) |
+| ride / food order | `ride` (value = the fare), `food_order` (value = the price) |
+| LinkedIn connection | `linkedin_connection` (title = the person, body = "Position at Company") |
+
+A message from Instagram, Messenger, Telegram or LinkedIn is said as one:
+"Priya Natarajan messaged you on LinkedIn: ...", never "texted". An email is
+"Priya Natarajan emailed you "Re: Q4 board deck — draft v3": ...", "you
+emailed Jake Morales "Re: Bled tips": ...", or "you emailed yourself".
 
 Reactions and thread events (`text_reaction`, `text_event`) are never search
 results, because they carry no words of their own. A text matches on what was
@@ -145,6 +158,35 @@ ambiguous and never used to narrow the search: retrieval does not guess.
 - **"What did Jake text me about the lake?"** Searches only the records Jake
   took part in. "Jake texted" means messages Jake *sent*; "what did I text
   Jake" means yours.
+- **"What did Priya email me?", "What advice did Priya give me over
+  email?"** Mail Priya *sent* you (she is its From); **"What did I email
+  Jake?"** mail you sent with him as a recipient. "Email", "emailed",
+  "e-mail", "mail", "inbox", "Gmail", "cc'd" ask for mail; "sent", "reply"
+  and "wrote" do not, because a text is sent and answered too. An email
+  is contact like a text: one that passed between you and them, never a
+  thread they were only copied on, so "when did I last talk to Mom" may be
+  her reply to your photos, and "when did I last email Priya" / "did Priya
+  email me this week" narrow it to mail ("Nothing recorded shows an email
+  with Priya Natarajan for this week."). A journal entry counts as email
+  contact when it says so ("Emailed Priya the draft"). "Jake's email" and
+  "her email address" are an address, so they are answered from the card,
+  never by searching mail.
+- **"Where does Priya work?", "What's Jake's job?", "Who does Sam work
+  for?"** Her newest LinkedIn connection row (through a linked handle, or
+  titled with her exact name), from the most recent export, then her
+  contact card — two sources from two moments, each quoted as what it
+  said: "LinkedIn lists Priya Natarajan as "VP Product at Acme Robotics"
+  (connected 2023-09-11) [O1]. Priya Natarajan's contact card: "Director of
+  Product at Acme Robotics ..." [O2]." Nothing decides which is current.
+- **"Who do I know at Acme?"** LinkedIn connections and contact cards whose
+  text names the company: "People on record at "Acme" (observed, not
+  confirmed): LinkedIn connection Priya Natarajan: "VP Product at Acme
+  Robotics" [O1]; contact card ... [O2]."
+- **"What did Jake send me on Instagram?", "What did Maya say on
+  Telegram?", "What did Priya say on LinkedIn?"** That app's messages
+  ("instagram", "insta", "ig", "messenger", "facebook", "fb", "telegram",
+  "tg", "linkedin", "inmail"); "text", "message" and "DM" ask for all of
+  them.
 
 ### Who you are
 
@@ -251,6 +293,55 @@ what was bought, a person you name is the payee and searched the same way
 spending that mentions Jake); beside a merchant ("Jake and I at Uchi") a
 person is company, not a filter. You are never the payee.
 
+### Money between you and a person
+
+**"How much did I pay Jake?", "Did Maya pay me back?", "What do I owe
+Sam?"** are answered from the transactions with that person as the
+counterparty: the Venmo and PayPal rows whose counterparty handle you
+linked to them (`venmo:Jake Morales`, a PayPal email), plus bank rows that
+name them and carry no counterparty at all ("ZELLE TO JAKE MORALES").
+Negative is money you paid them, positive money they paid you, and both
+are said, with the net:
+
+```
+You paid Jake Morales $150.00 in 1 payment(s), Jake Morales paid you $14.88 in
+1 payment(s); net $135.12 from you to Jake Morales — payments made, not a debt
+(all records, 2026-10-20 to 2026-10-21) [M1]: 2026-10-21 Jake Morales: Veracruz
+tacos 🌮 $14.88 [O1]; 2026-10-20 Jake Morales: Bled lakeside place 🏔 my share
+-$150.00 [O2].
+```
+
+"Owe", "owed", "reimburse", "repay", "split", "venmo" and "paypal" make a
+money question. The net is a flow of payments that happened, never a debt:
+nothing records what anyone owes, so "what do I owe Sam" says what moved
+between you and leaves the owing to you. With no time named it covers every
+record, like a named merchant; with one, that window. When nothing passed
+between you, the answer is `No data for: transactions matching "Sam" or
+paid to or by Sam Okafor (all records)`.
+
+**"How much did I spend on Venmo?"** keeps only the app's own rows.
+
+Two rules keep a total from counting the same money twice:
+
+- **Transfers** between your own accounts (a Venmo cash-out, a PayPal bank
+  deposit, `value_json.transfer = true`) are never spending or income: the
+  bank statement shows the same money arriving or leaving.
+- **The bank's copy of an app payment.** A card or bank statement says
+  `VENMO PAYMENT 1023849` for money the Venmo statement shows with who it
+  went to. The app's row is kept, because it names the person, and a bank
+  row whose title starts with `VENMO` (or `PAYPAL`) is left out on the days
+  a payments import covers — from the import's first row to 3 days after
+  its last, for the bank's posting delay. Outside that range the bank row
+  is all there is, and it counts. The answer says how many it left out:
+  "1 bank row(s) titled VENMO or PAYPAL left out as copies of app payments
+  (the payments import covers Venmo 2026-10-12 to 2026-10-21, plus 3 days
+  for posting) [M1]."
+
+**"How much did I spend on Uber?"** Uber's own fares and Uber Eats prices
+are a line of their own — "Rides (the app's own prices, apart from the
+spending total): 3 ride(s), $57.15 in all" — never added to the spending
+total, because the card statement holds the same charges.
+
 A question that names a merchant is never answered with everything you
 spent: when nothing matches, the answer says there is no data for that
 merchant. That holds whatever the question names, by one rule rather than
@@ -322,6 +413,110 @@ Sunday. **"What's upcoming?", "What's next on my calendar?", "When is my
 next appointment?"** name no time but look forward: from today as far ahead
 as the calendar import expands repeating events (`[connectors.calendar]
 horizon_days`, 90 days by default), soonest first.
+
+## What you did: searches, videos, workouts, listening, reading, rides
+
+The activity exports hold only what you did — nobody else takes part — and
+their words choose them:
+
+| words | records |
+|---|---|
+| search, searched, googled, google, looked up | searches |
+| watched, YouTube, video(s); "watch" when it is not the one on your wrist | videos |
+| workout(s), PR, PB, personal best, Strava, Hevy, "in Strong" / "Strong app", bench, squat, deadlift; worked out, gym, lift, run, ran, hike, swim | workouts |
+| Spotify, podcast(s), song(s), music, album(s), artist(s); listen(ed), track(s) | listening |
+| highlight(ed), Kindle, underlined, clippings; quote(s) when not a price | highlights |
+| books, Goodreads, shelf, to-read, reading list; "book" as a noun ("a book about trees", never "book flights"); read, finished | books |
+| Uber, Lyft, taxi, cab; ride(s), rode (not "a bike ride") | rides |
+| Uber Eats, DoorDash, Grubhub, takeout; order(ed), delivery | food orders |
+| Cronometer; eat, ate, food, meal, breakfast, lunch, dinner, snack | the food log |
+
+The words after the semicolons are weak: they choose the records only when
+nothing stronger did and the question names no person, place or thing.
+"What did Jake read" is a text, "what did Sam say about the gym" is Sam's
+messages, "what did I eat at Veracruz" is Veracruz. "Read", "ride",
+"order", "eat" and the meal words choose only when nothing else is asked
+about: "what have I read" is your books, "what did I read about may" a
+search for may. Beside a person's name even the strong words are words
+("did Jake send the video"). "Played" chooses nothing. How you did it —
+"take", "listen", "watch", "order" — is never the topic: "when did I last
+take an Uber" asks for rides, not rides that say "take". An exercise or a
+run stays the topic under the name the records use: "when did I last run"
+finds the workouts that say "Run".
+
+- **"What did I search for about Bled?", "What did I watch on YouTube?",
+  "What podcast did I listen to about Slovenia?"** list what the search
+  found, up to `max_observations`: 'you searched "lake bled best time to
+  visit"', 'you watched "..." (Wander Slowly) on YouTube', 'you listened to
+  "..." (The Slow Traveler), 58 min, 2 plays, podcast'. "Podcast",
+  "episode", "audiobook", "song" or "music" narrow listening to that kind.
+- **"When did I last take an Uber?", "When did I last run?"** The newest
+  record leads, then the ones before it: "Last ride on record (observed, not
+  confirmed): 2026-10-13, ride "Uber to Uchi" ($16.87, 4.62 mi) ... [O1].
+  Before that: ...". "Uber to the airport" searches the rides for the
+  airport.
+- **"What's my bench PR?", "My best squat", "Heaviest deadlift"** — the
+  heaviest top set of the exercise across the workouts (the exercises'
+  `top_set`, compared in kg so lb and kg agree), then the most reps. An
+  exercise whose name starts with the word ("Bench Press (Barbell)") wins
+  over one that only contains it ("Incline Bench Press"). "Your best Bench
+  Press (Barbell) on record: 185 lb × 5 on 2026-10-10 in "Push Day"
+  (Strong) [M1] [O2]. Other sessions: ..." With no time named, every
+  record.
+- **"How many workouts this month?", "How often did I take an Uber?",
+  "How long did I listen to Japanese Breakfast?"** count the records and
+  add up their value — minutes, a fare — with plays for listening: "Workouts:
+  4 workout(s), 236 min in all, this month (2026-10-01 to 2026-10-22)
+  [M1]: ...". Named words cover every record unless a time is named.
+- **"What did I highlight in The Overstory?"** lists the book's highlights
+  and notes in full, in reading order, with their pages.
+- **"What books did I read this year?", "What have I read?", "What's on my
+  reading list?"** narrow books to Goodreads' shelf: read, or to-read for a
+  reading list. A book is dated by the day you read it (or added it), and
+  "what have I read" names no time, so it is never clipped to 30 days.
+- **"What did I order on Uber Eats?"** the food orders, with what was in
+  them.
+
+## Food and nutrients
+
+**"What am I low on?", "What nutrients am I deficient in?", "Am I getting
+enough iron?", "How much protein did I eat this week?"** are answered by the
+nutrient report — the same one `lifecrm nutrients` prints (lifecrm/
+nutrients.py, docs/nutrition.md) — over the question's window up to today,
+or the last 30 days when none is named. The report's own first line leads
+every such answer, because it is a comparison, never medical advice:
+
+```
+This compares logged intake with the National Academies' Dietary Reference
+Intakes for healthy adults; it is not medical advice or a diagnosis, and it
+recommends nothing. Over 2026-09-23 to 2026-10-22 (last 30 days), 28 of 30
+day(s) were counted from the food diary, against the reference intakes for
+adult (higher of female and male), ages 19-50 [M1]. Below 70% of the
+reference intake: Vitamin D 5.80 µg/day, 38.6% of the RDA 15.0 µg [M2];
+Magnesium 272 mg/day, 64.7% of the RDA 420 mg [M3]. Borderline, 70-100% of
+the reference intake: Fiber 29.5 g/day, 77.7% of the AI 38.0 g [M4]. Sodium
+went above the CDRR 2,300 mg on 2 of 28 days: 2026-10-02 3,927 mg [O9],
+2026-10-21 4,220 mg [O28] [M5].
+```
+
+Each nutrient is an `M#` whose evidence line lists the day records it was
+averaged from as `O#` — a Cronometer daily summary, or on a day without
+one the foods summed — with the foods that supplied most of it. A question
+that names nutrients ("protein", "fiber", "salt", "sugar", "carbs", "iron",
+"vitamin D", ...) gets those, with the total over the window; without one
+("what am I low on") it gets what is low, borderline, high, or over an upper
+level on some days. A nutrient named in a question about something else
+("what did ChatGPT say about protein") is a word, not a report. The sex and
+age the reference intakes are for come from `[nutrition]` in config.toml,
+and the answer says which were used.
+
+**"What did I eat yesterday?", "What did I have for dinner on the 13th?"**
+list that day's food log meal by meal — "2026-10-21 Lunch: Turkey Chili,
+Homemade (2.77 cup, 693 kcal) [O7], ..." — the day total the diary keeps,
+and the journal's food entries for the day ("In your journal: 2026-10-21
+Tacos at Veracruz with Jake [E1]."). A meal named keeps that meal's foods.
+This is for a short window (up to three days); a longer one is searched
+like any other record.
 
 ## Time windows
 
@@ -450,7 +645,8 @@ The deterministic answer must pass them too, and the tests hold it to that.
 2. **Every sentence that states a number or a date must cite the evidence
    it came from, and that evidence must contain it.** One valid citation
    elsewhere in the answer does not vouch for the rest. Rounding is allowed:
-   7.19 h can be said as 7.2 or 7, but not as 9. The window line and the
+   7.19 h can be said as 7.2 or 7, but not as 9. A time the evidence writes
+   as "3:30pm" (an invitation's) supports "3:30pm" and "15:30" alike. The window line and the
    no-data lines are shared, so any sentence may use those dates. A summary
    line such as "last contact O3 (2026-10-12)" counts only for a sentence
    that cites O3. A sentence that fails is listed under `unsupported`.
@@ -575,7 +771,14 @@ It returns:
 - `model`: whether a model was available and why not. `model_rejected` is set
   when a model's answer was set aside.
 - `evidence`: the full bundle.
-  - `metrics`: each with its per-day series and source files.
+  - `metrics`: each with its per-day series and source files. Besides the
+    sensor, journal and `txn_spend` totals: `txn_person` (payments with one
+    person: `paid`, `received`, `net`), `workout_best` (`best`, `sessions`),
+    `activity_total` (`count`, `sum`, `plays`), `nutrient_report` (days
+    counted, the profile, how many nutrients are low / borderline / high /
+    meet) and `nutrient` (`average`, `percent`, `status`, `reference`,
+    `days_over`, `sources`). `transactions` lists the `O#` ids each one
+    counted.
   - `entries`: each with its UUID and `tier`.
   - `passages`: each with its source id and UUID.
   - `observations`: each with uuid, stream, participants, connector, import
@@ -588,10 +791,18 @@ It returns:
     after what was due before today, `forward` for one that looks ahead,
     `merchant`, the name a money question's merchant slot held ("at 76",
     "pay 76", "76 spending"), and `unused`, the words of a money question
-    nothing could use). `loops_total` counts the open loops that match the
-    question and `loops_open` every open one. `recap` is true when the
-    question named only a time. `today` is the date the question was
-    answered on.
+    nothing could use; `apps` for "venmo"/"paypal"; `work` and `know_at`
+    for where someone works and who you know at a company; `activity` when
+    only activity exports are asked about, `last_of` for "when did I last",
+    `count` for "how many / how long", `best` for a best lift; `kinds` and
+    `shelf` narrowing listening and books; `nutrition` with the nutrient
+    keys named, or `flags` for "what am I low on"). `loops_total` counts the
+    open loops that match the question and `loops_open` every open one.
+    `recap` is true when the question named only a time. `today` is the date
+    the question was answered on. `nutrition` carries the report's
+    disclaimer, `food` the ids of a day's food log, its day totals and its
+    journal food entries, and `highlights` is true when a book's highlights
+    are listed in full. A person's `work` lists their LinkedIn row.
   - `window`: its `start`, `end` and `label`. An explicit window also has
     `spans`, the parts of the question it was read from, and a "this week /
     month / quarter / year" (or current season) window has `through`, the

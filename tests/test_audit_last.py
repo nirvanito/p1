@@ -86,7 +86,10 @@ def statement(conn, cfg):
 
 def _spent(bundle):
     found = [m for m in bundle["metrics"] if m["metric"] == "txn_spend"]
-    return (found[0]["total"], found[0]["spent_count"]) if found else None
+    # Money paid to a person is a payment: what you paid them (recall.person_payments).
+    paid = [m for m in bundle["metrics"] if m["metric"] == "txn_person"]
+    return ((found[0]["total"], found[0]["spent_count"]) if found
+            else (paid[0]["paid"], paid[0]["paid_count"]) if paid else None)
 
 
 @pytest.mark.parametrize("question, title, amount", [

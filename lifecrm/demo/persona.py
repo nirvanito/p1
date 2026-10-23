@@ -756,4 +756,14 @@ QUESTIONS: tuple[str, ...] = (
     "how much did I spend at Veracruz",
     "what are my open tasks",
     "how many steps did I average this month",
+    # The newer sources: mail, workouts, nutrition, payments, reading,
+    # searches, rides and LinkedIn.
+    "what advice did Priya give me over email",
+    "what's my bench PR",
+    "what am I low on",
+    "how much did I pay Jake",
+    "what did I highlight in The Overstory",
+    "what did I search for about Bled",
+    "when did I last take an Uber",
+    "where does Priya work",
 )

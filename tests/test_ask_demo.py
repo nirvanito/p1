@@ -428,7 +428,10 @@ def test_the_persona_world_keeps_doctor_green(world):
 # ---------------------------------------------------------------- the questions
 
 def test_every_demo_question_has_cited_evidence_and_a_self_consistent_answer(world):
-    for q in persona.QUESTIONS:
+    # This world holds the first sources only; the questions about mail,
+    # workouts, nutrition, payments, reading, searches, rides and LinkedIn are
+    # answered from those generators' own exports in tests/test_more_ask_demo.py.
+    for q in persona.QUESTIONS[:10]:
         bundle, text = ask(world, q)
         assert bundle["has_evidence"], q
         assert bundle["answered"], q
