@@ -113,6 +113,29 @@ def flag(value, default: bool) -> bool:
     return default
 
 
+RESOLVE_SECONDS = 0.5
+
+
+def _resolve(host: str, port: int, wait: float = RESOLVE_SECONDS) -> list | None:
+    """getaddrinfo with a time limit, or None when it did not answer in time.
+    A socket timeout bounds the connect, never the name lookup before it, and
+    on a Mac a .local name nobody answers waits on Bonjour for many seconds —
+    long enough to hold a page's status request past its client's timeout
+    (found by CI on macOS). The lookup goes on in its thread; nobody waits."""
+    out: list = []
+
+    def lookup() -> None:
+        try:
+            out.append(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+        except (OSError, UnicodeError):
+            out.append([])
+
+    t = threading.Thread(target=lookup, name=f"resolve {host}", daemon=True)
+    t.start()
+    t.join(wait)
+    return out[0] if out else None
+
+
 # ---------------------------------------------------------------- snapshot
 
 class Snapshot:
@@ -331,11 +354,16 @@ class WebApp:
             cached = self._dash_state.get(host)
             if cached and time.monotonic() - cached[0] < 10:
                 return cached[1]
-        try:
-            with socket.create_connection((host, self.dashboard_port), timeout=0.25):
-                running = True
-        except OSError:
-            running = False
+        running = False
+        for family, kind, proto, _, address in _resolve(host, self.dashboard_port) or []:
+            try:
+                with socket.socket(family, kind, proto) as s:
+                    s.settimeout(0.25)
+                    s.connect(address)
+                    running = True
+                    break
+            except OSError:
+                continue
         with self._probe_lock:
             self._dash_state[host] = (time.monotonic(), running)
         return running

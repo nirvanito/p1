@@ -40,3 +40,35 @@ def test_no_dns_lookup_ever(monkeypatch):
 def test_allowed_hosts_still_count(monkeypatch):
     monkeypatch.setattr(socket, "gethostname", lambda: "box")
     assert _bare(extra={"lifecrm.home.arpa"}).host_allowed("lifecrm.home.arpa")
+
+
+# ---------------------------------------------------------------- the dashboard probe
+
+def _probe_app():
+    app = object.__new__(_server_class())
+    app._probe_lock = __import__("threading").Lock()
+    app._dash_state = {}
+    app.dashboard_port = 9                      # nothing listens there
+    return app
+
+
+def test_a_name_lookup_that_hangs_does_not_hold_the_status_call(monkeypatch):
+    """A .local name nobody answers waits on Bonjour for many seconds on a
+    Mac; the probe gives up on the lookup after half a second."""
+    import time
+
+    def slow(*a, **k):
+        time.sleep(5)
+        return []
+    monkeypatch.setattr(socket, "getaddrinfo", slow)
+    started = time.monotonic()
+    assert _probe_app().dashboards_running("nobody-answers.local") is False
+    assert time.monotonic() - started < 2
+
+
+def test_an_ip_address_is_probed_directly():
+    import time
+    started = time.monotonic()
+    assert _probe_app().dashboards_running("127.0.0.1") is False   # port 9: closed
+    assert time.monotonic() - started < 2
+    assert web_server._resolve("127.0.0.1", 9)                       # resolves at once
