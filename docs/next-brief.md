@@ -368,6 +368,13 @@ decision to even consider. *Built 2026-10-22 (c60635c) as a read-only
 extension of the markdown export (`export --format obsidian`). It owns its
 notes through a marker and a manifest, it is deterministic, and it is
 documented in docs/obsidian.md. Bidirectional sync remains forbidden.*
+*2026-10-23: the owner asked for Obsidian as a main-GUI option beside the
+web UI. The vault gained start pages (Home, People, Health, Sources) built
+from the web UI's own reads and dated as of the database's last change.
+`[obsidian] vault` + `[gui] main` pick it, and `lifecrm open` / `obsidian
+open` open it. Each CLI command that changes the database re-renders it one
+way (lifecrm/obsidian.py). Nothing is read back, so this is not the
+forbidden sync.*
 
 5.8 **Voice loop** (last, per roadmap): openWakeWord → faster-whisper →
 `ask --json` → Piper TTS. Reads + draft creation only; never applies.

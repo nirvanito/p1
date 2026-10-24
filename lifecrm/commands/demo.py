@@ -114,4 +114,5 @@ def _print_summary(s: dict) -> None:
     typer.echo(f"  python -m lifecrm {r} status")
     typer.echo(f"  python -m lifecrm {r} handles list --suggest")
     typer.echo(f"  python -m lifecrm {r} review --lens health")
-    typer.echo(f"  python -m lifecrm {r} export --format obsidian --out \"{Path(root) / 'vault'}\"")
+    typer.echo(f"  python -m lifecrm {r} obsidian open    # the same data in Obsidian "
+               f"(vault: {Path(root) / 'vault'})")

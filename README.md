@@ -31,7 +31,7 @@ phone ─ voice note / quick note ─> cloud folder (OneDrive or iCloud Drive)
 app exports    ─ lifecrm observe       ─> OBSERVED tier: observations
 health exports ─ lifecrm health import ─> health_records
 
-data/lifecrm.db ─> ask · serve (web UI) · voice · dashboard · review
+data/lifecrm.db ─> ask · serve (web UI) · Obsidian vault · voice · dashboard · review
                    export (jsonl / markdown / obsidian)
 ```
 
@@ -43,16 +43,40 @@ the real importers. Then it opens the web UI. It never touches `data/`.
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1     # Windows
-powershell -ExecutionPolicy Bypass -File scripts\demo.ps1      #   -Combo iphone, -Rebuild, -NoServe, -Port
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1      #   -Combo iphone, -Rebuild, -NoServe, -Port, -Gui obsidian
 
 /bin/bash scripts/setup.sh                                     # Mac
-/bin/bash scripts/demo.sh                                      #   --combo android, --rebuild, --no-serve, --port
+/bin/bash scripts/demo.sh                                      #   --combo android, --rebuild, --no-serve, --port, --gui obsidian
 ```
 
 It builds `demo/<combo>/` (gitignored) and serves it at
 `http://127.0.0.1:8765/`. The build includes an Obsidian vault at
-`demo/<combo>/vault`. [docs/demo.md](docs/demo.md) lists what is in it and
-what to try.
+`demo/<combo>/vault`; `-Gui obsidian` / `--gui obsidian` opens that in
+Obsidian instead of the web UI. [docs/demo.md](docs/demo.md) lists what is
+in it and what to try.
+
+## Two front ends: the web UI or Obsidian
+
+Pick one as your main GUI; both read the same database and neither writes
+to it.
+
+- **The web UI** (`lifecrm serve`, the default): Ask with cited answers,
+  Today, People, Loops, Health and Sources pages, on the laptop or the phone
+  ([docs/web.md](docs/web.md)).
+- **Obsidian**: a read-only vault of the same data. Its start pages (Home,
+  People, Health, Sources) show what the web pages show. Every journal day,
+  person and place has its own note, and backlinks and the graph view work
+  across them. Set `[obsidian] vault` in `config.toml` and every command that
+  changes the database refreshes the vault by itself
+  ([docs/obsidian.md](docs/obsidian.md)). Questions stay `lifecrm ask` (or
+  the web UI, or voice): Obsidian shows the data, it does not answer.
+
+```
+lifecrm open                       # the one [gui] main names: "web" (default) or "obsidian"
+lifecrm open --gui obsidian        # this once
+lifecrm obsidian open              # refresh the vault, open Obsidian on Home
+lifecrm obsidian refresh [--dry-run]
+```
 
 ## Two supported setups
 
@@ -331,7 +355,8 @@ lifecrm export --format obsidian --out "<vault folder>" [--dry-run]
 The exports are deterministic: two exports of the same data diff cleanly.
 The obsidian format is a read-only vault. It holds day notes (journal,
 health line, a digest of observed records with their uuids), one note per
-person, place and thing, `Loops.md` and `Index.md`. A re-export rewrites and
+person, place and thing, `Loops.md`, `Index.md` and the start pages
+(`Home.md`, `People.md`, `Health.md`, `Sources.md`). A re-export rewrites and
 prunes only the notes that carry `lifecrm: generated`, so your own notes in
 the vault are never touched ([docs/obsidian.md](docs/obsidian.md)). Reading
 an export with no code at all: [docs/restore.md](docs/restore.md).
@@ -465,15 +490,18 @@ guide ends with what to check on the first real run:
 - Front ends: [voice](docs/voice.md#not-yet-verified-on-real-hardware) (a
   real microphone, the wake word, speakers). For the web UI on a real phone,
   see [web.md](docs/web.md#on-your-phone). No real Ollama model has been
-  tried with `ask`'s citation check.
+  tried with `ask`'s citation check. `lifecrm obsidian open` has been checked
+  with Obsidian on Windows, not yet on a Mac
+  ([obsidian.md](docs/obsidian.md#checked-with-obsidian-itself)).
 
 ## Roadmap
 
 The work order is [docs/next-brief.md](docs/next-brief.md). It is built
 through Phase 5: integrity fixes, backups you can trust, every connector in
 the source ranking, cross-tier `ask`, entity relationships, dashboards v2,
-the weekly review and advisors, the read-only Obsidian mirror, the web UI
-and the voice loop. Still open:
+the weekly review and advisors, the read-only Obsidian mirror (now also a
+main GUI, refreshed after every write), the web UI and the voice loop.
+Still open:
 
 - the real-device and first-real-import checklists above;
 - ActivityWatch screen time;
@@ -484,4 +512,6 @@ and the voice loop. Still open:
 
 Deliberately not built: a capture UI (the phone apps are the capture), live
 federation of app data (everything is copied into `lifecrm.db`), and
-bidirectional Obsidian sync, which would be a second write path.
+bidirectional Obsidian sync, which would be a second write path. The vault's
+refresh runs one way only: the database is rebuilt into notes, and no note
+is ever read back.

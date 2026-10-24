@@ -162,6 +162,10 @@ PUBLIC_PATHS = [
     "docs/rides.md",
     "tests/test_spotify.py",
     "tests/test_linkedin.py",
+    # the vault's code shares a name with the vault folders that stay private
+    "lifecrm/obsidian.py",
+    "lifecrm/commands/obsidian.py",
+    "docs/obsidian.md",
 ]
 
 

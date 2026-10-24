@@ -187,9 +187,16 @@ max_loops = 10                     # open tasks/plans listed
 # age = 32                          # whole years, 19 or over
 
 # ---------------------------------------------------------------- front ends
-# Optional. The values shown are the defaults, except [voice] voice and
-# piper_model, which are examples (by default the OS's own voice is used and
-# Piper is off).
+# Optional. The values shown are the defaults, except [obsidian] vault and
+# [voice] voice and piper_model, which are examples (by default there is no
+# vault, the OS's own voice is used and Piper is off).
+
+# [gui]                             # `lifecrm open` opens the main GUI
+# main = "web"                      # "web" (lifecrm serve) | "obsidian" (the vault)
+
+# [obsidian]                        # the vault as a GUI (docs/obsidian.md)
+# vault = "~/OneDrive/LifeCRM vault"  # Mac: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/LifeCRM"
+# auto_refresh = true               # re-export after every command that changes the database
 
 # [web]                             # `lifecrm serve` (docs/web.md)
 # host = "127.0.0.1"                # 0.0.0.0 for the phone on the same Wi-Fi

@@ -36,6 +36,7 @@ kinds_app = typer.Typer(help="Entry-kind reference table.", no_args_is_help=True
 admin_app = typer.Typer(help="Destructive administrative commands.", no_args_is_help=True)
 @app.callback()
 def _root_option(
+        ctx: typer.Context,
         root: str = typer.Option(
             None, "--root", metavar="DIR",
             help="Run against another project root (a demo, a restore target). "
@@ -44,6 +45,42 @@ def _root_option(
     # subprocesses (dashboard's datasette) and __main__'s error path agree.
     if root:
         os.environ["LIFECRM_ROOT"] = str(Path(root).expanduser().resolve())
+    _arm_vault_refresh(ctx)
+
+
+def _arm_vault_refresh(ctx: typer.Context) -> None:
+    """With an Obsidian vault set (`[obsidian] vault`, auto_refresh not
+    false), re-export it once the command is done if the command changed the
+    database — the audit log's newest row moved (lifecrm/obsidian.py). A
+    failed refresh is one warning on stderr; the command's own result and
+    exit code stand. Never in the way: no config, a bad one or no database
+    simply means no refresh."""
+    from . import obsidian
+    root = os.environ.get("LIFECRM_ROOT")
+    try:
+        cfg = load_config(Path(root) if root else None)
+        if not obsidian.auto_refresh(cfg):
+            return
+        vault = obsidian.vault_dir(cfg)
+    except (ConfigError, DomainError):
+        return
+    before = obsidian.change_stamp(cfg)
+
+    def after() -> None:
+        if obsidian.change_stamp(cfg) == before:
+            return
+        try:
+            result = obsidian.refresh(cfg, vault)
+        except (DomainError, sqlite3.Error, OSError) as e:
+            typer.echo(f"warning: Obsidian vault not refreshed — {e} — run: "
+                       f"python -m lifecrm obsidian refresh", err=True)
+            return
+        n = obsidian.changed(result)
+        if n:
+            typer.echo(f"obsidian vault refreshed: {n} note(s) changed in {vault}",
+                       err=True)
+
+    ctx.call_on_close(after)
 
 
 app.add_typer(entities_app, name="entities")
@@ -661,7 +698,7 @@ def export(format: str = typer.Option(..., "--format",
         elif format == "obsidian":
             try:
                 result = export_mod.export_obsidian(
-                    conn, out_dir, tz_name=cfg.timezone, dry_run=dry_run)
+                    conn, out_dir, tz_name=cfg.timezone, dry_run=dry_run, cfg=cfg)
             except DomainError as e:
                 _fail(str(e))
             for line in export_mod.vault_report_lines(result, out_dir):

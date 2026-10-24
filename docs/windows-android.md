@@ -320,6 +320,24 @@ local model it also phrases the answer — `winget install Ollama.Ollama`, then
 The dashboard serves a snapshot taken at start, never the live database;
 rerun it to refresh.
 
+**Obsidian instead of the web UI.** To browse in Obsidian, add this to
+`config.toml`:
+
+```toml
+[gui]
+main = "obsidian"
+[obsidian]
+vault = "~/OneDrive/LifeCRM vault"
+```
+
+Then run `lifecrm open` (or `lifecrm obsidian open`). The first time, choose
+*Open folder as vault* in Obsidian's vault manager. After that, every write
+(`/log`'s apply, an import) refreshes the vault by itself. On the Samsung,
+Obsidian opens folders on the phone's own storage only, so mirror the
+OneDrive folder there with Autosync for OneDrive or FolderSync
+([obsidian.md](obsidian.md#obsidian-as-your-main-gui)). Questions stay
+`lifecrm ask` or the web UI.
+
 ## 9. From the phone, over Wi-Fi
 
 Both servers listen only on the laptop itself unless you say otherwise:

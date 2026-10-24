@@ -23,6 +23,12 @@ It is a **viewer**. There is no capture box and no edit button: logging a day
 stays the reviewed `/log` path, and changes stay CLI commands, so the review
 gate is never bypassed from a phone.
 
+It is one of two front ends. The other is the Obsidian vault, whose Home,
+People, Health and Sources notes are built from this page's own reads
+([obsidian.md](obsidian.md#obsidian-as-your-main-gui)). `[gui] main` in
+`config.toml` says which one `lifecrm open` opens; this one is the default,
+and the only one that answers questions.
+
 ## Pages
 
 | page | what it shows |

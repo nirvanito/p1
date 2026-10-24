@@ -75,6 +75,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   ask (cited answers; deterministic retrieval, optional local model),
   serve (read-only web UI over a snapshot; --host 0.0.0.0 for the phone,
   --token random; writes only recall_log, --no-log),
+  open (the main GUI: `[gui] main` = web | obsidian, --gui for once),
+  obsidian (refresh [--dry-run] | open [--no-refresh]; the vault named by
+  `[obsidian] vault`, which every command that changes the db refreshes —
+  `auto_refresh = false` / LIFECRM_NO_VAULT_REFRESH=1 to skip),
   voice (--text/--file/--once/--wake/--no-speak/--no-llm/--json; never
   writes the db, never applies),
   review (evidence pack: --lens week|health|career|relationships|finance|all,
@@ -123,6 +127,13 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   vault mirror (build_vault = pure render; export_obsidian =
   marker/manifest-guarded write: never writes or deletes a file without the
   `lifecrm: generated` front-matter line). See `docs/obsidian.md`.
+- `lifecrm/obsidian.py` + `commands/obsidian.py` + `commands/gui.py` — the
+  vault as a main GUI: the start pages (Home, People, Health, Sources) built
+  from web/api.py's reads and dated as of the newest audit row, never the
+  clock; `[obsidian] vault` / `[gui] main`; the change stamp (newest audit
+  row + schema version) cli._arm_vault_refresh compares around every
+  command to re-export after a write; the obsidian:// hand-off (Obsidian's
+  own obsidian.json is read, never written). One way: nothing is read back.
 - `lifecrm/health_connect.py` + `lifecrm/domain/health.py` — Health Connect
   export import into `health_records` (deterministic, external-id dedupe,
   newer-wins updates, conflicts surfaced; dry-run by default; sleep dated by
@@ -242,8 +253,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/platforms.py` — where things live on Windows vs macOS (cloud
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
-  cli.py: configure, demo, entity_links, filedate, nutrients, review, verify
-  (verify-backup), voice, web (serve), where.
+  cli.py: configure, demo, entity_links, filedate, gui (open), nutrients,
+  obsidian, review, verify (verify-backup), voice, web (serve), where.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export
   generator per source in `demo/sources/`, run through the real CLI into a
   `.lifecrm-demo`-marked root (never the project's data). `docs/demo.md`.
@@ -264,4 +275,5 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   comparison questions ("this month vs last"), Samsung `.qta` recordings.
   Bidirectional/live Obsidian sync is forbidden without an explicit decision
   (a second write path; the read-only mirror exists: export --format
-  obsidian). Never a capture UI; never live federation of app data.
+  obsidian, re-rendered one way after each CLI write — nothing is read
+  back). Never a capture UI; never live federation of app data.

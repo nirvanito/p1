@@ -53,7 +53,8 @@ powershell -ExecutionPolicy Bypass -File scripts/demo.ps1
 
 Each script builds `demo/<combo>/` the first time (about two minutes), then
 opens the web UI at `http://127.0.0.1:8765/` (`serve --open`: the browser
-opens once the server is listening). Either runs from any folder, Explorer's
+opens once the server is listening), or with `-Gui obsidian` /
+`--gui obsidian` the demo's Obsidian vault. Either runs from any folder, Explorer's
 *Run with PowerShell* included. `demo.ps1` builds the android
 combo by default and `demo.sh` the iphone one. Pass `-Combo iphone` /
 `--combo android` to build the other setup on the same machine. Both work on
@@ -182,10 +183,22 @@ low, fiber borderline, and sodium over its limit on the two taco nights at
 Veracruz, each line citing its rows. It is a comparison with reference
 values, not medical advice ([nutrition.md](nutrition.md)).
 
-The build already wrote an Obsidian vault to `<demo>/vault` (open that
-folder as a vault in Obsidian). Running
-`export --format obsidian --out <demo>/vault` again rewrites only the notes
-that changed.
+The build already wrote an Obsidian vault to `<demo>/vault`, start pages
+included (Home, People, Health, Sources). The demo's `config.toml` names it
+under `[obsidian] vault`, so anything you change in the demo through the
+CLI (`handles link`, `entry close`, `/log` against `--root <demo>`)
+refreshes it by itself. To look at it in Obsidian instead of the browser:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/demo.ps1 -Gui obsidian    # Windows
+/bin/bash scripts/demo.sh --gui obsidian                                   # Mac
+python -m lifecrm --root <demo> obsidian open                              # either, once built
+```
+
+The first time, Obsidian does not know the folder: `obsidian open` shows its
+vault manager, where you choose *Open folder as vault* and pick
+`<demo>/vault`. After that it opens straight on Home
+([obsidian.md](obsidian.md#obsidian-as-your-main-gui)).
 
 `doctor` reports 0 failures and one warning, `unresolved_handles`: the
 review queue the demo leaves on purpose. On the iPhone combo the Watch and

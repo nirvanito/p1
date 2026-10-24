@@ -13,8 +13,12 @@ cleanly:
   notes with the health line and the observed-tier digest, one note per
   entity, open loops, an index. Re-exportable into a vault that also holds
   the owner's own notes, because it only ever touches the files it generated.
+  Given the config, it also writes the start pages lifecrm/obsidian.py
+  renders (Home, People, Health, Sources) — what makes the vault a main GUI.
 
-All three are one-way dumps: no sync, nothing read back, no live updating.
+All three are one-way dumps: no sync, nothing read back. The only thing that
+re-runs one by itself is the obsidian export, after a CLI command changed the
+database (lifecrm/obsidian.py, `[obsidian] auto_refresh`).
 """
 
 from __future__ import annotations
@@ -1290,6 +1294,8 @@ def _index_note(ctx: dict, days: list[str], facts: dict[int, dict],
               "A read-only mirror of lifecrm.db. Journal entries are the "
               "confirmed record; anything marked *observed* was bulk-imported "
               "and never reviewed.", ""]
+    if ctx.get("hubs"):
+        lines += ["Start at " + " · ".join(_wikilink(s) for s in ctx["hubs"]), ""]
     span = f" ({days[0]} … {days[-1]})" if days else ""
     lines += [f"{len(days)} day(s){span} · {_wikilink('Loops')}: "
               f"{len(loops)} open", ""]
@@ -1341,16 +1347,23 @@ def _index_note(ctx: dict, days: list[str], facts: dict[int, dict],
 
 
 def build_vault(conn: sqlite3.Connection, *, tz_name: str = "UTC",
-                notable: int = 10) -> dict[str, str]:
+                notable: int = 10, cfg=None) -> dict[str, str]:
     """Every generated note as {vault-relative posix path: text}. Reads only:
-    the same database (and timezone) renders byte-identical notes."""
+    the same database (and timezone) renders byte-identical notes. With
+    `cfg` (the CLI always passes it) the start pages come too — Home,
+    People, Health, Sources (lifecrm/obsidian.py) — dated as of the
+    database's last change, so they are just as reproducible."""
+    from .obsidian import HUB_STEMS
     days = _vault_days(conn)
     ents = {r["id"]: dict(r) for r in conn.execute(
         "SELECT id, uuid, type, name, notes FROM entities "
         "WHERE status='active' ORDER BY id")}
+    # The start pages' names are kept free whether or not this run writes
+    # them, so a note's name never depends on how the export was called.
     stems = unique_stems([(e["id"], e["name"], e["type"], e["uuid"])
                           for e in ents.values()],
-                         fixed={"index", "loops", *days})
+                         fixed={"index", "loops", *(s.casefold() for s in HUB_STEMS),
+                                *days})
     # The owner is a participant in every message they send or receive; once
     # their own number is linked to them, "texts with <owner>" would head
     # every day. A handle that is some import's account is the owner's.
@@ -1358,7 +1371,8 @@ def build_vault(conn: sqlite3.Connection, *, tz_name: str = "UTC",
         "SELECT DISTINCT h.entity_id FROM entity_handles h "
         "JOIN imports i ON h.value = i.account WHERE h.entity_id IS NOT NULL")}
     ctx = {"conn": conn, "tz": ZoneInfo(tz_name), "notable": notable,
-           "ents": ents, "stems": stems, "owners": owners}
+           "ents": ents, "stems": stems, "owners": owners,
+           "hubs": HUB_STEMS if cfg is not None else ()}
     notes: dict[str, str] = {}
     for i, jd in enumerate(days):
         notes[f"Journal/{jd[:4]}/{jd}.md"] = _day_note(
@@ -1371,6 +1385,12 @@ def build_vault(conn: sqlite3.Connection, *, tz_name: str = "UTC",
     loops = _open_loops(conn)
     notes["Loops.md"] = _loops_note(ctx, loops)
     notes["Index.md"] = _index_note(ctx, days, facts, loops)
+    if cfg is not None:
+        from .obsidian import hub_notes
+        hubs = hub_notes(ctx, cfg, days)
+        ctx["hubs"] = tuple(rel[:-3] for rel in hubs)
+        notes["Index.md"] = _index_note(ctx, days, facts, loops)
+        notes.update(hubs)
     return dict(sorted(notes.items()))
 
 
@@ -1436,13 +1456,13 @@ def _prune_empty_dirs(out_dir: Path, start: Path) -> None:
 
 def export_obsidian(conn: sqlite3.Connection, out_dir: Path, *,
                     tz_name: str = "UTC", dry_run: bool = False,
-                    notable: int = 10) -> dict:
+                    notable: int = 10, cfg=None) -> dict:
     """Render the vault and bring `out_dir` in line with it, touching only
     generated files. With dry_run nothing is written; the result lists what
-    would change either way."""
+    would change either way. `cfg` adds the start pages (build_vault)."""
     if out_dir.exists() and not out_dir.is_dir():
         raise DomainError(f"{out_dir} is a file — --out must be a vault folder")
-    notes = build_vault(conn, tz_name=tz_name, notable=notable)
+    notes = build_vault(conn, tz_name=tz_name, notable=notable, cfg=cfg)
     previous = _read_manifest(out_dir)
 
     created, updated, kept, deleted = [], [], [], []

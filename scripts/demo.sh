@@ -1,9 +1,11 @@
 #!/bin/bash
 # One command to see the whole thing on a Mac: build the demo instance
-# (MacBook + iPhone, synthetic data only) and open the web UI.
+# (MacBook + iPhone, synthetic data only) and open the web UI — or, with
+# --gui obsidian, its Obsidian vault.
 #   /bin/bash scripts/demo.sh                 # iphone combo
 #   /bin/bash scripts/demo.sh --combo android
 #   /bin/bash scripts/demo.sh --rebuild
+#   /bin/bash scripts/demo.sh --gui obsidian
 # Nothing here touches data/ — the demo lives in demo/<combo>/ (gitignored).
 
 set -u
@@ -17,15 +19,21 @@ COMBO="iphone"
 REBUILD=0
 SERVE=1
 PORT=8765
+GUI="web"
 while [ $# -gt 0 ]; do
     case "$1" in
         --combo) COMBO="$2"; shift 2 ;;
         --rebuild) REBUILD=1; shift ;;
         --no-serve) SERVE=0; shift ;;
         --port) PORT="$2"; shift 2 ;;
+        --gui) GUI="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+case "$GUI" in
+    web|obsidian) ;;
+    *) echo "--gui must be web or obsidian, got: $GUI" >&2; exit 2 ;;
+esac
 
 PY="${LIFECRM_PYTHON:-}"
 if [ -z "$PY" ]; then
@@ -46,6 +54,12 @@ fi
 
 [ "$SERVE" = 1 ] || exit 0
 echo ""
+if [ "$GUI" = obsidian ]; then
+    # The demo config names its vault (demo/<combo>/vault); open refreshes it
+    # and hands Obsidian an obsidian:// link to its Home note.
+    echo "opening the demo vault in Obsidian"
+    exec "$PY" -m lifecrm --root "$DEMO" obsidian open
+fi
 echo "opening the web UI at http://127.0.0.1:$PORT/ (Ctrl+C stops it)"
 # --open: serve opens the browser once it is listening; a fixed sleep first
 # loses the race whenever the snapshot takes longer than the sleep.

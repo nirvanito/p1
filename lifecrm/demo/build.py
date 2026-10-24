@@ -253,6 +253,11 @@ def _config_text(root: Path, combo: str, anchor: date | None = None) -> str:
         'sex = "male"',
         *([f"age = {age}"] if age is not None else []),
         "",
+        # The Obsidian vault, inside the demo root: `obsidian open` and
+        # `open --gui obsidian` find it, and every write refreshes it.
+        "[obsidian]",
+        'vault = "vault"',
+        "",
         "[connectors.android_sms]",
         f'account = "{me.phone}"',
         "[connectors.whatsapp]",
@@ -290,9 +295,13 @@ class DemoBuilder:
     # ------------------------------------------------------------ plumbing
 
     def _subprocess(self, args: list[str]) -> tuple[int, str, str]:
-        """Run one CLI command as its own process, exactly as typed."""
+        """Run one CLI command as its own process, exactly as typed. The
+        vault is refreshed once at the end (finish), not after each of the
+        build's hundred-odd writes."""
+        from ..obsidian import NO_REFRESH_ENV
         env = dict(os.environ, PYTHONUTF8="1",
-                   HF_HUB_OFFLINE=os.environ.get("HF_HUB_OFFLINE", "1"))
+                   HF_HUB_OFFLINE=os.environ.get("HF_HUB_OFFLINE", "1"),
+                   **{NO_REFRESH_ENV: "1"})
         env.pop("LIFECRM_ROOT", None)
         p = subprocess.run([self.python, "-m", "lifecrm", *args], cwd=PROJECT_ROOT,
                            env=env, capture_output=True, text=True, encoding="utf-8",
@@ -535,8 +544,9 @@ class DemoBuilder:
             self._run("intake")
 
     def finish(self) -> dict:
-        # A read-only Obsidian vault of the same data, to open in Obsidian.
-        self._run("export", "--format", "obsidian", "--out", str(self.root / "vault"))
+        # A read-only Obsidian vault of the same data, start pages included —
+        # the demo config's [obsidian] vault, to open in Obsidian.
+        self._run("obsidian", "refresh")
         self._run("backup")
         doctor = self._run("doctor", "--json", want_json=True, check=False)
         status = self._run("status", "--json", want_json=True)

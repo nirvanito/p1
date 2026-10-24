@@ -1,12 +1,16 @@
-# Obsidian mirror
+# Obsidian vault
 
-`lifecrm export --format obsidian` turns the database into an
-[Obsidian](https://obsidian.md) vault you can browse on the laptop and the
-phone: one note per journal day, one per person, place and thing, your open
-loops, and an index — all cross-linked, so backlinks and the graph view work
+`lifecrm export --format obsidian` (or `lifecrm obsidian refresh`) turns the
+database into an [Obsidian](https://obsidian.md) vault you can browse on the
+laptop and the phone. It has start pages (Home, People, Health, Sources), one
+note per journal day, one per person, place and thing, your open loops, and
+an index. Everything is cross-linked, so backlinks and the graph view work
 with no plugins.
 
-It is the markdown export grown up, and like every export it is **one-way**.
+It can be your **main GUI** in place of the web UI: set where the vault
+lives once, and every command that changes the database keeps it current
+([below](#obsidian-as-your-main-gui)). It is the markdown export grown up,
+and like every export it is **one-way**.
 
 ## Read-only by design
 
@@ -34,8 +38,79 @@ notes, because the export only ever touches what it generated:
   delete its `lifecrm: generated` line. From then on it is yours and the
   export leaves it alone; Jake's page simply stops being regenerated.
 
+## Obsidian as your main GUI
+
+Two front ends read the same database: the web UI (`lifecrm serve`,
+[web.md](web.md)) and this vault. Choose the vault in `config.toml`:
+
+```toml
+[gui]
+main = "obsidian"                     # what `lifecrm open` opens; "web" is the default
+
+[obsidian]
+vault = "~/OneDrive/LifeCRM vault"    # Mac: "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/LifeCRM"
+# auto_refresh = true                 # the default once a vault is set
+```
+
+A relative `vault` is relative to the project root, like every path in
+`config.toml`. Then:
+
+```
+lifecrm open                  # refresh the vault, open Obsidian on Home
+lifecrm obsidian open         # the same, whatever [gui] main says
+lifecrm obsidian refresh      # bring the vault up to date, open nothing (--dry-run to preview)
+```
+
+**It stays current by itself.** With a vault set, the CLI notes the audit
+log's newest row before each command. If the command moved it, the CLI
+re-exports the vault once the command is done. Every write the domain
+layer makes logs one audit row, so this covers `/log`'s `apply`,
+`observe ... --apply`, `health import --apply`, `entry close`,
+`handles link`, `restore` and the rest. A read-only command never
+triggers it, and neither does a question that `ask` or the web UI logs. The
+refresh prints one line on stderr (`obsidian vault refreshed: 3 note(s)
+changed in ...`) when anything changed, and nothing when nothing did. If it
+fails — a sync client holding a note, the folder gone — it warns on stderr.
+The command's own result and exit code stand, and `lifecrm obsidian refresh`
+catches up. `auto_refresh = false` turns it off, and the environment variable
+`LIFECRM_NO_VAULT_REFRESH=1` skips it for a script that runs many writes in a
+row (the demo build does this, and refreshes once at the end).
+
+The refresh is a re-export, the same one-way render as `export --format
+obsidian`. The database is turned into notes again, and no note is ever
+read back (see [Read-only by design](#read-only-by-design)).
+
+**The start pages** do in the vault what the web UI's pages do in the
+browser. They are built from the same reads (`lifecrm/web/api.py`), so the two
+cannot disagree:
+
+| note | what it shows |
+|---|---|
+| `Home.md` | Where to start. The latest day (its summary, your journal's mood, energy and sleep, the health line, counts) and the three before it. Open loops, overdue first. The eight people most recently in touch, and who has been quiet for 30+ days. The last 7 days' sleep, steps and resting heart rate as small sparklines, your journal's mood and energy, the week's logged workouts, and any nutrient below 70% of its reference over 30 days (not medical advice). What the imports hold and what waits to be linked. |
+| `People.md` | Everyone of type person, most recent contact first, by the rule `lifecrm ask` uses for "when did I last talk to X". A text on any app, an email that passed between you, a call that connected or a calendar event counts, as does a journal entry mentioning them. A contact card, a tapback, a missed call, a Cc or a meeting still ahead does not. You are not on the list. Then the people with no contact on record, and those not in touch for 30+ days. |
+| `Health.md` | The last 30 days: each sensor metric (mean, min, max, trend and a sparkline, naming the export file), your journal's measures, logged workouts per week, and the `lifecrm nutrients` summary, which opens with its own not-medical-advice line. |
+| `Sources.md` | Each connector's records per stream, its newest record, its last import and whether it went stale. The handles waiting to be linked (with the command that links one), health export files, the journal's own counts and drafts waiting for review, and the last ten import runs. |
+
+They are dated **as of the database's last change**, the newest audit row,
+never by the clock. "Overdue", "quiet for 30 days" and "the last 7 days" are
+counted back from that day, which each page names. So the same database
+renders the same pages on any day: a refresh that finds nothing new writes
+nothing, and a synced vault does not churn overnight.
+
+**What stays in the web UI.** Obsidian shows the data; it cannot answer a
+question. Ask with `lifecrm ask "..."`, the web UI's Ask page or `lifecrm
+voice`. Every page in the vault says so. The day digest and the start pages
+carry the same `observations` uuids an answer cites, so a cited answer leads
+back into the vault.
+
+**On the phone**, Obsidian is a phone GUI with no server to keep running.
+Sync the vault folder ([below](#opening-the-vault)) and the phone shows what
+the laptop last refreshed.
+
 ## Making the vault
 
+With `[obsidian] vault` set, `lifecrm obsidian refresh` makes it (and every
+write after that keeps it current). Without it, name the folder each time.
 Dry-run first, as with every import:
 
 ```
@@ -61,6 +136,10 @@ to run at any time, including while an intake or import is running.
 ## What is in it
 
 ```
+Home.md                      the start page (see "Obsidian as your main GUI")
+People.md                    everyone, most recent contact first
+Health.md                    the last 30 days: sensor series, journal, workouts, nutrients
+Sources.md                   connectors, handles waiting to be linked, import runs
 Index.md                     recent days, people, places, ... and what was imported
 Loops.md                     open tasks and plans, soonest due first
 Journal/2026/2026-07-27.md   one note per day
@@ -155,6 +234,10 @@ both ignore it):
   `Jake (person)` and `jake (topic)` — then, if that still collides, by the
   start of their uuid. Links keep showing the real name
   (`[[Jake (person)|Jake]]`), and the real name is added to `aliases`.
+- `Index`, `Loops`, `Home`, `People`, `Health`, `Sources` and the journal
+  dates are taken: a topic called "Health" becomes `Health (topic).md`, so
+  `[[Health]]` always means the start page. That holds whether or not an
+  export writes the start pages.
 
 The same database always produces byte-identical files (LF line endings,
 stable ordering, no timestamps), so a re-export with nothing new writes
@@ -162,9 +245,25 @@ nothing and a synced vault does not churn.
 
 ## Opening the vault
 
-**Windows or Mac:** install Obsidian, choose *Open folder as vault*, and pick
-the `--out` folder. Opening it creates Obsidian's own `.obsidian` settings
-folder, which the export never touches.
+**Windows or Mac:** install Obsidian, then run `lifecrm obsidian open` (or
+`lifecrm open` with `[gui] main = "obsidian"`). It refreshes the vault and
+hands Obsidian an `obsidian://open?path=<vault>/Home.md` link, the same
+as clicking one, which opens the vault on its Home note. Obsidian opens
+links only into vaults it already knows. `obsidian open` reads Obsidian's
+own vault list (`obsidian.json`: `%APPDATA%\obsidian\` on Windows,
+`~/Library/Application Support/obsidian/` on a Mac — read, never written).
+The first time, when the folder is not on that list, it opens Obsidian's
+vault manager (`obsidian://choose-vault`) instead and says the one step to
+take there: choose *Open folder as vault* and pick the vault folder. On
+Windows that manager opens behind your other windows, as a second Obsidian
+window on the taskbar. From then on it goes straight to Home. A vault kept
+as a subfolder of a vault Obsidian already knows counts as known, since
+Obsidian opens the note in the vault that holds it. Opening the folder creates Obsidian's own
+`.obsidian` settings folder, which the export never touches.
+
+To keep Home one click away inside Obsidian, bookmark it (the core
+Bookmarks plugin: *Bookmark* in the note's menu). Obsidian also reopens the
+notes that were open when you closed it.
 
 Use its own vault, or a subfolder of an existing one. In a shared vault two
 things can collide with the export's names: a note of your own with the same
@@ -199,8 +298,11 @@ generated.
 
 ## Re-running it on a schedule
 
-The export is idempotent and only writes what changed, so it is safe to run
-after every intake or once a night.
+With `[obsidian] vault` set (and `auto_refresh` left on) there is nothing to
+schedule. Every write goes through the CLI, and the CLI refreshes the vault
+after each one. A schedule is for `auto_refresh = false`, or for a vault you
+export without naming it in `config.toml`. The export is idempotent and only
+writes what changed, so it is safe to run after every intake or once a night.
 
 **Windows** (Task Scheduler, as your own user; run from the project root):
 
@@ -253,3 +355,32 @@ Access (System Settings › Privacy & Security), since iCloud Drive and
 A failed export exits non-zero with one `error:` line — for example when a
 note is locked by a sync client mid-write; the next run picks up where it
 stopped.
+
+## Checked with Obsidian itself
+
+The tests replace the hand-off, so the suite never launches Obsidian. On
+the Windows laptop, with Obsidian 1.14.5 (2026-10-24), the real hand-off was
+checked:
+
+- [x] Obsidian's vault list is `%APPDATA%\obsidian\obsidian.json`,
+      `{"vaults": {<id>: {"path": ..., "ts": ..., "open": ...}}}`. That is
+      the shape `obsidian open` reads.
+- [x] On a folder Obsidian does not know, `obsidian://choose-vault` opens
+      the vault manager. It opens as a second Obsidian window, **behind**
+      the terminal, because Windows does not let a background app take the
+      focus. Find it on the taskbar. Opening the folder from inside a vault
+      that is already open (the vault name at the bottom left → *Manage
+      vaults…* → *Open folder as vault*) works the same.
+- [x] On a vault Obsidian knows, `lifecrm obsidian open` (`os.startfile`
+      on `obsidian://open?path=…\Home.md`) opens it on `Home.md`. The
+      window reads "Home - vault - Obsidian".
+
+Still to check, on a Mac and on a synced vault:
+
+- [ ] The same three steps on a Mac (`open` on the link, the vault list
+      under `~/Library/Application Support/obsidian/`).
+- [ ] The sparklines (`▁▂▃▄▅▆▇█` in a code span) line up in Obsidian's
+      font on both machines.
+- [ ] With the vault in OneDrive / iCloud Drive, a refresh while the sync
+      client holds a note warns once and the next write's refresh catches
+      up.

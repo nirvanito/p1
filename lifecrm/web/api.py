@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 
 from .. import recall
 from ..config import Config
+from ..domain import days as days_mod
 from ..domain.util import DomainError, is_iso_date
 
 
@@ -735,14 +736,15 @@ def _contact_clause(today_iso: str, they_sent: str,
 _RECENT_FIRST = "o.journal_date DESC, o.started_at DESC, o.id DESC"
 
 
-def people(conn: sqlite3.Connection, cfg: Config) -> dict:
+def people(conn: sqlite3.Connection, cfg: Config, as_of: str | None = None) -> dict:
     """Every person entity with when you were last in touch, across both
     tiers: the latest journal entry mentioning them and the latest text,
     connected call or past calendar event naming one of their handles. The
-    owner is not a contact and is left out."""
+    owner is not a contact and is left out. `as_of` stands in for today
+    (the Obsidian vault's start pages use the database's last change)."""
     roots = _merged_into_map(conn)
     owners = _owner_entities(conn, cfg, roots)
-    now = today(cfg)
+    now = as_of or today(cfg)
     persons = [p for p in conn.execute(
         "SELECT id, uuid, name, notes FROM entities WHERE type='person' "
         "AND status='active' ORDER BY name COLLATE NOCASE") if p["id"] not in owners]
@@ -967,10 +969,11 @@ def _card_text(value) -> str:
 
 # ---------------------------------------------------------------- loops
 
-def loops(conn: sqlite3.Connection, cfg: Config) -> dict:
+def loops(conn: sqlite3.Connection, cfg: Config, as_of: str | None = None) -> dict:
     """Open tasks and plans, overdue first, then by due date, then oldest;
-    plus the most recently closed, so finishing things is visible too."""
-    now = today(cfg)
+    plus the most recently closed, so finishing things is visible too.
+    `as_of` stands in for today, as in people()."""
+    now = as_of or today(cfg)
     open_rows = _entry_rows(
         conn, "k.name IN ('task','plan') AND e.status='active' AND e.closed_at IS NULL",
         (), order="(e.due_at IS NULL), e.due_at, e.journal_date, e.id")
@@ -994,11 +997,15 @@ def loops(conn: sqlite3.Connection, cfg: Config) -> dict:
 
 # ---------------------------------------------------------------- sources
 
-def imports(conn: sqlite3.Connection, cfg: Config) -> dict:
+def imports(conn: sqlite3.Connection, cfg: Config,
+            now: datetime | None = None) -> dict:
     """Where the data came from and how fresh it is: importer runs, the
     unresolved-handle queue, each connector's newest record, health files,
-    and the journal's own sources."""
-    out = {"today": today(cfg), "imports": [], "unresolved_handles": 0,
+    and the journal's own sources. `now` (UTC) stands in for the clock, as
+    people()'s `as_of` does for today."""
+    as_of = (recall.local_today(cfg).isoformat() if now is None else
+             days_mod.journal_date_for(now, cfg.timezone, cfg.day_rollover_hour))
+    out = {"today": as_of, "imports": [], "unresolved_handles": 0,
            "unresolved": [], "connectors": [], "connectors_error": None}
     if _observed(conn):
         for r in conn.execute(
@@ -1017,7 +1024,7 @@ def imports(conn: sqlite3.Connection, cfg: Config) -> dict:
             "FROM entity_handles WHERE entity_id IS NULL AND ignored=0 "
             "AND observation_count > 0 ORDER BY observation_count DESC, kind, value "
             "LIMIT 10")]
-        out["connectors"], out["connectors_error"] = _connector_freshness(conn)
+        out["connectors"], out["connectors_error"] = _connector_freshness(conn, now)
     out["health_files"] = [dict(r) for r in conn.execute(
         "SELECT source_file, COUNT(*) AS records, COUNT(DISTINCT metric) AS metrics, "
         "MIN(journal_date) AS first_date, MAX(journal_date) AS last_date, "
@@ -1039,9 +1046,11 @@ def imports(conn: sqlite3.Connection, cfg: Config) -> dict:
     return out
 
 
-def _connector_freshness(conn: sqlite3.Connection) -> tuple[list[dict], str | None]:
+def _connector_freshness(conn: sqlite3.Connection, now: datetime | None = None
+                         ) -> tuple[list[dict], str | None]:
     """Each discovered connector: active rows per stream, newest record, last
-    run, and whether it has gone stale by its own `stale_after_days`."""
+    run, and whether it has gone stale by its own `stale_after_days`
+    (counted back from `now`, the clock unless given)."""
     try:
         from ..connectors import base as conn_base
         reg = conn_base.registry()
@@ -1053,7 +1062,7 @@ def _connector_freshness(conn: sqlite3.Connection) -> tuple[list[dict], str | No
     runs = {r["connector"]: r for r in conn.execute(
         "SELECT connector, MAX(started_at) AS last_run, COUNT(*) AS runs "
         "FROM imports WHERE status='applied' GROUP BY connector")}
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     out = []
     for name in sorted(reg):
         c = reg[name]
@@ -1078,9 +1087,11 @@ def _connector_freshness(conn: sqlite3.Connection) -> tuple[list[dict], str | No
 # ---------------------------------------------------------------- health
 
 def health(conn: sqlite3.Connection, cfg: Config, days: int = 14,
-           end: str | None = None) -> dict:
+           end: str | None = None, as_of: str | None = None) -> dict:
     """Daily series for the key sensor metrics and the journal's own
-    measures over the last `days` days — the same series `ask` cites."""
+    measures over the last `days` days — the same series `ask` cites.
+    `as_of` stands in for today (the nutrient report leaves today's
+    still-open diary out), as in people()."""
     if not 1 <= days <= 366:
         raise ValueError(f"days must be 1-366, got {days}")
     hi = date.fromisoformat(parse_date(end, "end")) if end else recall.local_today(cfg)
@@ -1110,7 +1121,7 @@ def health(conn: sqlite3.Connection, cfg: Config, days: int = 14,
                          "latest": latest.get(m)} for m in missing if m in latest],
             "latest": latest,
             "workouts": _workouts_per_week(conn, hi, days),
-            "nutrition": _nutrition_summary(conn, cfg, window, days)}
+            "nutrition": _nutrition_summary(conn, cfg, window, days, as_of=as_of)}
 
 
 _MIN_WEEKS = 8
@@ -1156,7 +1167,7 @@ def _workouts_per_week(conn: sqlite3.Connection, end: date, days: int) -> dict |
 
 
 def _nutrition_summary(conn: sqlite3.Connection, cfg: Config, window: dict,
-                       days: int) -> dict | None:
+                       days: int, as_of: str | None = None) -> dict | None:
     """`lifecrm nutrients` over the page's window (lifecrm/nutrients.py, the
     same report): which nutrients came out low, borderline or high against
     the reference intakes, with the report's not-medical-advice line. None
@@ -1174,7 +1185,7 @@ def _nutrition_summary(conn: sqlite3.Connection, cfg: Config, window: dict,
         return {"error": str(e), "disclaimer": nutrients.DISCLAIMER}
     report = nutrients.build_report(conn, cfg, {
         "start": window["start"], "end": window["end"], "days": days,
-        "label": window["label"], "today": today(cfg)}, prof=prof)
+        "label": window["label"], "today": as_of or today(cfg)}, prof=prof)
     items = {x["key"]: x for x in report["nutrients"]}
     uuid_of = {}
     ids = sorted({i for x in report["nutrients"]

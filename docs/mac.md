@@ -352,6 +352,23 @@ the evening, `/log` at the Mac. Commands are the same on both systems; on a
 Mac the prefix is `.venv/bin/python -m lifecrm` (Windows:
 `.venv\Scripts\python.exe -m lifecrm`), run from the repo folder.
 
+To look at it all in Obsidian instead of the web UI, set the vault inside
+iCloud Drive's Obsidian folder. The iPhone's Obsidian lists vaults stored
+there:
+
+```toml
+[gui]
+main = "obsidian"
+[obsidian]
+vault = "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/LifeCRM"
+```
+
+Then run `.venv/bin/python -m lifecrm open`. The first time, choose *Open
+folder as vault* in Obsidian's vault manager. After that, every write
+refreshes the vault, and the phone shows what the Mac last wrote
+([obsidian.md](obsidian.md#obsidian-as-your-main-gui)). If the refresh warns
+"Operation not permitted", give the venv's python Full Disk Access (§5).
+
 Updates: `git pull`; if it brings a new file under `lifecrm/migrations/`, run
 `.venv/bin/python -m lifecrm migrate` (it snapshots first). Restoring onto
 another machine: [restore.md](restore.md) — `/bin/bash scripts/restore.sh
