@@ -1,4 +1,31 @@
-# Life CRM
+# Life CRM — Windows laptop + Android (Samsung)
+
+> **This is the Windows + Android version (branch `windows-android`).** It is
+> set up for a Windows laptop with a Samsung Galaxy, or another Android phone.
+> The code is the same on every branch; the other setups have their own:
+> `windows-iphone` (Windows laptop + iPhone) and `mac-iphone` (MacBook +
+> iPhone). `main` holds all three.
+
+## Quick start (Windows + Android)
+
+1. **Install:** in PowerShell, from this folder, run
+   `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`. It sets up
+   Python 3.12, whisper and `config.toml`. The full walk-through is
+   [docs/windows-android.md](docs/windows-android.md).
+2. **See it working first:**
+   `powershell -ExecutionPolicy Bypass -File scripts\demo.ps1` builds the
+   Windows + Android demo and opens the web UI. Add `-Gui obsidian` to open
+   it in Obsidian instead.
+3. **The phone:** [docs/android.md](docs/android.md) covers Samsung Voice
+   Recorder → Autosync for OneDrive → `OneDrive\VoiceJournal\inbox`, quick
+   notes, call recordings (only the ones you pick), Health Connect, and SMS
+   Backup & Restore.
+4. **Background jobs:**
+   `powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1`
+   (intake, doctor, backup, weekly review).
+5. **Every day:** run `/log` in Claude Code and review the diff. Ask with
+   `/ask <question>`. Browse in the web UI (`lifecrm serve`) or Obsidian
+   (`lifecrm open --gui obsidian`).
 
 A personal life database that runs on your own computer. You talk to your
 phone (one evening note, quick dictated thoughts during the day). Local
