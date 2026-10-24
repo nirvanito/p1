@@ -1,15 +1,15 @@
 # One command to see the whole thing on Windows: build the demo instance
-# (Windows laptop + Samsung phone, synthetic data only) and open the web UI -
-# or, with -Gui obsidian, its Obsidian vault.
-#   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1            # android combo
-#   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Combo windows-iphone
+# (Windows laptop + iPhone on this branch, synthetic data only) and open the
+# web UI - or, with -Gui obsidian, its Obsidian vault.
+#   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1            # windows-iphone combo
+#   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Combo android
 #   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Combo iphone
 #   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Rebuild
 #   powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Gui obsidian
 # Nothing here touches data\ — the demo lives in demo\<combo>\ (gitignored).
 
 param(
-    [ValidateSet("android", "iphone", "windows-iphone")] [string] $Combo = "android",
+    [ValidateSet("android", "iphone", "windows-iphone")] [string] $Combo = "windows-iphone",
     [switch] $Rebuild,
     [switch] $NoServe,
     [int] $Port = 8765,

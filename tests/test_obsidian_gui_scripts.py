@@ -18,12 +18,13 @@ def _built(repo, combo):
 @needs_powershell
 def test_demo_ps1_opens_the_vault_with_gui_obsidian(tmp_path):
     repo = _ps_fake_repo(tmp_path)
-    _built(repo, "android")
+    _built(repo, "windows-iphone")                  # this branch's default demo
     record = tmp_path / "calls.jsonl"
     done = _demo_ps(repo, tmp_path, record, "-Gui", "obsidian")
     assert done.returncode == 0, done.stdout + done.stderr
     (call,) = _records(record)
-    assert call["argv"][0] == "--root" and _same(call["argv"][1], repo / "demo" / "android")
+    assert call["argv"][0] == "--root" and \
+        _same(call["argv"][1], repo / "demo" / "windows-iphone")
     assert call["argv"][2:] == ["obsidian", "open"]
 
 

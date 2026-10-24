@@ -188,13 +188,14 @@ def test_demo_ps1_builds_from_the_scripts_folder(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     (call,) = _records(record)
     assert _same(call["cwd"], repo)
-    assert call["argv"] == ["demo", "--combo", "android"]
+    # the windows-iphone branch's default: its own setup's demo
+    assert call["argv"] == ["demo", "--combo", "windows-iphone"]
 
 
 @needs_powershell
 def test_demo_ps1_lets_serve_open_the_browser_once_it_listens(tmp_path):
     repo = _ps_fake_repo(tmp_path)
-    marker = repo / "demo" / "android" / ".lifecrm-demo"
+    marker = repo / "demo" / "windows-iphone" / ".lifecrm-demo"
     marker.parent.mkdir(parents=True)
     marker.write_text("lifecrm demo\n", encoding="utf-8")
     text = (repo / "scripts" / "demo.ps1").read_text(encoding="utf-8")
@@ -204,7 +205,7 @@ def test_demo_ps1_lets_serve_open_the_browser_once_it_listens(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     (call,) = _records(record)
     assert call["argv"][-4:] == ["serve", "--port", "8899", "--open"]
-    assert _same(call["argv"][1], repo / "demo" / "android")
+    assert _same(call["argv"][1], repo / "demo" / "windows-iphone")
 
 
 # ================================================================ bash
