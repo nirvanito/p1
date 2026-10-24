@@ -1,4 +1,29 @@
-# Life CRM
+# Life CRM — MacBook + iPhone
+
+> **This is the Mac + iPhone version (branch `mac-iphone`).** It is set up
+> for a MacBook with an iPhone. The code is the same on every branch; the
+> other setups have their own: `windows-android` (Windows laptop + Android)
+> and `windows-iphone` (Windows laptop + iPhone). `main` holds all three.
+
+## Quick start (Mac + iPhone)
+
+1. **Install:** in Terminal, from this folder, run
+   `/bin/bash scripts/setup.sh`. It sets up Python 3.12, whisper and
+   `config.toml`. The full walk-through is [docs/mac.md](docs/mac.md),
+   including the Full Disk Access your terminal needs for Messages, call
+   history, Contacts, Photos and Notes.
+2. **See it working first:** `/bin/bash scripts/demo.sh` builds the
+   Mac + iPhone demo and opens the web UI. Add `--gui obsidian` to open it
+   in Obsidian instead.
+3. **The phone:** [docs/iphone.md](docs/iphone.md) covers the two Shortcuts
+   ("Log My Day" for audio, "Quick Note" for dictated text) saving to iCloud
+   Drive, and call recordings (only the ones you pick).
+4. **Background jobs:** `/bin/bash scripts/install-tasks.sh` (launchd:
+   intake, doctor, backup, weekly review).
+5. **Every day:** run `/log` in Claude Code and review the diff. Ask with
+   `/ask <question>`. Browse in the web UI (`lifecrm serve`) or Obsidian
+   (`lifecrm open --gui obsidian`). An iPhone sees the vault when it is in
+   iCloud Drive's Obsidian folder.
 
 A personal life database that runs on your own computer. You talk to your
 phone (one evening note, quick dictated thoughts during the day). Local
