@@ -15,8 +15,8 @@ data and AI chats. These imported records are
 cited, never asserted as fact. You then ask questions on the command line,
 on a web page on your phone, or by voice, and every fact in the answer
 carries the id of the row it came from. There is no recurring cost: whisper
-and the optional Ollama model run locally, extraction uses an existing
-Claude Code subscription, and everything else is local code.
+runs locally, extraction and written answers (`/log`, `/ask`) use an
+existing Claude Code subscription, and everything else is local code.
 
 ```
 phone ─ voice note / quick note ─> cloud folder (OneDrive or iCloud Drive)
@@ -254,6 +254,7 @@ lifecrm ask "what did Jake text me about the lake"
 lifecrm ask "how much did I spend at Veracruz"
 lifecrm ask "what are my open tasks"
 lifecrm ask --history                        # recent questions; unanswered ones show what to import next
+lifecrm ask "<question>" --check answer.md   # check a written answer's citations (what /ask runs)
 lifecrm serve                                # web UI at http://127.0.0.1:8765/
 lifecrm serve --host 0.0.0.0 --token random  # from the phone on the same Wi-Fi
 lifecrm voice --text "how did I sleep last week"   # needs nothing installed
@@ -268,10 +269,14 @@ max 7.75 h 2026-07-26) [M1]. Related entries: 2026-07-27 Gym: push day [E1].
 `M#` is a statistic, `E#` a confirmed entry, `P#` a transcript passage and
 `O#` an imported record, always shown as "(observed, not confirmed)".
 Retrieval is deterministic: rules parse the question and SQL answers it over
-a read-only connection, so it works with no model installed. With
-[Ollama](docs/ask.md) running, a local 7-8B model phrases the same evidence.
-Its answer is checked sentence by sentence against what it cites, and it is
-replaced by the deterministic answer if a number or date does not match.
+a read-only connection, so it works with no model installed. For a written
+answer, type **`/ask <question>`** in Claude Code: Claude writes it from the
+same evidence with your own Claude account, and `ask --check` checks it
+sentence by sentence against what it cites before you see it
+([docs/ask.md](docs/ask.md)). An offline alternative, a local Ollama model,
+is off by default (`[ask] enabled = true` turns it on). Its answers get the
+same check, and the deterministic answer replaces one whose numbers or
+dates do not match.
 `serve` is a viewer over a snapshot, with no capture and no edit button
 ([docs/web.md](docs/web.md)). `voice` answers aloud and turns "note …" into a
 quick note for intake and `/log`. It never writes the database
@@ -492,8 +497,9 @@ guide ends with what to check on the first real run:
   [Uber](docs/rides.md).
 - Front ends: [voice](docs/voice.md#not-yet-verified-on-real-hardware) (a
   real microphone, the wake word, speakers). For the web UI on a real phone,
-  see [web.md](docs/web.md#on-your-phone). No real Ollama model has been
-  tried with `ask`'s citation check. `lifecrm obsidian open` has been checked
+  see [web.md](docs/web.md#on-your-phone). No real Ollama model (optional,
+  off by default) has been tried with `ask`'s citation check, and `/ask` has
+  not yet been run on your real data. `lifecrm obsidian open` has been checked
   with Obsidian on Windows, not yet on a Mac
   ([obsidian.md](docs/obsidian.md#checked-with-obsidian-itself)).
 

@@ -706,9 +706,34 @@ text. `--no-log` skips recording. The question is logged after the answer is
 printed. If the database is locked or its schema is behind the code, you
 still get the answer, with a warning that it was not logged.
 
-## Adding a local model (optional)
+## Prose answers: /ask in Claude Code
 
-Prose answers need a local model server. On Windows:
+`lifecrm ask` on its own gives the deterministic answer. For a written
+answer, ask in Claude Code with **`/ask <question>`**. The skill
+(`.claude/skills/ask/SKILL.md`) runs `ask --json --no-llm` for the evidence,
+and Claude writes the answer from that evidence only, with every factual
+sentence citing its id. It then checks the answer before showing it:
+
+```bash
+.venv\Scripts\python.exe -m lifecrm ask "when did I last talk to Jake" --check answer.md
+```
+
+`--check` re-runs the same retrieval (no model, not logged) and puts the
+written answer through the check a local model's answer gets:
+`check_citations`, sentence by sentence. Exit 1 names any id the evidence
+does not hold, any sentence whose numbers or dates are missing from the
+evidence it cites, and an answer that cites nothing. `ok: 3 id(s) cited ...`
+is a pass, and `--json` gives the same as `{"ok", "citations", "problems"}`.
+
+This uses your own Claude account in an interactive session: no API key,
+nothing metered. The evidence reaches Claude the same way your journal
+already does when `/log` reads it.
+
+## Adding a local model (optional, off by default)
+
+For offline prose (`ask` itself, the web UI's Ask page, voice), a local
+model can phrase the evidence instead. Nothing calls one unless you turn it
+on, and the setup guides leave it out. On Windows:
 
 ```bash
 winget install Ollama.Ollama
@@ -720,8 +745,8 @@ On a Mac, `brew install ollama` or the app from ollama.com. Then:
 ollama pull llama3.1:8b
 ```
 
-That is all — `ask` detects it automatically. To use a different one, set it
-in `config.toml`:
+and turn it on in `config.toml` (`enabled` is the switch; the other values
+shown are the defaults):
 
 ```toml
 [ask]
@@ -737,8 +762,8 @@ max_transactions = 10
 max_loops = 10
 ```
 
-`enabled = false` turns the model off permanently. `--no-llm` turns it off for
-one question. `--model NAME` uses another pulled model for one question. If
+`enabled = false` (the default) never calls a model. `--no-llm` turns it off
+for one question. `--model NAME` uses another pulled model for one question. If
 the model is unreachable or times out, you get the deterministic answer
 instead. The command never fails because a model is having a bad day. A typo
 in a number above falls back to its default.

@@ -149,7 +149,7 @@ host = "127.0.0.1"         # 0.0.0.0 for the phone
 port = 8765
 token = ""                 # "random" makes one up at each start
 log_questions = true       # record questions in recall_log
-use_llm = true             # let a running local model phrase answers
+use_llm = true             # let a local model phrase answers, when [ask] enabled = true
 model = "small"            # whisper model for voice questions
 refresh_seconds = 3        # how often to check the live DB for changes
 dashboard_port = 8001      # where `lifecrm dashboard` listens, for the link

@@ -56,9 +56,11 @@ duplicate_duration_tolerance_sec = 5
 
 [ask]
 # `lifecrm ask` retrieves cited evidence deterministically and always answers
-# without a model. If a local Ollama server is running, it also phrases that
-# evidence in prose — nothing leaves the machine, nothing is metered.
-enabled = true                     # false = never call a model, evidence only
+# without a model. Prose answers come from /ask in Claude Code (your own
+# Claude account, interactive, checked with `ask --check`). A local model is
+# the optional offline route: set enabled = true and run Ollama
+# (docs/ask.md) — nothing leaves the machine, nothing is metered.
+enabled = false                    # true = let a local Ollama model phrase answers
 endpoint = "http://localhost:11434"
 model = "llama3.1:8b"              # must be pulled: ollama pull llama3.1:8b
 timeout_sec = 120
@@ -212,7 +214,7 @@ max_loops = 10                     # open tasks/plans listed
 # port = 8765
 # token = ""                        # "random" makes one up at each start
 # log_questions = true              # record questions in recall_log
-# use_llm = true                    # let a running local model phrase answers
+# use_llm = true                    # let a local model phrase answers, when [ask] enabled = true
 # model = "small"                   # whisper model for voice questions in the page
 # refresh_seconds = 3               # how often to check the live DB for changes
 # dashboard_port = 8001             # where `lifecrm dashboard` listens, for the link
@@ -220,7 +222,7 @@ max_loops = 10                     # open tasks/plans listed
 
 # [voice]                           # `lifecrm voice` (docs/voice.md); extras: requirements-voice.txt
 # model = "small"                   # whisper model for voice turns: latency first
-# use_llm = true                    # phrase answers with the [ask] model when Ollama is running
+# use_llm = true                    # phrase answers with the [ask] model, when [ask] enabled = true
 # speak = true
 # voice = "Samantha"                # say -v name (macOS) or SAPI voice name (Windows)
 # max_spoken_chars = 400

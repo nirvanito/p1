@@ -762,19 +762,29 @@ def ask(
                                  help="List the 20 most recent questions instead"),
     no_log: bool = typer.Option(False, "--no-log",
                                 help="Do not record the question in recall_log"),
+    check: str = typer.Option(None, "--check", metavar="ANSWER_FILE",
+                              help="Check a written answer's citations against "
+                                   "this question's evidence (what /ask runs); "
+                                   "exit 1 on a problem"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """Ask a question about your own life data, answered with citations.
 
     Retrieval is deterministic: the window and metrics are parsed by rule and
-    every fact comes back with an evidence id you can verify. A local model
-    (Ollama, if installed) only phrases that evidence — it is never a source
-    of facts, and its citations are checked against the evidence before you
-    see them. Without a model you still get the statistics and the sources.
+    every fact comes back with an evidence id you can verify. Prose answers
+    come from /ask in Claude Code, checked with --check; a local model
+    (Ollama, off unless [ask] enabled = true) is the offline alternative. It
+    only phrases the evidence — never a source of facts — and its citations
+    are checked before you see them. Without either you get the statistics
+    and the sources.
     """
     from . import recall as recall_mod
     from .domain import recall as recall_domain
     cfg = _cfg()
+
+    if check is not None:
+        _ask_check(cfg, question, days, Path(check), as_json)
+        return
 
     if history:
         conn = _conn(cfg, readonly=True)
@@ -857,6 +867,58 @@ def ask(
             typer.echo(f"warning: question not logged ({e})", err=True)
         finally:
             wconn.close()
+
+
+def _ask_check(cfg: Config, question: str | None, days: int | None,
+               answer_file: Path, as_json: bool) -> None:
+    """`ask "<question>" --check FILE`: re-run the same deterministic
+    retrieval (never a model, never logged) and check the written answer
+    against it, sentence by sentence — recall.check_citations, the check a
+    local model's answer gets. Exit 1 names every id the evidence does not
+    hold, every sentence whose numbers or dates its cited evidence lacks,
+    and an answer that cites nothing."""
+    from . import recall as recall_mod
+    if not question or not question.strip():
+        _fail('--check needs the question it answers: lifecrm ask "<question>" '
+              '--check <file>')
+    if days is not None and days < 1:
+        _fail(f"--days must be at least 1 (got {days})")
+    try:
+        text = answer_file.read_text(encoding="utf-8-sig")
+    except OSError as e:
+        _fail(f"cannot read {answer_file} ({e.strerror or e})")
+    if not text.strip():
+        _fail(f"{answer_file} is empty")
+    conn = _conn(cfg, readonly=True)
+    try:
+        result = recall_mod.answer(conn, cfg, question, days=days, use_llm=False)
+    except sqlite3.Error as e:
+        _fail(f"retrieval failed: {e}")
+    except (ValueError, OverflowError) as e:
+        _fail(f"could not read that question: {e}")
+    finally:
+        conn.close()
+    bundle = result["evidence"]
+    cit = recall_mod.check_citations(text, bundle)
+    problems = ([f"cites {i}, which this question's evidence does not hold"
+                 for i in cit["unknown"]]
+                + [f"unsupported — its numbers or dates are not in the evidence it "
+                   f"cites: {s}" for s in cit["unsupported"]]
+                + (["cites no evidence at all — every factual sentence needs an id"]
+                   if cit["uncited"] else []))
+    if as_json:
+        _echo_json({"ok": not problems, "citations": cit, "problems": problems,
+                    "window": bundle["window"]})
+    elif problems:
+        for p in problems:
+            typer.echo(f"problem: {p}")
+    else:
+        w = bundle["window"]
+        typer.echo(f"ok: {len(cit['cited'])} id(s) cited, every one in the evidence "
+                   f"({w['label']}, {w['start']} to {w['end']}): "
+                   + ", ".join(cit["cited"]))
+    if problems:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------- dashboard

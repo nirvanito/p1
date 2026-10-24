@@ -1,4 +1,11 @@
-"""Optional local model, talked to over plain HTTP.
+"""Optional local model, talked to over plain HTTP — off unless turned on.
+
+Prose answers normally come from the /ask skill in Claude Code, written by
+the owner's own Claude account from the same evidence and checked by
+`lifecrm ask --check`. This file is the offline alternative for `ask`, the
+web UI and voice: `[ask] enabled = true` with a model pulled. Left at the
+default, nothing here is ever called and every answer is the deterministic
+one.
 
 Ollama exposes an HTTP API on localhost, so this needs no SDK and no
 dependency beyond the standard library — which keeps the promise the project
@@ -104,7 +111,10 @@ def config(cfg) -> dict:
             "model": str(ask.get("model") or DEFAULT_MODEL),
             "timeout": _number(ask.get("timeout_sec"), 120),
             "num_ctx": int(_number(ask.get("num_ctx"), DEFAULT_NUM_CTX)),
-            "enabled": _flag(ask.get("enabled"), True),
+            # Off unless the owner turns it on: prose answers come from /ask in
+            # Claude Code (their own Claude account); a local model is the
+            # optional offline route.
+            "enabled": _flag(ask.get("enabled"), False),
             "local": is_loopback(endpoint)}
 
 
@@ -146,7 +156,9 @@ def status(cfg, model: str | None = None) -> dict:
     wanted = model or c["model"]
     warning = remote_warning(c)
     if not c["enabled"]:
-        return {"available": False, "reason": "disabled in config ([ask] enabled=false)",
+        return {"available": False,
+                "reason": ("no local model ([ask] enabled is off — the default; "
+                           "/ask in Claude Code writes prose answers)"),
                 "model": wanted, "models": [], "warning": None}
     try:
         data = _get_json(f"{c['endpoint']}/api/tags", timeout=3)

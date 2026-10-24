@@ -115,7 +115,8 @@ ids (`[M1]`) and snippet markers (`« »`) are dropped, ISO dates become
 `max_spoken_chars` (default 400) stops at a sentence boundary with "The rest
 is on screen."
 
-With a local model running, `[voice] use_llm = true` (the default) lets it
+With a local model turned on (`[ask] enabled = true`, off by default — docs/ask.md)
+and running, `[voice] use_llm = true` (the default) lets it
 phrase the evidence, exactly as in `ask`. One difference: a model answer
 that cites nothing at all is kept by `ask` (with a warning on stderr), but
 the voice loop uses the deterministic answer instead. Whenever the model's
@@ -169,7 +170,7 @@ All optional:
 [voice]
 model = "small"              # whisper model for voice turns (latency first)
 vad_filter = true
-use_llm = true               # phrase answers with the [ask] local model if it is running
+use_llm = true               # phrase answers with the [ask] local model, when [ask] enabled = true
 # llm_model = "llama3.1:8b"  # override [ask] model for voice only
 speak = true                 # false = print only (same as --no-speak)
 # voice = "Samantha"         # system voice name (say -v / SAPI voice)

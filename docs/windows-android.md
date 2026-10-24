@@ -318,9 +318,10 @@ lifecrm dashboard                 # http://127.0.0.1:8001/-/dashboards  (Ctrl+C 
 lifecrm voice --text "when did I last talk to Mom"   # voice.md for the microphone
 ```
 
-`ask` answers from the database with citations, deterministically. With a
-local model it also phrases the answer — `winget install Ollama.Ollama`, then
-`ollama pull llama3.1:8b`; nothing leaves the laptop ([ask.md](ask.md)).
+`ask` answers from the database with citations, deterministically. For a
+written answer, type `/ask <question>` in Claude Code. Claude writes it from
+the same evidence and `ask --check` verifies every citation
+([ask.md](ask.md)). No local model to install.
 The dashboard serves a snapshot taken at start, never the live database;
 rerun it to refresh.
 

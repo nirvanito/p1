@@ -299,7 +299,7 @@ def test_only_this_machine_counts_as_local(endpoint, local):
 
 
 def test_a_remote_endpoint_is_warned_about_every_time(conn, cfg, monkeypatch):
-    cfg.ask.update({"endpoint": "http://192.168.1.50:11434"})
+    cfg.ask.update({"enabled": True, "endpoint": "http://192.168.1.50:11434"})
     monkeypatch.setattr(llm, "_get_json", lambda url, timeout: {
         "models": [{"name": "llama3.1:8b"}]})
     monkeypatch.setattr(llm, "_post_json", lambda url, payload, timeout: {
@@ -317,7 +317,7 @@ def test_a_remote_endpoint_is_warned_about_every_time(conn, cfg, monkeypatch):
 
 def test_config_flags_and_overrides_are_read_strictly(cfg, monkeypatch):
     cfg.ask.update({"enabled": "false"})
-    assert llm.status(cfg)["reason"].startswith("disabled in config")
+    assert llm.status(cfg)["reason"].startswith("no local model ([ask] enabled is off")
     cfg.ask.update({"enabled": True, "timeout_sec": "soon", "num_ctx": "16384"})
     c = llm.config(cfg)
     assert c["timeout"] == 120 and c["num_ctx"] == 16384
@@ -364,7 +364,8 @@ def test_requests_never_go_through_a_proxy(cfg, monkeypatch):
             monkeypatch.setenv(var, "http://127.0.0.1:9")
         for var in ("NO_PROXY", "no_proxy"):
             monkeypatch.delenv(var, raising=False)
-        cfg.ask.update({"endpoint": f"http://127.0.0.1:{server.server_port}"})
+        cfg.ask.update({"enabled": True,
+                        "endpoint": f"http://127.0.0.1:{server.server_port}"})
         assert llm.status(cfg)["available"] is True
         assert llm.answer(cfg, "[M1] sleep", "how did I sleep") == "You slept 7 h [M1]."
         sent = _FakeOllama.seen[-1]

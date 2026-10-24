@@ -81,7 +81,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   retract/restore --source-file; Apple keys look like
   `export.zip#2026-10-22T02:30:00Z`),
   dashboard (Datasette over a snapshot — never the live db),
-  ask (cited answers; deterministic retrieval, optional local model),
+  ask (cited answers; deterministic retrieval; `--check FILE` verifies a
+  written answer's citations; optional local model, off by default),
   serve (read-only web UI over a snapshot; --host 0.0.0.0 for the phone,
   --token random; writes only recall_log, --no-log),
   open (the main GUI: `[gui] main` = web | obsidian, --gui for once),
@@ -117,7 +118,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   prefix>), version. The global `--root DIR` (or `LIFECRM_ROOT`) runs any
   command against another project root (a demo, a restore target).
 - Skills (`.claude/skills/`, mirrored identically in `.agents/skills/`):
-  /log, /review-week, /advise <lens>.
+  /log, /ask <question> (Claude writes a cited answer from `ask --json
+  --no-llm`, verified by `ask "<q>" --check <file>` before it is shown),
+  /review-week, /advise <lens>.
 
 ## Layout
 
@@ -238,7 +241,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   citable id: M# statistics, E# confirmed entries, P# transcript passages,
   O# observed records (always rendered "(observed, not confirmed)").
   Relationships are cited through the entry that established them. The
-  local model (Ollama over stdlib HTTP, optional, never via a proxy) may only
+  local model (Ollama over stdlib HTTP, optional and OFF unless `[ask]
+  enabled = true` — /ask in Claude Code is the prose route; never via a
+  proxy) may only
   PHRASE that evidence — never supply facts; evidence is fenced as data, and
   its citations are checked per sentence (a number or date not in the cited
   evidence -> the deterministic answer replaces it, `model_rejected`).
