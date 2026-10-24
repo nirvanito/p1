@@ -98,8 +98,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [nutrition] sex/age: low/borderline/high, the foods behind each, every
   number cited; --days/--start/--end, --sex/--age, --json; read-only, no
   model, "not medical advice" first),
-  demo (--combo android|iphone|both, --dir, --anchor, --force, --with-audio,
-  --no-ask, --json),
+  demo (--combo android|iphone|windows-iphone|both|all — both = android +
+  iphone; --dir, --anchor, --force, --with-audio, --no-ask, --json),
   observe/connectors/imports/handles (observed tier — bulk imports that never
   pass the review gate; dry-run by default; connectors ai_chat, android_sms,
   browser, calendar, contacts, email, finance, fitness, google_activity,
@@ -273,6 +273,12 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export
   generator per source in `demo/sources/`, run through the real CLI into a
   `.lifecrm-demo`-marked root (never the project's data). `docs/demo.md`.
+  `persona.DEVICE` gives each combo its phone OS, computer OS and browser
+  (read through has_iphone / on_mac / on_windows / browser); the
+  windows-iphone combo's texts are `demo/sources/ios_messages.py`, an
+  unencrypted Apple Devices backup (`sms.db` via
+  `mac_messages.write_messages_db`, the phone's `AddressBook.sqlitedb`), and
+  it has no calls (unencrypted backups leave them out).
 - `dashboards/dashboards.yml` — dashboards-as-code (datasette-dashboards
   0.8.x: charts MUST be explicit vega-lite specs — the bar/line/pie
   shorthands in the plugin's master README don't exist in 0.8.x and fail
@@ -283,9 +289,14 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   time series ORDER BY newest first; observed queries keep status='active';
   message joins walk observation_participants CROSS JOIN observations; the
   file stays ASCII.
-- `docs/windows-android.md` (combo 1: Windows laptop + Samsung) and
-  `docs/mac.md` (combo 2: MacBook + iPhone) — the setups end to end;
+- `docs/windows-android.md` (combo 1: Windows laptop + Samsung),
+  `docs/mac.md` (combo 2: MacBook + iPhone) and `docs/windows-iphone.md`
+  (combo 3: Windows laptop + iPhone) — the setups end to end;
   `docs/iphone.md` + `docs/android.md` — standalone phone capture guides.
+  On GitHub (nirvanito/p1, private) each setup is a branch —
+  windows-android, windows-iphone, mac-iphone — that differs from main only
+  in its README quick start and demo defaults; fixes land on main and are
+  merged into the three.
 - Deferred (do not build unless asked): ActivityWatch screen time,
   comparison questions ("this month vs last"), Samsung `.qta` recordings.
   Bidirectional/live Obsidian sync is forbidden without an explicit decision

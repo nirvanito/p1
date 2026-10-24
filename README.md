@@ -43,10 +43,10 @@ the real importers. Then it opens the web UI. It never touches `data/`.
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1     # Windows
-powershell -ExecutionPolicy Bypass -File scripts\demo.ps1      #   -Combo iphone, -Rebuild, -NoServe, -Port, -Gui obsidian
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1      #   -Combo iphone|windows-iphone, -Rebuild, -NoServe, -Port, -Gui obsidian
 
 /bin/bash scripts/setup.sh                                     # Mac
-/bin/bash scripts/demo.sh                                      #   --combo android, --rebuild, --no-serve, --port, --gui obsidian
+/bin/bash scripts/demo.sh                                      #   --combo android|windows-iphone, --rebuild, --no-serve, --port, --gui obsidian
 ```
 
 It builds `demo/<combo>/` (gitignored) and serves it at
@@ -78,16 +78,19 @@ lifecrm obsidian open              # refresh the vault, open Obsidian on Home
 lifecrm obsidian refresh [--dry-run]
 ```
 
-## Two supported setups
+## Three supported setups
 
 | setup | full guide | phone capture |
 |---|---|---|
 | Windows laptop + Samsung Galaxy (Android) | [docs/windows-android.md](docs/windows-android.md) | [docs/android.md](docs/android.md): Samsung Voice Recorder + Autosync for OneDrive, Never sleeping apps, Health Connect export, SMS Backup & Restore, Contacts `.vcf`, Google Takeout |
+| Windows laptop + iPhone | [docs/windows-iphone.md](docs/windows-iphone.md) | [docs/iphone.md](docs/iphone.md): the two Shortcuts saving to OneDrive; texts from an unencrypted Apple Devices backup, contacts and calendar from iCloud.com, photos from iCloud for Windows; no calls (Apple keeps them out of unencrypted backups), no Apple Notes |
 | MacBook + iPhone | [docs/mac.md](docs/mac.md) | [docs/iphone.md](docs/iphone.md): two Apple Shortcuts ("Log My Day" for audio, "Quick Note" for dictated text) saving to iCloud Drive |
 
-Other pairings work too. An iPhone with a Windows PC saves to OneDrive
-([docs/iphone.md](docs/iphone.md)). [docs/new-machine.md](docs/new-machine.md)
-is the short version of both setups, for anyone setting up their own copy.
+On GitHub each setup is also its own branch — `windows-android`,
+`windows-iphone`, `mac-iphone` — with a quick start for it at the top of its
+README; `main` holds all three. The code is the same on every branch.
+[docs/new-machine.md](docs/new-machine.md) is the short version of the
+setups, for anyone setting up their own copy.
 
 **Commands.** `lifecrm …` below is short for `.venv\Scripts\python.exe -m
 lifecrm …` on Windows and `.venv/bin/python -m lifecrm …` on a Mac, run from
@@ -471,6 +474,9 @@ guide ends with what to check on the first real run:
 - Windows + Samsung: [windows-android.md](docs/windows-android.md#verification-checklist-once-on-the-real-devices),
   [android.md](docs/android.md#verify-it-on-the-real-phone-once). Recorder
   file names, Autosync, One UI menus, the Firewall prompt for phone access.
+- Windows + iPhone: [windows-iphone.md](docs/windows-iphone.md#verification-checklist-once-on-the-real-devices).
+  The Apple Devices backup folder, Shortcuts saving to OneDrive, the
+  iCloud.com exports and iCloud for Windows' photo folder.
 - Mac + iPhone: [mac.md](docs/mac.md#what-has-not-been-verified-on-a-real-mac),
   [iphone.md](docs/iphone.md#verification-checklist-run-on-the-real-phone).
   Nothing has run on a real Mac yet: launchd, Full Disk Access, iCloud

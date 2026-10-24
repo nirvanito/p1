@@ -309,6 +309,17 @@ def test_a_backup_without_call_history_points_at_the_mac(cfg, tmp_path):
         ic.scan(make_backup(tmp_path), cfg)
 
 
+@pytest.mark.parametrize("platform,says", [
+    ("darwin", "Read it from this Mac instead"),
+    ("win32", "on Windows there is no other source of an iPhone's calls"),
+])
+def test_where_else_to_find_calls_depends_on_the_computer(cfg, tmp_path, monkeypatch,
+                                                         platform, says):
+    monkeypatch.setattr(ic.sys, "platform", platform)
+    with pytest.raises(DomainError, match=says):
+        ic.scan(make_backup(tmp_path), cfg)
+
+
 def test_an_encrypted_backup_is_refused(cfg, tmp_path):
     with pytest.raises(DomainError, match="encrypted backup"):
         ic.scan(make_backup(tmp_path, encrypted=True), cfg)

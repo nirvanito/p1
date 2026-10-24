@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -116,11 +117,16 @@ def _resolve(target: Path) -> dict:
             files = im.backup_files(target, {"store": CALL_HISTORY,
                                              "contacts": im.ADDRESS_BOOK})
             if files["store"] is None:
+                # On a Mac there is another source; on Windows there is none.
+                where = ("Read it from this Mac instead (FaceTime > Calls from "
+                         "iPhone)" if sys.platform == "darwin" else
+                         "With a Mac, read it from the Mac (FaceTime > Calls from "
+                         "iPhone); on Windows there is no other source of an "
+                         "iPhone's calls")
                 raise DomainError(
                     f"{target.name} is an iPhone backup with no call history "
                     f"(Library/CallHistoryDB/{STORE}) — Apple keeps call history "
-                    f"out of unencrypted backups. Read it from the Mac instead "
-                    f"(FaceTime > Calls from iPhone): see docs/calls.md")
+                    f"out of unencrypted backups. {where}: see docs/calls.md")
             books = [(files["contacts"], files["contacts_wal"])] \
                 if files["contacts"] else []
             return {"store": files["store"], "store_wal": files["store_wal"],

@@ -21,6 +21,8 @@ cloud_backups_dir = 'C:\Users\<you>\OneDrive\VoiceJournal\backups'  # OneDrive o
 # archive_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/archive'
 # cloud_backups_dir = '~/Library/Mobile Documents/com~apple~CloudDocs/VoiceJournal/backups'
 # OneDrive on a Mac lives at '~/Library/CloudStorage/OneDrive-Personal/VoiceJournal/...'.
+# A Windows PC with an iPhone uses the OneDrive folders above (the iPhone's
+# Shortcuts save into OneDrive) — docs/windows-iphone.md.
 
 [time]
 timezone = "America/Chicago"       # IANA name; recorded per source at ingest
@@ -109,6 +111,8 @@ max_loops = 10                     # open tasks/plans listed
 # [connectors.contacts]             # docs/contacts.md
 # path = "~/Downloads/contacts.vcf" # a .vcf, a folder of them, a Takeout zip, or an AddressBook folder
 # account = "google:you@example.com"   # set only when you want a vCard's deletions mirrored
+# Windows + iPhone: path = "~/Downloads/iCloud Contacts.vcf" (icloud.com › Contacts › Export vCard),
+#                   account = "icloud:you@icloud.com"
 
 # [connectors.notes]                # docs/notes.md
 # path = "~/OneDrive/Notes/Obsidian"   # a folder, a Keep Takeout zip, or NoteStore.sqlite
@@ -130,6 +134,7 @@ max_loops = 10                     # open tasks/plans listed
 
 # [connectors.photos]               # docs/photos.md
 # path = "~/OneDrive/Pictures/Samsung Gallery"   # a folder, a Google Photos Takeout, or a Photos library
+#                                   # Windows + iPhone: "~/Pictures/iCloud Photos/Photos" (iCloud for Windows)
 # include_hidden = false            # Mac Photos library: also import the Hidden album
 
 # [connectors.location]             # docs/location.md
