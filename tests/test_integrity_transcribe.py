@@ -90,6 +90,9 @@ def _audio(cfg, name="2026-07-20 21.30.00.m4a"):
 
 @pytest.fixture
 def canned(monkeypatch):
+    # No real whisper model either: loading one needs it downloaded, which a
+    # clean machine (CI runs offline) has not done.
+    monkeypatch.setattr(tr, "load_model", lambda cfg, model_name=None: object())
     monkeypatch.setattr(tr, "transcribe_audio",
                         lambda cfg, model, path, initial_prompt=None: dict(FAKE_RESULT))
 

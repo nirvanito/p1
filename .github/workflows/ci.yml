@@ -21,9 +21,10 @@ jobs:
       PYTHONUTF8: "1"
       HF_HUB_OFFLINE: "1"
     steps:
-      - uses: actions/checkout@v4
+      # v5 / v6 run on Node 24; v4 / v5 were Node 20, which GitHub retired.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip

@@ -293,18 +293,17 @@ class WebApp:
 
     def host_allowed(self, name: str) -> bool:
         """A Host name that is this machine's own, or listed in [web]
-        allowed_hosts. Looked up on first need: getfqdn can stall for seconds
-        on Windows, and most requests carry an IP address."""
+        allowed_hosts. Never a DNS lookup: getfqdn's reverse lookup stalled
+        a request past 20 seconds on a Mac with no reverse DNS entry (and for
+        seconds on Windows). The machine's own name, short and with .local
+        (what Bonjour and phones use), is what a person types; anything else
+        goes in allowed_hosts."""
         if name in self._extra_hosts:
             return True
         if self._own_names is None:
             hostname = socket.gethostname().lower()
-            names = {hostname, f"{hostname}.local"}
-            try:
-                names.add(socket.getfqdn().lower())
-            except OSError:
-                pass
-            self._own_names = names
+            short = hostname.split(".")[0]
+            self._own_names = {hostname, f"{hostname}.local", short, f"{short}.local"}
         return name in self._own_names
 
     # ---- probes, cached so the status call stays cheap

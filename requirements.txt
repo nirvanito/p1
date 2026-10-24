@@ -1,4 +1,9 @@
 faster-whisper>=1.1
+# faster-whisper 1.2.1 (the newest, 2026-10) still passes av.open(...,
+# metadata_errors=...), which PyAV 19 removed: every transcription fails with
+# "unexpected keyword argument 'metadata_errors'". Stay below 19 until a
+# faster-whisper release drops it. (Found by CI on a clean machine.)
+av>=11,<19
 typer>=0.12
 tzdata>=2024.1
 pytest>=8.0

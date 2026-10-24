@@ -236,9 +236,13 @@ def test_doctor_is_quiet_about_a_healthy_capture_side(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- the real scripts
 
+# The .ps1 scripts are the Windows setup's: they run .venv\Scripts\python.exe
+# under Task Scheduler. A Mac can have PowerShell too (GitHub's macOS runners
+# do), but its venv is .venv/bin — there the bash scripts are the ones tested.
 POWERSHELL = shutil.which("powershell.exe") or shutil.which("powershell")
-needs_powershell = pytest.mark.skipif(POWERSHELL is None,
-                                      reason="Windows PowerShell not available")
+needs_powershell = pytest.mark.skipif(
+    sys.platform != "win32" or POWERSHELL is None,
+    reason="the .ps1 scripts are Windows-only (Windows PowerShell + .venv\\Scripts)")
 
 
 def _project(tmp_path, *, toml: str | None = None) -> Path:
