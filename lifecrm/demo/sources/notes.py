@@ -6,6 +6,7 @@
   iphone    the Mac's Apple Notes store, NoteStore.sqlite, as iCloud syncs
             the iPhone's notes into it: Core Data tables, note bodies as
             gzip-compressed protobuf in ZICNOTEDATA.ZDATA
+  windows-iphone  none: Apple Notes has no export on Windows (ValueError)
 
 Both carry the same four persona notes — the gift ideas for Maya, the board
 deck outline, the book list, and the Bled packing list written on the trip
@@ -88,6 +89,10 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
         return _keep_takeout(Path(dest), anchor)
     if combo == "iphone":
         return _notestore(Path(dest), anchor)
+    if combo == "windows-iphone":
+        raise ValueError("Apple Notes has no export on Windows — icloud.com shows "
+                         "notes but cannot export them, and there is no NoteStore "
+                         "without a Mac (docs/windows-iphone.md)")
     raise ValueError(f"notes has no sample for combo '{combo}' "
                      f"(expected one of {', '.join(persona.COMBOS)})")
 

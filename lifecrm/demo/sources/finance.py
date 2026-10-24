@@ -13,6 +13,8 @@ combo's real download format:
             (purchases positive, Apple's own Merchant column), plus a
             credit union checking account's Quicken download — a v1 SGML
             QFX, the dialect most banks still serve.
+  windows-iphone  the same files: Wallet exports the Apple Card CSVs on the
+            iPhone (saved to OneDrive), and the QFX is the bank's website's.
 
 The purchases go on the card and the paychecks into checking, the way a
 real person's statements split them. No card payment between the two is
@@ -225,7 +227,9 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
     point `lifecrm observe finance` at."""
     if combo == "android":
         return _android(Path(dest), anchor)
-    if combo == "iphone":
+    if combo in ("iphone", "windows-iphone"):
+        # Apple Card's CSVs come off the iPhone's Wallet whichever computer
+        # they are saved for; the credit union's QFX is a website download.
         return _iphone(Path(dest), anchor)
     raise ValueError(f"finance has no sample for combo '{combo}' "
                      f"(expected one of {', '.join(persona.COMBOS)})")

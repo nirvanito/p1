@@ -22,6 +22,9 @@ from lifecrm.doctor import run_checks
 from test_doctor import _seed
 
 ANCHOR = date(2026, 10, 21)
+# The combos that have a notes export: a Windows laptop with an iPhone has
+# none (Apple Notes does not export on Windows — test_demo_windows_iphone.py).
+NOTES_COMBOS = tuple(c for c in persona.COMBOS if c != "windows-iphone")
 
 
 def _by_title(scan):
@@ -35,13 +38,13 @@ def _apply(conn, scan):
     return result
 
 
-@pytest.mark.parametrize("combo", persona.COMBOS)
+@pytest.mark.parametrize("combo", NOTES_COMBOS)
 def test_every_persona_note_comes_through(tmp_path, cfg, combo):
     scan = notes.scan(sample.write_sample(tmp_path, ANCHOR, combo), cfg)
     assert set(_by_title(scan)) == {n.title for n in persona.NOTES}
 
 
-@pytest.mark.parametrize("combo", persona.COMBOS)
+@pytest.mark.parametrize("combo", NOTES_COMBOS)
 def test_the_bled_packing_list_is_dated_on_the_trip_four_years_back(tmp_path, cfg, combo):
     rec = _by_title(notes.scan(sample.write_sample(tmp_path, ANCHOR, combo), cfg))[
         "Bled packing list"]
@@ -94,7 +97,7 @@ def test_the_gift_list_was_last_edited_the_night_of_mayas_birthday(tmp_path, cfg
         persona.local_dt(ANCHOR, (birthday - ANCHOR).days, "21:30"))
 
 
-@pytest.mark.parametrize("combo", persona.COMBOS)
+@pytest.mark.parametrize("combo", NOTES_COMBOS)
 def test_a_sample_is_deterministic_for_its_anchor(tmp_path, cfg, combo):
     a = sample.write_sample(tmp_path / "a", ANCHOR, combo)
     b = sample.write_sample(tmp_path / "b", ANCHOR, combo)
@@ -105,14 +108,14 @@ def test_a_sample_is_deterministic_for_its_anchor(tmp_path, cfg, combo):
     assert again.read_bytes() == b.read_bytes()
 
 
-@pytest.mark.parametrize("combo", persona.COMBOS)
+@pytest.mark.parametrize("combo", NOTES_COMBOS)
 def test_the_sample_moves_with_the_anchor(tmp_path, cfg, combo):
     later = date(2027, 3, 1)
     rec = _by_title(notes.scan(sample.write_sample(tmp_path, later, combo), cfg))["Book list"]
     assert rec["journal_date"] == persona.day(later, -16).isoformat()
 
 
-@pytest.mark.parametrize("combo", persona.COMBOS)
+@pytest.mark.parametrize("combo", NOTES_COMBOS)
 def test_a_sample_applies_once_and_reapplies_as_identical(tmp_path, cfg, conn, combo):
     target = sample.write_sample(tmp_path, ANCHOR, combo)
     first = _apply(conn, notes.scan(target, cfg))
@@ -136,7 +139,7 @@ def test_both_samples_into_one_database_stay_apart(tmp_path, cfg, conn):
     assert n == 2 * len(persona.NOTES)
 
 
-@pytest.mark.parametrize("combo", persona.COMBOS)
+@pytest.mark.parametrize("combo", NOTES_COMBOS)
 def test_doctor_stays_green_after_a_notes_import_on_a_logged_day(tmp_path, cfg, conn, combo):
     _seed(conn, cfg)
     assert run_checks(conn, cfg)["failures"] == 0, "seed itself is not green"

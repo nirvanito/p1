@@ -22,6 +22,9 @@ lives only in iCloud now (described, not on disk).
 Beyond persona.THREADS, the story details added here — the photo Alex sent
 Jake from Veracruz, Jake's message from the trip, the edit, the deleted
 message — agree with the persona's journal and photos.
+
+The database writer (`write_messages_db`) is shared with the ios_messages
+sample, which puts the same rows into an iPhone backup's sms.db.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ import sqlite3
 import struct
 import uuid
 import zlib
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -266,15 +270,33 @@ def _story(anchor: date) -> list[dict]:
 
 
 def write_sample(dest: Path, anchor: date, combo: str) -> Path:
-    if combo != "iphone":
+    if combo not in persona.COMBOS or not persona.on_mac(combo):
         raise ValueError(f"mac_messages has no sample for combo '{combo}' — a Mac's "
                          f"Messages database belongs to the MacBook + iPhone setup")
     library = Path(dest) / "Library"
     messages_dir = library / "Messages"
     messages_dir.mkdir(parents=True, exist_ok=True)
     write_address_book(library / "Application Support")
-    db = messages_dir / "chat.db"
-    for stale in (db, db.with_name("chat.db-wal"), db.with_name("chat.db-shm")):
+
+    def save_attachment(rel: str, data: bytes) -> None:
+        path = messages_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    return write_messages_db(messages_dir / "chat.db", anchor, "Messages", save_attachment)
+
+
+def write_messages_db(db: Path, anchor: date, folder: str,
+                      save_attachment: Callable[[str, bytes], None]) -> Path:
+    """The persona's texts as a Messages database at `db`: a Mac's chat.db,
+    or the iPhone's sms.db (the same schema, the same GUIDs).
+
+    `folder` is the Library folder the database's attachment paths name —
+    'Messages' on a Mac (~/Library/Messages/Attachments/...), 'SMS' on the
+    phone (~/Library/SMS/Attachments/...). `save_attachment(rel, data)` keeps
+    a file this device still holds; `rel` is relative to that folder.
+    """
+    for stale in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
         if stale.exists():
             stale.unlink()
 
@@ -363,15 +385,13 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
                 rel = f"{_attachment_dir(att_guid)}/{fname}"
                 data = tiny_png(rgb)
                 if on_disk:
-                    path = messages_dir / rel
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(data)
+                    save_attachment(rel, data)
                 cur = conn.execute(
                     "INSERT INTO attachment (guid, created_date, filename, uti, mime_type, "
                     "transfer_state, is_outgoing, transfer_name, total_bytes) "
                     "VALUES (?, ?, ?, 'public.png', 'image/png', 5, ?, ?, ?)",
                     (att_guid, apple_ns(r["dt"]) // 1_000_000_000,
-                     f"~/Library/Messages/{rel}", int(from_me), fname, len(data)))
+                     f"~/Library/{folder}/{rel}", int(from_me), fname, len(data)))
                 conn.execute("INSERT INTO message_attachment_join VALUES (?, ?)",
                              (message_id, cur.lastrowid))
         conn.commit()

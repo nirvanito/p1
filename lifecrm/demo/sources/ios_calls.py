@@ -10,6 +10,9 @@ for `observe ios_calls`.
 
 Numbers are spelled the way the phone records them: incoming calls in E.164,
 outgoing ones as dialled (ten digits), so the import's normalization shows.
+
+The Windows + iPhone combo has no sample: there the only copy is an iPhone
+backup, and an unencrypted one has no call history (docs/calls.md).
 """
 
 from __future__ import annotations
@@ -45,6 +48,12 @@ _AREA = {"512": "Austin, TX", "210": "San Antonio, TX"}
 
 
 def write_sample(dest: Path, anchor: date, combo: str) -> Path:
+    if combo in persona.COMBOS and persona.has_iphone(combo) and not persona.on_mac(combo):
+        # Windows + iPhone: the only copy within reach is an iPhone backup, and
+        # Apple keeps CallHistory.storedata for encrypted backups only.
+        raise ValueError("an unencrypted iPhone backup carries no call history — Apple "
+                         "keeps it for encrypted backups, which cannot be read; the "
+                         "Windows + iPhone setup has no calls to import (docs/calls.md)")
     if combo != "iphone":
         raise ValueError(f"ios_calls has no sample for combo '{combo}' — iPhone call "
                          f"history belongs to the MacBook + iPhone setup")

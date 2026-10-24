@@ -16,6 +16,8 @@ history.
              export is the same one; it has no Chrome folder (Safari is this
              iPhone's browser) and no Assistant (Siri's requests never reach
              Google).
+  'windows-iphone'  the iphone combo's HTML Takeout: Edge is this laptop's
+             browser (no Chrome folder either) and Siri the phone's assistant.
 
 The activity follows the persona: the passport renewal searched the evening
 it went on the list, Veracruz's menu right after Jake's text, Mom's knee
@@ -189,13 +191,16 @@ def entries(anchor: date, combo: str) -> list[_Entry]:
         _Entry("YouTube", _when(anchor, -20, None, "22:41:09"), "Watched",
                "a video that has been removed", None, ("YouTube watch history",)),
     ]
-    if combo == "android":
+    if persona.browser(combo) == "chrome":          # Chrome history in My Activity
         out += [
             _Entry("Chrome", _when(anchor, -27, None, "10:14:02"), "Visited",
                    "Customer story slide template - Google Slides",
                    "https://docs.google.com/presentation/d/1Q4bOaRdDeCkDemoAlexRivera/edit"),
             _Entry("Chrome", _when(anchor, -23, None, "08:20:11"), "Visited",
                    "Passport renewal - USPS", "https://www.usps.com/international/passports.htm"),
+        ]
+    if not persona.has_iphone(combo):               # Siri's requests never reach Google
+        out += [
             _Entry("Assistant", _when(anchor, -6, None, "06:59:31"), "Said",
                    "set an alarm for 6:15 AM",
                    "https://www.google.com/search?q=set+an+alarm+for+6%3A15+AM",

@@ -28,13 +28,14 @@ def note_filename(anchor: date, offset: int, note: persona.Note, combo: str,
                   ext: str = ".txt") -> str:
     """What the phone names the file.
 
-    iPhone (the Shortcuts recipe in docs/iphone.md): the JOURNAL date (clock
-    minus the rollover hours), the clock time with dots, and the UTC offset.
-    Android (an automation app or a recorder with a date-time template):
-    the calendar date and the clock time, no offset.
+    iPhone (the Shortcuts recipe in docs/iphone.md), whichever computer it
+    saves for: the JOURNAL date (clock minus the rollover hours), the clock
+    time with dots, and the UTC offset. Android (an automation app or a
+    recorder with a date-time template): the calendar date and the clock
+    time, no offset.
     """
     dt = persona.local_dt(anchor, offset, note.time)
-    if combo == "iphone":
+    if persona.has_iphone(combo):
         journal_day = (dt - timedelta(hours=ROLLOVER_HOUR)).date()
         return f"{journal_day.isoformat()} {dt:%H.%M.%S} {dt:%z}{ext}"
     return f"{dt:%Y-%m-%d %H.%M.%S}{ext}"

@@ -23,7 +23,9 @@ An encrypted backup cannot be read without its password, and the connector
 refuses it (see `docs/texts.md`). An unencrypted backup without the file is
 refused with a pointer here rather than an empty import. So in practice:
 **MacBook + iPhone reads calls from the Mac.** On Windows with an iPhone
-there is usually no call history to read.
+there is usually no call history to read: the backup is the only copy
+within reach ([windows-iphone.md](windows-iphone.md), whose demo skips calls
+for this reason).
 
 ## Importing
 

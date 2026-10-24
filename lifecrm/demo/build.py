@@ -45,9 +45,9 @@ ROLLOVER_HOUR = 5
 
 # Import order matters a little: the address book first, so handles get the
 # contact-card names before texts/calls/calendar reference them.
-SOURCE_ORDER = ("contacts", "android_sms", "mac_messages", "ios_calls", "whatsapp",
-                "calendar", "ai_chat", "notes", "finance", "photos", "location",
-                "browser", "health_connect", "apple_health")
+SOURCE_ORDER = ("contacts", "android_sms", "mac_messages", "ios_messages", "ios_calls",
+                "whatsapp", "calendar", "ai_chat", "notes", "finance", "photos",
+                "location", "browser", "health_connect", "apple_health")
 HEALTH_SOURCES = {"health_connect", "apple_health"}
 
 
@@ -210,8 +210,15 @@ def _owner_age(anchor: date) -> int | None:
     return anchor.year - me.birth_year - (1 if before_birthday else 0)
 
 
+def _sync_root(root: Path, combo: str) -> Path:
+    """The demo's journal folder: iCloud Drive with a Mac, OneDrive with a
+    Windows laptop (the iPhone's Shortcuts save there through the OneDrive
+    app, docs/windows-iphone.md)."""
+    return root / ("iCloud Drive" if persona.on_mac(combo) else "OneDrive") / "VoiceJournal"
+
+
 def _config_text(root: Path, combo: str, anchor: date | None = None) -> str:
-    sync = root / ("iCloud Drive" if combo == "iphone" else "OneDrive") / "VoiceJournal"
+    sync = _sync_root(root, combo)
     me = persona.OWNER
     age = _owner_age(anchor or default_anchor())
     lines = [
@@ -241,11 +248,10 @@ def _config_text(root: Path, combo: str, anchor: date | None = None) -> str:
         'compute_type = "int8"',
         'language = "en"',
         "",
+        # Answers are deterministic and cited; prose comes from /ask in
+        # Claude Code. The optional local model stays off (docs/ask.md).
         "[ask]",
-        "enabled = true",
-        'endpoint = "http://localhost:11434"',
-        'model = "llama3.1:8b"',
-        "timeout_sec = 120",
+        "enabled = false",
         "",
         # Whose reference intakes `lifecrm nutrients` compares against: Alex
         # is a man (his mother calls him "mijo"), born in persona.OWNER's year.
@@ -340,7 +346,7 @@ class DemoBuilder:
             encoding="utf-8")
         (self.root / "config.toml").write_text(
             _config_text(self.root, self.combo, self.anchor), encoding="utf-8")
-        sync = self.root / ("iCloud Drive" if self.combo == "iphone" else "OneDrive") / "VoiceJournal"
+        sync = _sync_root(self.root, self.combo)
         for sub in ("inbox", "inbox-text", "archive", "backups"):
             (sync / sub).mkdir(parents=True, exist_ok=True)
         self.sync = sync

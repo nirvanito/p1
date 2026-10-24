@@ -20,6 +20,11 @@ OneDrive/VoiceJournal/inbox             <- the same, for a Windows PC
 OneDrive/VoiceJournal/inbox-text
 ```
 
+**With a Windows PC**, [windows-iphone.md](windows-iphone.md) is the whole
+setup end to end: the OneDrive folders, the scheduled tasks, and how the
+iPhone's other data reaches Windows (an Apple Devices backup for the texts,
+iCloud.com for contacts and calendar, iCloud for Windows for photos).
+
 On a Mac, `lifecrm configure` creates the iCloud Drive folders for you (see
 [mac.md](mac.md)); iCloud Drive is also the one place a Shortcut's **Save
 File** can always pin a fixed folder, so the file-picker caveat below does
@@ -182,7 +187,10 @@ Shortcuts saving into iCloud Drive or the OneDrive file provider. Please run:
   it to the Home Screen ([web.md, "On your phone"](web.md#on-your-phone)).
 - **The phone's other data** comes in on the computer. On a Mac that means
   Messages, calls, Contacts, Photos, Notes and Apple Health
-  ([mac.md](mac.md)). Safari history syncs into the Mac's Safari through
-  iCloud ([browser.md](browser.md)). Apple's own location history cannot be
+  ([mac.md](mac.md)); on a Windows PC, texts from an iPhone backup,
+  contacts, calendar, photos and Apple Health, but no calls and no Notes
+  ([windows-iphone.md](windows-iphone.md)). Safari history syncs into the
+  Mac's Safari through iCloud, and nowhere on Windows
+  ([browser.md](browser.md)). Apple's own location history cannot be
   exported; only Google Maps Timeline on the iPhone can
   ([location.md](location.md)).

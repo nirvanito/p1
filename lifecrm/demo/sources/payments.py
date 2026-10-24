@@ -9,6 +9,7 @@ hand it over.
   iphone    MacBook + iPhone: the same Venmo statements, plus a PayPal
             activity download ('Download.CSV', UTF-8 with a BOM, every cell
             quoted) where Mom sends gas money for the family dinner.
+  windows-iphone  Venmo statements only, as on the Windows + Samsung laptop.
 
 Both are websites, so the phone does not decide which exists; the split
 just lets each combo show something the other does not. Each combo's files

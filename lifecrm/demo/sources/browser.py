@@ -10,6 +10,11 @@
              history_items and history_visits (Core Data seconds since 2001,
              a title per visit) and the bookkeeping tables. Pages opened on
              the iPhone arrive through iCloud, marked origin 1.
+  'windows-iphone'  Microsoft Edge on the Windows laptop: the same Chromium
+             `History` database under AppData/Local/Microsoft/Edge/User Data/
+             Default, Edge's own pages as edge://. Safari on an iPhone syncs
+             nowhere on Windows, so the phone's pages here are the ones
+             opened in Edge on the iPhone, synced in.
 
 The story is the persona's six weeks: the board deck template the morning
 Priya hands it over, then the deck itself on the days the journal works on it
@@ -44,15 +49,20 @@ _MENU = "https://www.veracruzallnatural.com/menu"
 _FLIGHTS = "https://www.google.com/travel/flights?q=Flights%20to%20LJU%20from%20AUS"
 _OVERSTORY = "https://en.wikipedia.org/wiki/The_Overstory"
 _USPS = "https://www.usps.com/international/passports.htm"
-_PDF = {"android": "file:///C:/Users/alex/Downloads/Q4-board-deck-final.pdf",
-        "iphone": "file:///Users/alex/Downloads/Q4-board-deck-final.pdf"}
+_PDF = {"windows": "file:///C:/Users/alex/Downloads/Q4-board-deck-final.pdf",
+        "macos": "file:///Users/alex/Downloads/Q4-board-deck-final.pdf"}
+# Where each Chromium browser keeps its profile under AppData\Local, and the
+# sync id of the phone its synced visits came from.
+_CHROMIUM = {"chrome": ("Google", "Chrome", "c2a7e9f0-galaxy-s24-demo"),
+             "edge": ("Microsoft", "Edge", "5e0b4d21-iphone-15-pro-demo")}
 
 
 def _inbox(n: int) -> str:
     return f"Inbox ({n}) - {persona.OWNER.email} - Gmail"
 
 
-# (offset, local 'HH:MM', url, title, how, only on this combo)
+# (offset, local 'HH:MM', url, title, how, only in this browser family:
+# 'chromium' (Chrome, Edge — Edge's own pages are edge://) or 'safari')
 #   how: typed (address bar), link, bookmark, search (typed into the address
 #   bar as a search), reload, phone (opened on the phone, synced in),
 #   frame (a page's embedded frame), failed (did not load)
@@ -76,12 +86,12 @@ _VISITS = (
      "warehouse robotics market size - Google Search", "search", None),
     (-34, "20:05", _DECK, _DECK_TITLE, "bookmark", None),
     (-33, "00:40", _DECK, _DECK_TITLE, "bookmark", None),     # still the -34 journal day
-    (-30, "21:00", "chrome://settings/", "Settings", "typed", "android"),
+    (-30, "21:00", "chrome://settings/", "Settings", "typed", "chromium"),
     (-29, "10:00", _DECK, _DECK_TITLE, "bookmark", None),
     (-27, "09:05", _GMAIL, _inbox(6), "typed", None),
     (-27, "20:15", _DECK, _DECK_TITLE, "bookmark", None),
     (-27, "20:40", _DECK, _DECK_TITLE, "reload", None),
-    (-25, "12:08", "https://tools.usps.com/rcas.htm", None, "failed", "iphone"),
+    (-25, "12:08", "https://tools.usps.com/rcas.htm", None, "failed", "safari"),
     (-25, "12:10", "https://tools.usps.com/rcas.htm", "USPS Passport Appointment Scheduler",
      "typed", None),
     (-24, "07:55", _USPS, "Passports | USPS", "typed", None),
@@ -96,7 +106,7 @@ _VISITS = (
     (-16, "14:24", "https://www.slovenia.info/en/stories/lake-bled-itinerary",
      "Lake Bled itinerary: five days in the Julian Alps | Slovenia", "link", None),
     (-16, "14:26", "https://www.youtube.com/embed/demoBledLakeDrone", None, "frame",
-     "android"),
+     "chromium"),
     (-16, "14:31", "https://claude.ai/chat/7d3b2c1a-5e8f-4a6b-9c0d-b1ed0demo016",
      "Return trip to Lake Bled - Claude", "typed", None),
     (-16, "14:50", "https://www.blejski-grad.si/en/", "Bled Castle | Opening hours and tickets",
@@ -111,7 +121,7 @@ _VISITS = (
     (-5, "08:50", _GMAIL, _inbox(27), "typed", None),
     (-5, "22:35", _GOOGLE + "how+to+get+back+into+the+gym+after+a+break",
      "how to get back into the gym after a break - Google Search", "search", None),
-    (-3, "22:00", "chrome://history/", "History", "typed", "android"),
+    (-3, "22:00", "chrome://history/", "History", "typed", "chromium"),
     (-2, "13:08", _FLIGHTS, "Austin to Ljubljana | Google Flights", "typed", None),
     (-2, "13:15", _FLIGHTS, "Austin to Ljubljana | Google Flights", "reload", None),
     (-2, "19:52", "https://www.vilabled.com/en/", "Vila Bled | Lakeside hotel on Lake Bled",
@@ -131,18 +141,25 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
     if combo not in persona.COMBOS:
         raise ValueError(f"browser has no sample for combo '{combo}' "
                          f"(expected one of: {', '.join(persona.COMBOS)})")
+    browser = persona.browser(combo)
+    family = "safari" if browser == "safari" else "chromium"
     visits = []
     for off, hhmm, url, title, how, only in _VISITS:
-        if only is not None and only != combo:
+        if only is not None and only != family:
             continue
+        if url == "PDF":
+            url = _PDF["macos" if persona.on_mac(combo) else "windows"]
+        elif browser == "edge" and url.startswith("chrome://"):
+            url = "edge://" + url[len("chrome://"):]       # Edge's own pages
         unix = int(persona.local_dt(anchor, off, hhmm).timestamp())
-        visits.append((unix, _PDF[combo] if url == "PDF" else url, title, how))
+        visits.append((unix, url, title, how))
     visits.sort(key=lambda v: v[0])
     dest = Path(dest)
-    if combo == "android":
-        out = dest / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default" / "History"
+    if family == "chromium":
+        vendor, product, phone_guid = _CHROMIUM[browser]
+        out = dest / "AppData" / "Local" / vendor / product / "User Data" / "Default" / "History"
         _fresh(out)
-        _write_chrome(out, visits)
+        _write_chrome(out, visits, phone_guid)
     else:
         out = dest / "Library" / "Safari" / "History.db"
         _fresh(out)
@@ -184,7 +201,7 @@ CREATE INDEX keyword_search_terms_index1 ON keyword_search_terms (keyword_id, no
 _PHONE_GUID = "c2a7e9f0-galaxy-s24-demo"
 
 
-def _write_chrome(out: Path, visits: list) -> None:
+def _write_chrome(out: Path, visits: list, phone_guid: str = _PHONE_GUID) -> None:
     conn = sqlite3.connect(out)
     try:
         conn.executescript(_CHROME_SCHEMA)
@@ -214,7 +231,7 @@ def _write_chrome(out: Path, visits: list) -> None:
                 "segment_id, visit_duration, originator_cache_guid, is_known_to_sync) "
                 "VALUES (?, ?, ?, 0, ?, 0, ?, ?, 1)",
                 (i, url_ids[url], micros, transition, 45_000_000,
-                 _PHONE_GUID if how == "phone" else None))
+                 phone_guid if how == "phone" else None))
             if how == "phone":
                 conn.execute("INSERT INTO visit_source (id, source) VALUES (?, 0)", (i,))
         for url, uid in url_ids.items():

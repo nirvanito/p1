@@ -8,8 +8,12 @@
             '<mailbox>.mbox' folder per exported mailbox (INBOX, Sent
             Messages, Junk), each holding the 'mbox' file and Apple's
             table_of_contents beside it
+  windows-iphone  the Gmail Takeout again — a Windows laptop has no Apple
+            Mail, and iCloud.com exports no mail — where the one reply Alex
+            sent from Slovenia was written in the iPhone's Mail app (its
+            X-Mailer, its quote, "Sent from my iPhone")
 
-Both carry the same sixteen messages:
+All carry the same sixteen messages:
 
 - the Q4 board deck thread: Alex sends Priya the draft, Priya answers with
   the advice the journal quotes ("lead with the customer story, not the TAM
@@ -263,6 +267,9 @@ def _references(m: Mail, by_key: dict) -> list[str]:
 
 def _client(m: Mail, combo: str) -> str:
     if m.sender == "me":
+        if combo == "windows-iphone":
+            # Gmail in the laptop's browser; from Slovenia, the iPhone's Mail.
+            return "iphone" if m.when[0] == "trip" else "gmail"
         return "gmail" if combo == "android" else "apple"
     return _CLIENT.get(m.sender, "plain")
 
@@ -317,7 +324,7 @@ def _quote(parent: Mail, client: str, anchor: date) -> str:
         if len(head) + len(" wrote:") > 76:
             return f"{head}\nwrote:\n\n{quoted}"
         return f"{head} wrote:\n\n{quoted}"
-    if client in ("apple", "ipad"):
+    if client in ("apple", "ipad", "iphone"):
         return (f"> On {when:%b} {when.day}, {when.year}, at {when:%H:%M}, {display} "
                 f"<{addr}> wrote:\n> \n{quoted}")
     return (f"-----Original Message-----\nFrom: {display} <{addr}>\n"
@@ -333,8 +340,8 @@ def _full_text(m: Mail) -> str:
 def _body_text(m: Mail, combo: str, by_key: dict, anchor: date) -> str:
     client = _client(m, combo)
     text = _full_text(m)
-    if client in ("apple", "ipad") and m.sender == "me" and combo == "iphone" \
-            and m.when[0] == "trip":
+    if (client in ("apple", "ipad") and m.sender == "me" and combo == "iphone"
+            and m.when[0] == "trip") or client == "iphone":
         text += "\n\nSent from my iPhone"
     if client == "ipad":
         text += "\n\nSent from my iPad"
@@ -403,6 +410,8 @@ def _render(m: Mail, combo: str, by_key: dict, anchor: date) -> tuple[list[str],
         heads.append("X-Mailer: Apple Mail (2.3826.400.131.1.6)")
     elif client == "ipad":
         heads.append("X-Mailer: iPad Mail (22A3354)")
+    elif client == "iphone":
+        heads.append("X-Mailer: iPhone Mail (19G82)")     # the iOS of four years back
     if m.kind == "newsletter":
         heads += ["List-Id: Movement Gym News <news.movementgym.example>",
                   "List-Unsubscribe: <mailto:unsubscribe@movementgym.example?subject="
@@ -476,13 +485,13 @@ def _gmail_id(*parts: str) -> str:
     return str(1_700_000_000_000_000_000 + int(_digest(*parts)[:15], 16) % 10**17)
 
 
-def _takeout(dest: Path, anchor: date) -> Path:
+def _takeout(dest: Path, anchor: date, combo: str = "android") -> Path:
     mails = _mails(anchor)
     by_key = {m.key: m for m in mails}
     chunks = []
     for m in sorted(mails, key=lambda x: (_dt(x, anchor).astimezone(timezone.utc), x.key)):
         when = _dt(m, anchor).astimezone(timezone.utc)
-        heads, body = _render(m, "android", by_key, anchor)
+        heads, body = _render(m, combo, by_key, anchor)
         gmail = [f"X-GM-THRID: {_gmail_id('thread', _thread_root(m, by_key).key)}",
                  f"X-Gmail-Labels: {_gmail_labels(m)}"]
         if m.sender != "me":
@@ -562,6 +571,8 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
         return _takeout(Path(dest), anchor)
     if combo == "iphone":
         return _apple_export(Path(dest), anchor)
+    if combo == "windows-iphone":
+        return _takeout(Path(dest), anchor, combo)
     raise ValueError(f"email has no sample for combo '{combo}' "
                      f"(expected one of {', '.join(persona.COMBOS)})")
 

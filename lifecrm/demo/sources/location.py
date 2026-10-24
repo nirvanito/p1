@@ -10,9 +10,11 @@
              Slovenia's zone, the way a migrated on-device timeline keeps it.
              Like the real export it names no place: a visit carries a place
              id, a position and HOME / WORK where Google labelled one.
-  'iphone'   none. Apple's Significant Locations are encrypted on the phone
-             and cannot be exported; ValueError, as the generator contract
-             asks.
+  'iphone', 'windows-iphone'   none. Apple's Significant Locations are
+             encrypted on the phone and cannot be exported, whichever computer
+             it pairs with; ValueError, as the generator contract asks. (Google
+             Maps' Timeline on an iPhone would export, but this persona's
+             iPhone uses Apple Maps.)
 
 Dates follow the persona's other sources (calendar, photos, texts and card
 transactions), so a visit, a photo and a payment agree on where the evening
@@ -128,7 +130,7 @@ def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def write_sample(dest: Path, anchor: date, combo: str) -> Path:
-    if combo == "iphone":
+    if combo in persona.COMBOS and persona.has_iphone(combo):
         raise ValueError("location has no iPhone sample: Apple's Significant "
                          "Locations are encrypted on the phone and have no export "
                          "(docs/location.md)")

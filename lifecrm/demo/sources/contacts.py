@@ -11,11 +11,17 @@
            account's store under Sources/<id>/, in the Core Data schema
            Contacts.app writes (the same columns `tests/test_platforms.py`
            make_abcddb uses, plus Z_METADATA and URLs).
+  windows-iphone  icloud.com → Contacts → select all → Export vCard: one
+           .vcf, vCard 3.0 as Apple writes it — PRODID naming the iCloud
+           address book, lowercase `type=` parameters with `type=pref`, the
+           address as `item1.ADR` + `item1.X-ABADR`, the restaurant as a
+           company card (`X-ABShowAs:COMPANY`), and a UID and a REV on every
+           card, so the cards are dated by their last change as on the Mac.
 
-Both render `persona.PEOPLE` — Jake's card carries his notes (El Paso,
+All render `persona.PEOPLE` — Jake's card carries his notes (El Paso,
 Veracruz), every card its city and birthday — and add what an address book
 holds beyond the story's people, consistent with it: Priya's job title, the
-restaurant Alex calls for takeout, and (on the Mac) Alex's own "me" card.
+restaurant Alex calls for takeout, and (from iCloud) Alex's own "me" card.
 Phone numbers are typed the way people type them, so normalization has work
 to do. Output is deterministic for (anchor, combo); file times are pinned to
 the anchor because an undated vCard is dated by its export.
@@ -59,6 +65,8 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
         return _google_vcf(Path(dest), anchor)
     if combo == "iphone":
         return _mac_addressbook(Path(dest), anchor)
+    if combo == "windows-iphone":
+        return _icloud_vcf(Path(dest), anchor)
     raise ValueError(f"no contacts export for combo '{combo}' "
                      f"(expected one of {', '.join(persona.COMBOS)})")
 
@@ -158,6 +166,75 @@ def _google_vcf(dest: Path, anchor: date) -> Path:
     text = "".join(f"{piece}\r\n" for card in cards for line in card
                    for piece in _fold(line))
     out = dest / "contacts.vcf"
+    out.write_bytes(text.encode("utf-8"))
+    _pinned(out, anchor)
+    return out
+
+
+# ---------------------------------------------------------------- iCloud vCard
+
+ICLOUD_PRODID = "-//Apple Inc.//iCloud Web Address Book 2427B13//EN"
+ICLOUD_VCF = "iCloud Contacts.vcf"
+
+
+def _rev(key: str, anchor: date) -> str:
+    """The card's last change (the Mac store's modification time), as REV."""
+    when = persona.local_dt(anchor, CARD_DATES[key][1], "20:41:37")
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _icloud_card(p: persona.Person, anchor: date) -> list[str]:
+    town, state = _split_city(p.city)
+    prefix = "Dr." if p.name.startswith("Dr. ") else ""
+    lines = ["BEGIN:VCARD", "VERSION:3.0", f"PRODID:{ICLOUD_PRODID}",
+             f"N:{_esc(p.last)};{_esc(p.first)};;{prefix};", f"FN:{_esc(p.name)}"]
+    if p.aliases:
+        lines.append(f"NICKNAME:{_esc(p.aliases[0])}")
+    if p.org:
+        lines.append(f"ORG:{_esc(p.org)};")
+    if TITLES.get(p.key):
+        lines.append(f"TITLE:{_esc(TITLES[p.key])}")
+    if p.email:
+        kind = "WORK" if p.key in ("priya", "ellis") else "HOME"
+        lines.append(f"EMAIL;type=INTERNET;type={kind};type=pref:{p.email}")
+    if p.phone:
+        kind = "WORK" if p.key == "ellis" else "CELL"
+        lines.append(f"TEL;type={kind};type=VOICE;type=pref:{TYPED.get(p.key, p.phone)}")
+    if town:
+        lines += [f"item1.ADR;type=HOME;type=pref:;;;{_esc(town)};{_esc(state or '')};;",
+                  "item1.X-ABADR:us"]
+    if p.note:
+        lines.append(f"NOTE:{_esc(p.note)}")
+    bday = _birthday(p, anchor)
+    if bday:
+        lines.append(f"BDAY:{bday.isoformat()}")
+    lines += [f"REV:{_rev(p.key, anchor)}", f"UID:{_uid(p.key).split(':')[0]}",
+              "END:VCARD"]
+    return lines
+
+
+def _icloud_vcf(dest: Path, anchor: date) -> Path:
+    dest.mkdir(parents=True, exist_ok=True)
+    v = VERACRUZ
+    restaurant = [
+        "BEGIN:VCARD", "VERSION:3.0", f"PRODID:{ICLOUD_PRODID}", "N:;;;;",
+        f"FN:{v['org']}", f"ORG:{v['org']};", f"TEL;type=MAIN;type=pref:{v['phone']}",
+        f"item1.ADR;type=WORK;type=pref:;;{v['street']};{v['city']};{v['state']};"
+        f"{v['zip']};", "item1.X-ABADR:us",
+        "item2.URL;type=pref:" + v["url"].replace(":", "\\:"),
+        "item2.X-ABLabel:_$!<HomePage>!$_",
+        "NOTE:Order ahead for pickup. Jake's favorite.", "X-ABShowAs:COMPANY",
+        f"REV:{_rev('veracruz', anchor)}", f"UID:{_uid('veracruz').split(':')[0]}",
+        "END:VCARD"]
+    # iCloud lists cards by last name (a company by its name), and exports them
+    # in that order.
+    people = sorted((persona.OWNER, *persona.PEOPLE), key=lambda p: (p.last, p.first))
+    cards = [(p.last, _icloud_card(p, anchor)) for p in people]
+    cards.append((v["org"], restaurant))
+    cards.sort(key=lambda c: c[0])
+    text = "".join(f"{piece}\r\n" for _, card in cards for line in card
+                   for piece in _fold(line))
+    out = dest / ICLOUD_VCF
     out.write_bytes(text.encode("utf-8"))
     _pinned(out, anchor)
     return out

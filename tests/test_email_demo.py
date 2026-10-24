@@ -130,8 +130,9 @@ def test_the_newsletter_and_the_spam_are_counted_not_kept(owner, tmp_path, combo
     assert set(_by_id(scan)) == kept and len(kept) == 14
     skipped = " ".join(scan["skipped"])
     assert "1 × mailing-list or bulk mail" in skipped
-    spam = "1 × message labelled Spam" if combo == "android" \
-        else "1 × message in the Junk mailbox"
+    # a Gmail Takeout labels it (both Windows laptops); Apple Mail files it in Junk
+    spam = "1 × message in the Junk mailbox" if persona.on_mac(combo) \
+        else "1 × message labelled Spam"
     assert spam in skipped
     assert scan["unmapped"] == []
 

@@ -1,4 +1,4 @@
-"""Sample photos for the demo: the persona's camera roll, rendered two ways.
+"""Sample photos for the demo: the persona's camera roll, rendered three ways.
 
   'android'  The Samsung Gallery folder as OneDrive syncs it from a Galaxy:
              `Samsung Gallery/DCIM/Camera/20220927_101207.jpg`, one small but
@@ -16,6 +16,9 @@
              photos it holds a Live-Photo-era video of the rowboat on Lake
              Bled, a screenshot, a trashed duplicate and a hidden passport
              scan: the cases a real library always has.
+  'windows-iphone'  iCloud for Windows' folder (`Pictures/iCloud Photos/
+             Photos/IMG_7402.JPG`, ...): the same iPhone's photos downloaded
+             to the laptop as JPEGs with Apple's big-endian EXIF.
 
 The pixel data is a two-band picture — sky over ground, coloured by the kind
 of place — so the files open in any viewer. The JPEG writer is a minimal
@@ -67,8 +70,10 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
         return _samsung_gallery(Path(dest), anchor)
     if combo == "iphone":
         return _photos_library(Path(dest), anchor)
+    if combo == "windows-iphone":
+        return _icloud_for_windows(Path(dest), anchor)
     raise ValueError(f"photos has no sample for combo '{combo}' "
-                     f"(expected one of: android, iphone)")
+                     f"(expected one of: {', '.join(persona.COMBOS)})")
 
 
 # ---------------------------------------------------------------- the story
@@ -127,6 +132,39 @@ def _samsung_gallery(dest: Path, anchor: date) -> Path:
     path.write_bytes(jpeg_bytes(72, 152, [(250, 250, 250), (32, 96, 200)]))
     os.utime(path, (_epoch(when), _epoch(when)))
     return gallery
+
+
+# ---------------------------------------------------------------- windows-iphone
+
+def _icloud_for_windows(dest: Path, anchor: date) -> Path:
+    """iCloud for Windows' Photos folder: the iPhone's camera roll as the
+    laptop downloads it, one file per photo under its original iPhone name.
+    HEIC photos arrive as JPEG unless 'Keep high efficiency original' is
+    ticked, so these are JPEGs carrying the iPhone's EXIF — big-endian TIFF,
+    as Apple writes it, with make, model, local time, offset and GPS. Only
+    what iCloud Photos shows comes down: nothing hidden or in Recently
+    Deleted."""
+    root = dest / "Pictures" / "iCloud Photos"
+    folder = root / "Photos"
+    folder.mkdir(parents=True, exist_ok=True)
+    model = persona.DEVICE["windows-iphone"]["phone"]
+    old, recent = 1180, 7402                       # the trip's numbers, then today's
+    for i, s in enumerate(_shots(anchor, "windows-iphone")):
+        local = s["local"]
+        if local.date() < persona.day(anchor, -365):
+            number, old = old, old + 1
+        else:
+            number, recent = recent, recent + 1
+        sky, ground = _COLORS.get(s["place"].kind, _COLORS["city"])
+        tiff = exif_tiff(
+            make=IPHONE_MAKE, model=model, taken=local, offset=_offset_text(local),
+            subsec=f"{(i * 211) % 1000:03d}", width=96, height=72, orientation=1,
+            lat=s["lat"], lon=s["lon"], alt=s["alt"],
+            gps_utc=local.astimezone(timezone.utc), little_endian=False)
+        path = folder / f"IMG_{number:04d}.JPG"
+        path.write_bytes(jpeg_bytes(96, 72, [sky, ground], exif=tiff))
+        os.utime(path, (_epoch(local), _epoch(local)))
+    return root
 
 
 # ---------------------------------------------------------------- iphone

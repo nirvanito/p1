@@ -1,5 +1,6 @@
-"""Sample Apple Health export for the iPhone combo: export.zip as the Health
+"""Sample Apple Health export for the iPhone combos: export.zip as the Health
 app's "Export All Health Data" writes it, rendering persona.health_series.
+The file is the phone's, so iphone and windows-iphone get the same bytes.
 
 Layout and markup follow a current (iOS 17-era) export: export.xml with its
 internal DTD, ExportDate and Me first, then Records grouped by type, Food
@@ -434,7 +435,7 @@ _CDA = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def write_sample(dest: Path, anchor: date, combo: str) -> Path:
-    if combo != "iphone":
+    if combo not in persona.COMBOS or not persona.has_iphone(combo):
         raise ValueError(f"Apple Health is the iPhone combo's source, not '{combo}' "
                          f"(the Android combo uses Health Connect)")
     dest.mkdir(parents=True, exist_ok=True)

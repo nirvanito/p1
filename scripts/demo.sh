@@ -4,6 +4,7 @@
 # --gui obsidian, its Obsidian vault.
 #   /bin/bash scripts/demo.sh                 # iphone combo
 #   /bin/bash scripts/demo.sh --combo android
+#   /bin/bash scripts/demo.sh --combo windows-iphone
 #   /bin/bash scripts/demo.sh --rebuild
 #   /bin/bash scripts/demo.sh --gui obsidian
 # Nothing here touches data/ — the demo lives in demo/<combo>/ (gitignored).
@@ -33,6 +34,10 @@ done
 case "$GUI" in
     web|obsidian) ;;
     *) echo "--gui must be web or obsidian, got: $GUI" >&2; exit 2 ;;
+esac
+case "$COMBO" in
+    android|iphone|windows-iphone) ;;
+    *) echo "--combo must be android, iphone or windows-iphone, got: $COMBO" >&2; exit 2 ;;
 esac
 
 PY="${LIFECRM_PYTHON:-}"

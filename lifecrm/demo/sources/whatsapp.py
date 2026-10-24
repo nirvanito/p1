@@ -1,7 +1,8 @@
 """WhatsApp sample: the Rivera Family group, as each phone's "Export chat".
 
 The family group lives in WhatsApp on both phones (persona.WHATSAPP_GROUP),
-so both combos have this source; only the export format differs:
+so every combo has this source; only the phone's export format differs
+(windows-iphone writes the iPhone's, like iphone):
 
   android   'WhatsApp Chat with Rivera Family.zip' — the .txt and the media,
             lines like '10/8/26, 8:40 PM - Linda Rivera: text'
@@ -119,7 +120,7 @@ def _name(who: str, combo: str) -> str:
         return persona.OWNER.name
     if who in UNSAVED:
         digits = UNSAVED[who][2:]
-        if combo == "iphone":
+        if persona.has_iphone(combo):
             return (f"\N{LEFT-TO-RIGHT EMBEDDING}+1 ({digits[:3]}) {digits[3:6]}"
                     f"\N{NON-BREAKING HYPHEN}{digits[6:]}\N{POP DIRECTIONAL FORMATTING}")
         return f"+1 {digits[:3]}-{digits[3:6]}-{digits[6:]}"
@@ -138,7 +139,7 @@ def _render(anchor: date, combo: str) -> tuple[str, list[tuple[str, bytes]]]:
     """(chat text, [(media file name, bytes)])."""
     g = persona.WHATSAPP_GROUP
     group = g["name"]
-    ios = combo == "iphone"
+    ios = persona.has_iphone(combo)
     lines: list[str] = []
     media: list[tuple[str, bytes]] = []
     photos_per_day: dict[date, int] = {}
@@ -193,9 +194,10 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
                          f"(expected one of {', '.join(persona.COMBOS)})")
     group = persona.WHATSAPP_GROUP["name"]
     text, media = _render(anchor, combo)
-    member = "_chat.txt" if combo == "iphone" else f"WhatsApp Chat with {group}.txt"
+    phone = "iphone" if persona.has_iphone(combo) else "android"
+    member = "_chat.txt" if phone == "iphone" else f"WhatsApp Chat with {group}.txt"
     dest.mkdir(parents=True, exist_ok=True)
-    out = dest / CHAT_FILE[combo].format(name=group)
+    out = dest / CHAT_FILE[phone].format(name=group)
     # A fixed timestamp per member: the same (anchor, combo) gives the same
     # bytes, so the importer's "already imported" check sees the same file.
     stamp = (anchor.year, anchor.month, anchor.day, 12, 0, 0)

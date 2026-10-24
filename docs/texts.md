@@ -140,7 +140,7 @@ read.
   `ios_messages` too when the phone holds older history than iCloud keeps on
   the Mac, or before turning Messages in iCloud on.
 - **Windows + iPhone:** `ios_messages` from an Apple Devices backup; there is
-  no other way in.
+  no other way in ([windows-iphone.md](windows-iphone.md) has the setup).
 
 Both can be imported into one database, in either order, as often as you
 like:

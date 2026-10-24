@@ -25,12 +25,52 @@ from zoneinfo import ZoneInfo
 
 TIMEZONE = "America/Chicago"
 WINDOW_DAYS = 42            # how far back the dense data goes
-COMBOS = ("android", "iphone")   # Windows+Android(Samsung), Mac+iPhone
+# Windows+Android(Samsung), Mac+iPhone, Windows+iPhone. `lifecrm demo --combo
+# both` still builds the first two, as it always has; `--combo all` builds
+# every one.
+COMBOS = ("android", "iphone", "windows-iphone")
+BOTH = ("android", "iphone")
 
+# What each setup is made of. Generators branch on these (has_iphone, on_mac,
+# browser) rather than on combo names: a phone decides some exports, the
+# computer others.
 DEVICE = {
-    "android": {"phone": "Galaxy S24", "maker": "samsung", "computer": "Windows laptop"},
-    "iphone": {"phone": "iPhone 15 Pro", "maker": "Apple", "computer": "MacBook"},
+    "android": {"phone": "Galaxy S24", "maker": "samsung", "computer": "Windows laptop",
+                "phone_os": "android", "computer_os": "windows", "browser": "chrome"},
+    "iphone": {"phone": "iPhone 15 Pro", "maker": "Apple", "computer": "MacBook",
+               "phone_os": "ios", "computer_os": "macos", "browser": "safari"},
+    "windows-iphone": {"phone": "iPhone 15 Pro", "maker": "Apple",
+                       "computer": "Windows laptop", "phone_os": "ios",
+                       "computer_os": "windows", "browser": "edge"},
 }
+
+
+def _device(combo: str) -> dict:
+    try:
+        return DEVICE[combo]
+    except KeyError:
+        raise ValueError(f"unknown combo '{combo}' (expected one of "
+                         f"{', '.join(COMBOS)})") from None
+
+
+def has_iphone(combo: str) -> bool:
+    """The phone is an iPhone (iphone, windows-iphone)."""
+    return _device(combo)["phone_os"] == "ios"
+
+
+def on_mac(combo: str) -> bool:
+    """The computer is a Mac (iphone)."""
+    return _device(combo)["computer_os"] == "macos"
+
+
+def on_windows(combo: str) -> bool:
+    """The computer is a Windows laptop (android, windows-iphone)."""
+    return _device(combo)["computer_os"] == "windows"
+
+
+def browser(combo: str) -> str:
+    """The laptop's browser: 'chrome', 'edge' or 'safari'."""
+    return _device(combo)["browser"]
 
 
 # ---------------------------------------------------------------- people & places
@@ -421,7 +461,8 @@ JOURNAL: tuple[JournalDay, ...] = (
 #
 # (offset, 'HH:MM', sender key, text). Threads with one other person are 1:1;
 # more than one is a group chat. Which app carries them depends on the combo:
-# iMessage on the iPhone, SMS/RCS on the Samsung.
+# iMessage on the iPhone (read from the Mac's chat.db, or from an iPhone
+# backup on Windows), SMS/RCS on the Samsung.
 
 @dataclass(frozen=True)
 class Thread:

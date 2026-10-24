@@ -196,7 +196,7 @@ def account_podcasts(anchor: date) -> list[dict]:
 
 def extended(anchor: date, combo: str) -> list[dict]:
     """The extended rows, every field Spotify writes — the privacy ones too."""
-    platform = "android" if combo == "android" else "ios"
+    platform = "ios" if persona.has_iphone(combo) else "android"
     rows = []
     for n, p in enumerate(_plays(anchor)):
         if p["offset"] is not None and p["offset"] not in EXTENDED_RECENT:

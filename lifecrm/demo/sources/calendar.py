@@ -1,7 +1,7 @@
 """Calendar sample exports: a Google Takeout (android) and an Apple Calendar
-.ics (iphone), both rendering `persona.CALENDAR`.
+.ics (iphone, windows-iphone), all rendering `persona.CALENDAR`.
 
-The two combos get their calendars the way their owners actually would:
+The combos get their calendars the way their owners actually would:
 
   android  takeout-<anchor>T120000Z-001.zip — Google Takeout, which is where
            a Samsung phone's events end up once its calendar syncs to the
@@ -16,8 +16,12 @@ The two combos get their calendars the way their owners actually would:
            (iCloud, the iPhone's calendar). VTIMEZONE blocks, uppercase UUID
            UIDs, quoted CN/EMAIL parameters, X-APPLE-STRUCTURED-LOCATION with
            geo, one attendee written as urn:uuid with an EMAIL parameter.
+  windows-iphone  the same Home calendar with no Mac to export it: shared
+           as a Public Calendar on icloud.com and downloaded from its link
+           as Home.ics. The events are the same Apple-written ones; only the
+           calendar's PRODID is iCloud's.
 
-Both carry the same story: the weekly 1:1 with Priya (seven occurrences,
+All carry the same story: the weekly 1:1 with Priya (seven occurrences,
 one of them edited — a RECURRENCE-ID override), the board meeting, dinners
 at Veracruz with Jake, Maya's birthday at Uchi, the dentist, Launch week,
 and — added here, consistent with the persona — the Lake Bled trip four
@@ -440,10 +444,17 @@ def _apple_event(ev: _Ev, *, override_of: datetime | None = None,
     return lines
 
 
-def _apple_export(dest: Path, anchor: date) -> Path:
+MAC_PRODID = "-//Apple Inc.//macOS 15.1//EN"
+# The feed iCloud.com serves for a calendar shared as a Public Calendar; the
+# events in it are the ones the iPhone and iCloud wrote. Its exact PRODID is
+# unverified.
+ICLOUD_PRODID = "-//Apple Inc.//iCloud Calendar Server//EN"
+
+
+def _apple_export(dest: Path, anchor: date, prodid: str = MAC_PRODID) -> Path:
     events = _events(anchor)
     lines = ["BEGIN:VCALENDAR", "METHOD:PUBLISH", "VERSION:2.0", "X-WR-CALNAME:Home",
-             "PRODID:-//Apple Inc.//macOS 15.1//EN", "X-APPLE-CALENDAR-COLOR:#34AADC",
+             f"PRODID:{prodid}", "X-APPLE-CALENDAR-COLOR:#34AADC",
              f"X-WR-TIMEZONE:{HOME_TZ}", "CALSCALE:GREGORIAN"]
     lines += _VTIMEZONES[HOME_TZ] + _VTIMEZONES[TRIP_TZ]
     for ev in events:
@@ -469,4 +480,7 @@ def write_sample(dest: Path, anchor: date, combo: str) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     if combo == "android":
         return _google_takeout(dest, anchor)
-    return _apple_export(dest, anchor)
+    if P.on_mac(combo):
+        return _apple_export(dest, anchor)
+    # Windows + iPhone: no Calendar.app — the Home calendar's iCloud feed.
+    return _apple_export(dest, anchor, prodid=ICLOUD_PRODID)

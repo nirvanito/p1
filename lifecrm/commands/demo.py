@@ -1,10 +1,12 @@
 """`lifecrm demo` — a complete, synthetic second brain to try everything on.
 
 Builds a throwaway instance (default: demo/<combo>/ in the project, which git
-ignores) for one of the two supported setups — `android` (Windows laptop +
-Samsung phone) or `iphone` (MacBook + iPhone) — by rendering one fictional
-life in each app's real export format and running every real import over it.
-Nothing touches the project's own data directory.
+ignores) for one of the three supported setups — `android` (Windows laptop +
+Samsung phone), `iphone` (MacBook + iPhone) or `windows-iphone` (Windows
+laptop + iPhone) — by rendering one fictional life in each app's real export
+format and running every real import over it. `both` builds android and
+iphone, as it always has; `all` builds all three. Nothing touches the
+project's own data directory.
 """
 
 from __future__ import annotations
@@ -21,7 +23,9 @@ def register(app: typer.Typer) -> None:
     def demo(
         combo: str = typer.Option(
             "android", "--combo",
-            help="android (Windows laptop + Samsung) | iphone (MacBook + iPhone) | both"),
+            help="android (Windows laptop + Samsung) | iphone (MacBook + iPhone) | "
+                 "windows-iphone (Windows laptop + iPhone) | both (android and "
+                 "iphone) | all"),
         directory: str = typer.Option(
             None, "--dir", help="Where to build it (default: demo/<combo>/ in the project)"),
         anchor: str = typer.Option(
@@ -42,11 +46,13 @@ def register(app: typer.Typer) -> None:
         from ..demo.build import (DemoBuilder, DemoError, check_dir_option, default_anchor,
                                   default_dir)
 
-        combos = list(persona.COMBOS) if combo == "both" else [combo]
+        combos = (list(persona.BOTH) if combo == "both"
+                  else list(persona.COMBOS) if combo == "all" else [combo])
         if any(c not in persona.COMBOS for c in combos):
-            _fail(f"--combo must be android, iphone or both (got {combo})")
+            _fail(f"--combo must be {', '.join(persona.COMBOS)}, both or all (got {combo})")
         if directory and len(combos) > 1:
-            _fail("--dir builds one demo; use it with --combo android or --combo iphone")
+            _fail("--dir builds one demo; use it with one --combo "
+                  f"({', '.join(persona.COMBOS)})")
         if directory:
             try:
                 check_dir_option(directory)

@@ -264,7 +264,7 @@ def _gpx(a: dict, combo: str) -> str:
     lat, lon = a["start"]
     steps = ((0.0, 0.0, 0.0), (0.004, -0.006, 0.35), (0.006, 0.002, 0.7),
              (0.0005, 0.0005, 1.0))
-    device = "Android" if combo == "android" else "iPhone"
+    device = "iPhone" if persona.has_iphone(combo) else "Android"
     kind = "running" if a["type"] == "Run" else "hiking"
     points = []
     for dlat, dlon, frac in steps:

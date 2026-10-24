@@ -6,14 +6,15 @@ fictional life rendered as the real export files of each app, then run
 through the real importers. The commands it runs are the same ones you
 would type, and they run in the same order.
 
-Two setups are supported end to end, and the demo builds either one:
+Three setups are supported end to end, and the demo builds any of them:
 
 | combo | computer | phone | what it imports |
 |---|---|---|---|
 | `android` | Windows laptop | Samsung Galaxy | Health Connect export, SMS Backup & Restore (texts + calls), Google Contacts `.vcf`, Google Calendar Takeout, Google Keep Takeout, Chase CSVs, Samsung Gallery photos (EXIF), Google Maps Timeline, Chrome history, WhatsApp (Android format), Claude + ChatGPT exports, a Gmail Takeout (`Mail/*.mbox`), Google Takeout My Activity + YouTube history (JSON), Venmo statements |
 | `iphone` | MacBook | iPhone | Apple Health `export.zip`, the Mac's Messages `chat.db`, Call History, the Mac's Contacts store, Apple Calendar `.ics`, Apple Notes `NoteStore.sqlite`, Apple Card CSVs + a credit union `.qfx`, Mac Photos library, Safari history, WhatsApp (iOS format), Claude + ChatGPT exports, an Apple Mail "Export Mailbox" folder, Google Takeout My Activity + YouTube history (HTML), Venmo statements + a PayPal activity download |
+| `windows-iphone` | Windows laptop | iPhone | Apple Health `export.zip`, an unencrypted Apple Devices **iPhone backup** (`Manifest.db`, `sms.db` and the phone's `AddressBook.sqlitedb`, read by `ios_messages`), an iCloud.com vCard, iCloud's `Home.ics`, Apple Card CSVs + a credit union `.qfx`, an iCloud for Windows photos folder (JPEGs with the iPhone's EXIF), Edge history, WhatsApp (iOS format), Claude + ChatGPT exports, a Gmail Takeout, Google Takeout My Activity + YouTube history (HTML), Venmo statements |
 
-Both combos also import the sources that are the same file whichever
+All three also import the sources that are the same file whichever
 phone you carry: Instagram and Facebook "Download your information" zips
 (JSON), a Telegram Desktop export, Strong's `strong.csv` and Strava's
 `export_<id>.zip`, both Spotify downloads (`my_spotify_data.zip` and
@@ -26,12 +27,19 @@ its own guide: [email](email.md), [meta_messages](meta_messages.md),
 [nutrition](nutrition.md), [linkedin](linkedin.md),
 [payments](payments.md) and [rides](rides.md).
 
-The iPhone combo has no location sample, because Apple's Significant
-Locations cannot be exported ([location.md](location.md)).
+Neither iPhone combo has a location sample, because Apple's Significant
+Locations cannot be exported ([location.md](location.md)). The
+`windows-iphone` combo also has no calls and no notes, and its build says
+why in its `skipped` lines: an unencrypted iPhone backup carries no call
+history (Apple keeps it for encrypted backups, which cannot be read —
+[calls.md](calls.md)), and Apple Notes has no export on Windows. The setup
+it stands for is [windows-iphone.md](windows-iphone.md).
 
-Both start from the same journal: thirteen logged days spread over the six
+All start from the same journal: thirteen logged days spread over the six
 weeks. Each day is an evening note, sometimes with quick notes, dropped into
-the text inbox under the file name that combo's phone would give it. The
+the text inbox under the file name that combo's phone would give it (an
+iPhone's Shortcut names, with the journal date and the UTC offset, on both
+iPhone combos — in OneDrive on the Windows laptop). The
 notes go through intake, one draft per day, ingest, review and apply. They
 arrive as text, so whisper is not needed unless you pass `--with-audio`.
 
@@ -42,6 +50,13 @@ arrive as text, so whisper is not needed unless you pass `--with-audio`.
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
 powershell -ExecutionPolicy Bypass -File scripts/demo.ps1
+```
+
+**Windows (laptop + iPhone):**
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
+powershell -ExecutionPolicy Bypass -File scripts/demo.ps1 -Combo windows-iphone
 ```
 
 **Mac (MacBook + iPhone):**
@@ -57,8 +72,9 @@ opens once the server is listening), or with `-Gui obsidian` /
 `--gui obsidian` the demo's Obsidian vault. Either runs from any folder, Explorer's
 *Run with PowerShell* included. `demo.ps1` builds the android
 combo by default and `demo.sh` the iphone one. Pass `-Combo iphone` /
-`--combo android` to build the other setup on the same machine. Both work on
-either OS, because every input is a file. To rebuild from scratch, use
+`-Combo windows-iphone` / `--combo android` / `--combo windows-iphone` to
+build another setup on the same machine. Every combo works on either OS,
+because every input is a file. To rebuild from scratch, use
 `-Rebuild` / `--rebuild`. `-NoServe` / `--no-serve` builds without serving,
 and `-Port N` / `--port N` serves on another port.
 
@@ -67,13 +83,16 @@ interpreter (`.venv\Scripts\python.exe` on Windows, `.venv/bin/python` on a
 Mac):
 
 ```bash
-python -m lifecrm demo --combo android          # or iphone, or both
+python -m lifecrm demo --combo android          # or iphone, windows-iphone, both, all
 python -m lifecrm demo --combo iphone --force   # rebuild
 python -m lifecrm demo --dir ~/lifecrm-demo     # build somewhere else (one combo)
 python -m lifecrm demo --anchor 2026-10-22      # pin the demo's "today" (default: today's journal date)
 python -m lifecrm demo --with-audio             # also speak + transcribe one note
 python -m lifecrm demo --no-ask --json          # skip the sample questions; print the summary as JSON
 ```
+
+`both` builds `android` and `iphone`, as it always has; `all` builds all
+three combos, each into its own `demo/<combo>/`.
 
 The default "today" is the journal date in the persona's timezone
 (America/Chicago) with the demo's 05:00 rollover — the same day the demo's
@@ -121,9 +140,11 @@ People, places, phone numbers and emails are all fictional (`example.com`,
 `555-01xx`).
 
 The demo writes its own `config.toml` in the demo root: the persona's
-timezone and the 05:00 rollover, the synthetic sync folders, each
-connector's account, an `[owner]` table that says who the owner is, and a
-`[nutrition]` table that says whose reference intakes `nutrients` uses:
+timezone and the 05:00 rollover, the synthetic sync folders (iCloud Drive
+with the MacBook, OneDrive with either Windows laptop), each connector's
+account, `[ask] enabled = false` (answers deterministic and cited), an
+`[owner]` table that says who the owner is, and a `[nutrition]` table that
+says whose reference intakes `nutrients` uses:
 
 ```toml
 [owner]
@@ -162,7 +183,7 @@ python -m lifecrm --root <demo> voice --text "how did I sleep last week"
 python -m lifecrm --root <demo> doctor
 ```
 
-From the newer sources, on either combo:
+From the newer sources, on any combo:
 
 ```bash
 python -m lifecrm --root <demo> ask "what advice did Priya give me over email"
@@ -201,7 +222,7 @@ vault manager, where you choose *Open folder as vault* and pick
 ([obsidian.md](obsidian.md#obsidian-as-your-main-gui)).
 
 `doctor` reports 0 failures and one warning, `unresolved_handles`: the
-review queue the demo leaves on purpose. On the iPhone combo the Watch and
+review queue the demo leaves on purpose. On the iPhone combos the Watch and
 the iPhone both write sleep records, as a real pair does. The iPhone's nights
 are in-bed time only and carry no value, so `health_multi_origin` stays quiet
 and no night is counted twice ([apple-health.md](apple-health.md), "iPhone +
@@ -238,7 +259,7 @@ prints each one:
   the strangers unresolved, so the review queue has something in it: Tía
   Rosa's number on WhatsApp and her Facebook account (Rosa Treviño), the
   airline's booking address, Acme's product-team list and the office's
-  calendar location — five on the iPhone combo. The Android combo adds five
+  calendar location — five on the iPhone combos. The Android combo adds five
   Timeline places no entity stands for (Home, Work and three unnamed
   stops).
 
@@ -261,6 +282,7 @@ prints each one:
   with a one-line error, before anything else happens. Use a drive-letter,
   `~` or relative path (a mapped network drive's letter is fine).
 - `demo/` is gitignored.
-- No network is needed. A local model (Ollama) is used only if one is
-  running, and only to phrase answers. Without one, answers are
-  deterministic.
+- No network is needed. Answers are deterministic and cited; an answer in
+  prose comes from `/ask` in Claude Code. The demo's config turns the
+  optional local model off (`[ask] enabled = false`, the default —
+  [ask.md](ask.md)).
