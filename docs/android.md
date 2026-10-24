@@ -162,16 +162,40 @@ simply stops uploading — no error, nothing arrives.
 - Settings › Apps › Autosync › Battery: **Unrestricted**; Mobile data: allow
   background data use.
 
-### Call recordings (optional)
+### Call recordings (optional, and only the ones you pick)
 
 Where the Samsung Phone app offers call recording (it depends on region and
 carrier; recording a call may need everyone's consent where you live), its
 files are named like `Call recording Mom_261020_200512.m4a` — a two-digit
 year, read correctly by the pipeline — and saved in
-`Recordings/Call` **(verify)**. To journal them, add a folder pair for that
-folder to the same inbox (a paid Autosync feature) or move chosen ones into
-`Recordings/Voice Recorder`. A call recording becomes a source like any
-other note, through `/log` and your review.
+`Recordings/Call` **(verify)**.
+
+**Record selectively.** Leave *Auto record calls* off (Phone › ⋮ ›
+Settings › Record calls **(verify)**) and tap **Record** during a call you
+want to keep. Then the phone records only the calls you chose, not every
+conversation.
+
+**Nothing transcribes a call by itself.** Intake recognizes a call
+recording by its name and **holds** it in the inbox. It is not transcribed
+and nothing reaches the database until you pick it:
+
+```
+lifecrm calls list                 # the held ones: number, when, who, size
+lifecrm calls take 2               # transcribe #2 into a source for its day, like any note
+lifecrm calls skip 1               # archive #1 untranscribed (the audio is kept)
+```
+
+`/log` does the same with you. When calls are held, it lists them and asks
+which belong in the journal, takes only those, and never reads the rest.
+`status` shows how many are waiting, and `doctor` warns when one has waited
+over three days. So it is safe to sync the whole call folder: add a folder
+pair for `Recordings/Call` to the same inbox (a paid Autosync feature).
+Moving chosen ones into `Recordings/Voice Recorder` works too. A file
+counts as a call when its name starts with `Call recording`, `Call with`,
+`Call_` or `Call-`, or ends in Samsung's `_yyMMdd_HHmmss`. Add your recorder
+app's pattern under `[intake] call_patterns` (for example `["acr_*"]`).
+`[intake] call_recordings = "auto"` turns the hold off and transcribes calls
+like any note.
 
 ## 2. Quick notes during the day
 

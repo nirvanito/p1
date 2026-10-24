@@ -39,7 +39,13 @@ def _capture_checks(cfg: Config, _add) -> None:
     """The capture side. A typo in an inbox path, a recording intake fails on
     every run, and a format nothing reads all look exactly like a quiet day —
     no error anywhere, just nothing arriving. These make them visible."""
-    from .transcribe import AUDIO_EXTS, TEXT_EXTS, icloud_stub
+    from .config import ConfigError
+    from .transcribe import AUDIO_EXTS, TEXT_EXTS, call_mode, icloud_stub, is_call_recording
+    try:
+        holding, call_config = call_mode(cfg) == "ask", None
+        is_call_recording("", cfg)                 # call_patterns parse too
+    except ConfigError as e:
+        holding, call_config = False, str(e)
     folders = [("inbox_dir", cfg.inbox_dir, AUDIO_EXTS),
                ("inbox_text_dir", cfg.inbox_text_dir, TEXT_EXTS),
                ("archive_dir", cfg.archive_dir, None)]
@@ -54,7 +60,7 @@ def _capture_checks(cfg: Config, _add) -> None:
         _add("ok", "configured_dirs")
 
     cutoff = time.time() - INBOX_STUCK_DAYS * 86400
-    stuck, unknown, in_cloud = [], [], []
+    stuck, unknown, in_cloud, waiting = [], [], [], []
     for name, path, exts in folders:
         if exts is None or path is None or not path.is_dir():
             continue
@@ -73,10 +79,17 @@ def _capture_checks(cfg: Config, _add) -> None:
                 unknown.append(f"{name}/{p.name}")
                 continue
             try:
-                if p.stat().st_mtime < cutoff:
-                    stuck.append(f"{name}/{p.name}")
+                old = p.stat().st_mtime < cutoff
             except OSError:
                 continue
+            if not old:
+                continue
+            # A call recording waits for the owner's pick on purpose: it is
+            # not intake failing, and the fix is a choice, not the log.
+            if holding and name == "inbox_dir" and is_call_recording(p.name, cfg):
+                waiting.append(p.name)
+            else:
+                stuck.append(f"{name}/{p.name}")
     problems = []
     if stuck:
         problems.append(
@@ -93,6 +106,17 @@ def _capture_checks(cfg: Config, _add) -> None:
         _add("warn", "inbox_stuck", "; ".join(problems))
     else:
         _add("ok", "inbox_stuck")
+    if call_config:
+        _add("warn", "calls_held", f"{call_config} — intake stops on it; fix "
+                                   f"config.toml")
+    elif waiting:
+        _add("warn", "calls_held",
+             f"{len(waiting)} call recording(s) held over {INBOX_STUCK_DAYS} days, "
+             f"waiting for your pick: {', '.join(waiting[:5])}"
+             + (" …" if len(waiting) > 5 else "")
+             + " — `lifecrm calls list`, then `calls take <n>` or `calls skip <n>`")
+    else:
+        _add("ok", "calls_held")
     if unknown:
         _add("warn", "inbox_unrecognized",
              f"{len(unknown)} file(s) intake will never read (unrecognized type): "

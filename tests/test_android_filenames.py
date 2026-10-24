@@ -405,7 +405,8 @@ def test_a_samsung_call_recording_through_intake(conn, cfg, fake_whisper):
     audio = cfg.inbox_dir / "Call recording Mom_261021_013000.m4a"
     audio.write_bytes(b"call-audio")
     _age(audio)
-    res = tr.transcribe_inbox(conn, cfg)[0]
+    assert tr.transcribe_inbox(conn, cfg) == []            # held for the owner's pick
+    res = tr.transcribe_inbox(conn, cfg, files=tr.resolve_held(cfg, ["Mom"]))[0]
     src = conn.execute("SELECT journal_date, recorded_at FROM sources WHERE id=?",
                        (res["source_id"],)).fetchone()
     assert (src["journal_date"], src["recorded_at"]) == ("2026-10-20", "2026-10-21T06:30:00Z")

@@ -45,6 +45,15 @@ seed_initial_prompt = true
 duplicate_recorded_at_tolerance_sec = 120
 duplicate_duration_tolerance_sec = 5
 
+# Call recordings in the audio inbox are held, never transcribed by intake on
+# its own: `lifecrm calls list`, then `calls take <n>` / `calls skip <n>` (or
+# /log asks). Optional:
+# [intake]
+# call_recordings = "ask"           # "ask" (the default) | "auto": transcribe them like any note
+# call_patterns = ["acr_*"]         # more name patterns for your recorder app, added to
+#                                   # "Call recording*", "Call with *", "Call_*", "Call-*"
+#                                   # and Samsung's <name>_yyMMdd_HHmmss
+
 [ask]
 # `lifecrm ask` retrieves cited evidence deterministically and always answers
 # without a model. If a local Ollama server is running, it also phrases that

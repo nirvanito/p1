@@ -146,6 +146,7 @@ with the command for each.
 |---|---|---|---|
 | Voice notes | Samsung Voice Recorder → Autosync → `OneDrive\VoiceJournal\inbox` | `lifecrm intake` (scheduled) | [android.md](docs/android.md) |
 | Quick notes | the same path, or an Automate flow into `inbox-text` | `lifecrm intake` | [android.md](docs/android.md) |
+| Call recordings (only the ones you pick) | Samsung Phone's `Recordings/Call` → the same inbox | held by intake; `lifecrm calls take <n>` | [android.md](docs/android.md#call-recordings-optional-and-only-the-ones-you-pick) |
 | Health | Samsung Health → Health Connect → scheduled export `.zip` | `lifecrm health import [zip]` | [health-connect.md](docs/health-connect.md) |
 | Texts and calls | SMS Backup & Restore XML, scheduled to OneDrive | `lifecrm observe android_sms [folder]` | [android-texts.md](docs/android-texts.md) |
 | Contacts | Contacts › Export → `.vcf` | `lifecrm observe contacts [file]` | [contacts.md](docs/contacts.md) |
@@ -178,6 +179,7 @@ backups, and the import says so in one line.
 |---|---|---|---|
 | Voice notes | Shortcut "Log My Day" → `iCloud Drive/VoiceJournal/inbox` | `lifecrm intake` (scheduled) | [iphone.md](docs/iphone.md) |
 | Quick notes | Shortcut "Quick Note" → `inbox-text` | `lifecrm intake` | [iphone.md](docs/iphone.md) |
+| Call recordings (only the ones you pick) | a recorded call's audio in Notes → Save to Files → the inbox | held by intake; `lifecrm calls take <n>` | [iphone.md](docs/iphone.md#call-recordings--only-the-ones-you-choose) |
 | Health | Health › Export All Health Data → `export.zip` (AirDrop or Files) | `lifecrm health import [path]` | [apple-health.md](docs/apple-health.md) |
 | Messages | the Mac's own `chat.db` (turn on Messages in iCloud and Text Message Forwarding) | `lifecrm observe mac_messages` | [texts.md](docs/texts.md) |
 | Calls | the Mac's call history (FaceTime › Calls from iPhone) | `lifecrm observe ios_calls` | [calls.md](docs/calls.md) |
@@ -213,8 +215,9 @@ not both by turns. Each one mirrors its own source.
 **Capture and review**
 
 ```
-lifecrm status                               # pending notes, open loops, streak
-lifecrm intake                               # both inboxes now (what the scheduled task runs)
+lifecrm status                               # pending notes, held calls, open loops, streak
+lifecrm intake                               # both inboxes now (what the scheduled task runs); holds call recordings
+lifecrm calls list                           # held call recordings; then `calls take <n>` or `calls skip <n>`
 lifecrm import note.txt --date 2026-07-27    # a pasted transcript as a source
 lifecrm transcribe --file "<inbox>/x.m4a" --date 2026-07-27   # one recording, re-dated
 lifecrm filedate "Recording_20261021_003000.m4a"              # the day intake would give a name

@@ -181,10 +181,14 @@ On a laptop:
 3. At the laptop: intake has usually run already (or run `lifecrm intake`).
    Open Claude Code in the repo folder and type **`/log`**. It drafts the
    day as one extraction, you review the diff, confirm, and it applies.
+   Call recordings in the inbox are held, not transcribed. `/log` lists
+   them and asks which belong in the journal
+   ([android.md](android.md#call-recordings-optional-and-only-the-ones-you-pick)).
 
 ```
-lifecrm status        # pending notes, open loops, streak
-lifecrm intake        # process both inboxes now
+lifecrm status        # pending notes, held calls, open loops, streak
+lifecrm intake        # process both inboxes now (call recordings stay held)
+lifecrm calls list    # held call recordings: `calls take <n>` / `calls skip <n>`
 lifecrm doctor        # prove the database is intact
 ```
 

@@ -130,6 +130,25 @@ timestamp, which after a cloud round trip may be the *upload* time. Fine for
 a note uploaded promptly; for anything delayed, rename the file in the Files
 app to the `yyyy-MM-dd HH.mm.ss` form first.
 
+## Call recordings — only the ones you choose
+
+The iPhone (iOS 18.1 and later) records a call only when you tap the record
+button during it. Everyone on the call hears that it is being recorded.
+There is no automatic recording. The recording and Apple's transcript are
+saved in the **Notes** app, in a *Call Recordings* folder **(verify)**. They
+stay there: nothing here imports a call's audio or transcript by itself.
+The notes importer brings in a note's own text, and a call note's
+transcript sits inside its audio attachment.
+
+To journal a call you chose, open its note, share the audio and **Save to
+Files** → `VoiceJournal/inbox`. If its name starts with `Call` (or matches
+`[intake] call_patterns`), intake holds it like a Samsung call recording.
+Run `lifecrm calls take <n>` on the computer to transcribe it into that
+day's sources, or let `/log` ask you. Any other name is transcribed like
+any voice note, since putting it in the inbox was your choice
+([android.md](android.md#call-recordings-optional-and-only-the-ones-you-pick)
+has the commands).
+
 ## Verification checklist (run on the real phone)
 
 The pipeline side is tested with synthetic files named exactly as above.

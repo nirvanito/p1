@@ -23,10 +23,17 @@ phone-dictated text. Both feed the same source/transcript/segment tables.
 - initial_prompt seeding with known entity names is a marginal aid to roughly
   the first minute of audio only — the alias table is the real fix for
   misspelled names.
+- Call recordings are never transcribed on their own. A file named like one
+  (Samsung's "Call recording Mom_261020_200512.m4a", "Call with ...",
+  [intake] call_patterns) is HELD in the inbox until you choose: `lifecrm
+  calls take` transcribes it into a source like any note, `calls skip`
+  archives it untranscribed. [intake] call_recordings = "auto" turns the
+  hold off.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shutil
@@ -40,7 +47,7 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from . import platforms
-from .config import Config
+from .config import Config, ConfigError
 from .domain import days, sources
 from .domain.util import DomainError, is_iso_date
 from .importer import _write_transcript_copy, import_text, normalize_text
@@ -333,8 +340,152 @@ def _scan(directory: Path, exts: set[str]) -> list[Path]:
     return out
 
 
-def scan_inbox(cfg: Config) -> list[Path]:
-    return _scan(cfg.inbox_dir, AUDIO_EXTS)
+# ---------------------------------------------------------------- call recordings
+#
+# A call recording holds the other person's voice as well as yours, and a
+# phone can record every call by itself (Samsung's "Auto record calls"). So
+# intake decides nothing about one: it is held in the inbox, listed by
+# `lifecrm calls list` and `status`, until you take it or skip it. Taking is
+# the same transcription as any note; skipping moves the audio to the archive
+# untouched, and nothing reaches the database either way until you choose.
+
+CALL_MODES = ("ask", "auto")
+# Matched against the whole file name, ignoring case. Samsung's own shape —
+# a name, then _yyMMdd_HHmmss — is recognized by _CALL_RE as well.
+DEFAULT_CALL_PATTERNS = ("call recording*", "call with *", "call_*", "call-*")
+_CALL_PREFIX = re.compile(r"^(?:call recording|call with|call)[\s_-]*", re.IGNORECASE)
+
+
+def _intake_settings(cfg: Config) -> dict:
+    value = (cfg.extra or {}).get("intake")
+    return value if isinstance(value, dict) else {}
+
+
+def call_mode(cfg: Config) -> str:
+    """'ask' (hold call recordings for your pick — the default) or 'auto'
+    (transcribe them like any note)."""
+    mode = _intake_settings(cfg).get("call_recordings", "ask")
+    if mode not in CALL_MODES:
+        raise ConfigError(f"[intake] call_recordings must be \"ask\" or \"auto\", "
+                          f"got {mode!r}")
+    return mode
+
+
+def call_patterns(cfg: Config) -> tuple[str, ...]:
+    """The built-in name patterns plus any `[intake] call_patterns` adds (for
+    a recorder app that names its files another way)."""
+    extra = _intake_settings(cfg).get("call_patterns", [])
+    if isinstance(extra, str):
+        extra = [extra]
+    if not isinstance(extra, list) or not all(isinstance(p, str) for p in extra):
+        raise ConfigError("[intake] call_patterns must be a list of file-name "
+                          "patterns, e.g. [\"*ACR*\"]")
+    return DEFAULT_CALL_PATTERNS + tuple(extra)
+
+
+def is_call_recording(name: str, cfg: Config) -> bool:
+    """A file named like a phone-call recording."""
+    if _CALL_RE.search(Path(name).stem):
+        return True
+    low = name.lower()
+    return any(fnmatch.fnmatchcase(low, p.lower()) for p in call_patterns(cfg))
+
+
+def call_who(name: str) -> str | None:
+    """Who the call was with, as the recorder wrote it into the name ("Mom"
+    from "Call recording Mom_261020_200512.m4a") — for display only; it is
+    never matched against people."""
+    stem = Path(name).stem
+    m = _CALL_RE.search(stem)
+    if m:
+        stem = stem[:m.start()]
+    stem = _CALL_PREFIX.sub("", stem)
+    who = stem.strip(" _-")
+    return who or None
+
+
+def scan_inbox(cfg: Config, include_calls: bool = False) -> list[Path]:
+    """The audio intake will transcribe: everything in the inbox except the
+    call recordings held for your pick (unless include_calls, or
+    [intake] call_recordings = "auto")."""
+    files = _scan(cfg.inbox_dir, AUDIO_EXTS)
+    if include_calls or call_mode(cfg) == "auto":
+        return files
+    return [p for p in files if not is_call_recording(p.name, cfg)]
+
+
+def held_calls(cfg: Config) -> list[Path]:
+    """Call recordings waiting in the inbox for your pick, oldest first."""
+    if call_mode(cfg) == "auto":
+        return []
+    calls = [p for p in _scan(cfg.inbox_dir, AUDIO_EXTS)
+             if is_call_recording(p.name, cfg)]
+    return sorted(calls, key=lambda p: (*resolve_file_times(p, cfg)[::-1], p.name))
+
+
+def held_call_info(cfg: Config, paths: list[Path] | None = None) -> list[dict]:
+    """What `calls list` and `status` show for each held recording."""
+    out = []
+    for i, p in enumerate(held_calls(cfg) if paths is None else paths, start=1):
+        journal_date, recorded_at = resolve_file_times(p, cfg)
+        at = datetime.strptime(recorded_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc).astimezone(ZoneInfo(cfg.timezone))
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = None
+        out.append({"n": i, "file": p.name, "who": call_who(p.name),
+                    "journal_date": journal_date, "recorded_at": recorded_at,
+                    "local_time": at.strftime("%Y-%m-%d %H:%M"), "bytes": size,
+                    "path": str(p)})
+    return out
+
+
+def resolve_held(cfg: Config, picks: list[str], all_: bool = False) -> list[Path]:
+    """The held recordings `picks` name: a number from `calls list`, the
+    file's full name, or a piece of it that only one held file contains."""
+    held = held_calls(cfg)
+    if all_:
+        if picks:
+            raise DomainError("pass recordings to pick, or --all — not both")
+        return held
+    if not picks:
+        raise DomainError("name the recordings to pick (a number from `lifecrm "
+                          "calls list`, or part of the file name), or pass --all")
+    chosen: list[Path] = []
+    for pick in picks:
+        if pick.isdigit():
+            n = int(pick)
+            if not 1 <= n <= len(held):
+                raise DomainError(f"no held call recording number {n} — "
+                                  f"`lifecrm calls list` shows {len(held)}")
+            found = [held[n - 1]]
+        else:
+            exact = [p for p in held if p.name.lower() == pick.lower()]
+            found = exact or [p for p in held if pick.lower() in p.name.lower()]
+        if not found:
+            raise DomainError(f"no held call recording matches '{pick}' — "
+                              f"`lifecrm calls list` shows what is waiting")
+        if len(found) > 1:
+            raise DomainError(f"'{pick}' matches {len(found)} held recordings ("
+                              + ", ".join(p.name for p in found[:4])
+                              + ") — give more of the name, or its number")
+        if found[0] not in chosen:
+            chosen.append(found[0])
+    return chosen
+
+
+def skip_calls(cfg: Config, paths: list[Path]) -> list[dict]:
+    """Set held recordings aside: each moves to the archive's year folder,
+    untranscribed. The audio is kept — `lifecrm transcribe --file <archived
+    path>` takes one later — and nothing is written to the database."""
+    out = []
+    for p in paths:
+        journal_date, _ = resolve_file_times(p, cfg)
+        archived = archive_file(cfg, p, journal_date)
+        out.append({"file": p.name, "status": "skipped", "journal_date": journal_date,
+                    "archived_to": str(archived)})
+    return out
 
 
 def scan_text_inbox(cfg: Config) -> list[Path]:
@@ -522,11 +673,17 @@ def _archive_after_commit(conn: sqlite3.Connection, cfg: Config, path: Path,
 
 def transcribe_inbox(conn: sqlite3.Connection, cfg: Config,
                      only_file: Path | None = None,
-                     date_override: str | None = None) -> list[dict]:
+                     date_override: str | None = None,
+                     files: list[Path] | None = None) -> list[dict]:
+    """Transcribe the inbox (held call recordings left out), one named file,
+    or `files` — the call recordings `lifecrm calls take` picked."""
     if date_override is not None and only_file is None:
         # One date for a whole inbox would re-date every recording in it.
         raise DomainError("date_override applies to one recording — pass only_file")
-    files = [only_file] if only_file else scan_inbox(cfg)
+    if only_file:
+        files = [only_file]
+    elif files is None:
+        files = scan_inbox(cfg)
     if not files:
         return []
     model_cache: list = []

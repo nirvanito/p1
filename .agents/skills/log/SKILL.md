@@ -17,6 +17,14 @@ database directly — only through `lifecrm ingest` + `lifecrm apply`.
 1. Run `python -m lifecrm intake` (processes dictated text notes and
    transcribes new audio; skip silently if both inboxes are empty).
 2. Run `python -m lifecrm status --json`.
+   **Call recordings are the owner's choice, one by one.** Intake never
+   transcribes one; it holds it (`held_calls` in status: number, who, when).
+   If any are held, list them in one line each and ask which, if any, belong
+   in the journal. Run `python -m lifecrm calls take <n> ...` only for the
+   ones the user names, and `python -m lifecrm calls skip <n> ...` only for
+   the ones they say to set aside. Leave the rest held, never `--all`
+   unasked, then run `status --json` again. A recording the user did not
+   pick is never read, quoted or extracted.
 3. Group `unprocessed_sources` by `journal_date`. Choose the day:
    - `$ARGUMENTS` names a date -> that day's sources.
    - The user pasted text -> save to a temp file, run

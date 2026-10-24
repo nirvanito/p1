@@ -35,6 +35,13 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   date, and the rollover is applied to it. `[time] filename_date =
   auto|journal|calendar` overrides; `lifecrm filedate <name>` shows the
   result.
+- **Call recordings are transcribed only by the owner's pick.** Intake holds
+  every inbox file named like one (`transcribe.is_call_recording`: "Call
+  recording…", "Call with…", "Call_"/"Call-", Samsung's `_yyMMdd_HHmmss`,
+  `[intake] call_patterns`). `calls take <n>` transcribes it into a normal
+  source, and `calls skip <n>` archives it untranscribed. /log asks which
+  to take and never reads one the owner did not pick. `[intake]
+  call_recordings = "auto"` is the owner's opt-out.
 - `data\`, `backups\`, and `config.toml` are private and gitignored — never
   commit them, never paste transcript contents into commit messages.
 - Schema changes are numbered migrations in `lifecrm/migrations/`
@@ -60,8 +67,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   concurrent pytest run needs its own `--basetemp`: pytest deletes a basetemp
   at session start. `.github/workflows/ci.yml` (Windows + macOS) runs only
   once the repo is pushed.
-- Full surface (`python -m lifecrm --help`): init, intake, transcribe
-  (`--date` only with `--file`), import, ingest, apply, status, filedate,
+- Full surface (`python -m lifecrm --help`): init, intake (holds call
+  recordings), transcribe (`--date` only with `--file`; a named file is
+  transcribed even if it is a call), calls (list | take <n|name>... |
+  skip <n|name>... [--all]), import, ingest, apply, status, filedate,
   doctor, sql, export (jsonl | markdown | obsidian; obsidian has --dry-run),
   backup, verify-backup (restore a snapshot into a scratch root, doctor it,
   compare every table with a lower bound; exit 1 on failure), restore,
@@ -253,8 +262,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/platforms.py` — where things live on Windows vs macOS (cloud
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
-  cli.py: configure, demo, entity_links, filedate, gui (open), nutrients,
-  obsidian, review, verify (verify-backup), voice, web (serve), where.
+  cli.py: calls, configure, demo, entity_links, filedate, gui (open),
+  nutrients, obsidian, review, verify (verify-backup), voice, web (serve),
+  where.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export
   generator per source in `demo/sources/`, run through the real CLI into a
   `.lifecrm-demo`-marked root (never the project's data). `docs/demo.md`.

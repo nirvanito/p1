@@ -272,14 +272,20 @@ def transcribe(
         only = Path(file) if file else None
         if only and not only.exists():
             _fail(f"file not found: {only}")
+        # --file is a choice already: a call recording named that way is
+        # transcribed; the inbox run leaves held ones where they are.
+        held = [] if only else _held_results(cfg)
         if not only and not scan_inbox(cfg):
+            if held:
+                _report_held(held, as_json)
+                return
             typer.echo("inbox empty — nothing to transcribe")
             return
         results = transcribe_inbox(conn, cfg, only_file=only, date_override=date)
     finally:
         conn.close()
     if as_json:
-        _echo_json(results)
+        _echo_json(results + held)
         _needs_attention(results)
         return
     for r in results:
@@ -291,7 +297,30 @@ def transcribe(
                        f"{r['segments']} segments)")
         else:
             typer.echo(f"{r['file']}: {r['status']}")
+    _report_held(held, False)
     _needs_attention(results)
+
+
+def _held_results(cfg: Config) -> list[dict]:
+    """The call recordings intake leaves in the inbox, as result rows."""
+    from .transcribe import held_call_info
+    return [{"file": c["file"], "status": "held", "who": c["who"],
+             "journal_date": c["journal_date"], "local_time": c["local_time"]}
+            for c in held_call_info(cfg)]
+
+
+def _report_held(held: list[dict], as_json: bool) -> None:
+    if as_json:
+        _echo_json(held)
+        return
+    for r in held:
+        who = f" with {r['who']}" if r.get("who") else ""
+        typer.echo(f"{r['file']}: held — a call recording{who} ({r['local_time']}), "
+                   f"not transcribed until you choose")
+    if held:
+        typer.echo(f"{len(held)} call recording(s) held: `lifecrm calls list`, "
+                   f"then `calls take <n>` to transcribe one or `calls skip <n>` "
+                   f"to archive it untranscribed")
 
 
 @app.command()
@@ -308,13 +337,14 @@ def intake(as_json: bool = typer.Option(False, "--json")) -> None:
             results += intake_text_inbox(conn, cfg)
         if scan_inbox(cfg):
             results += transcribe_inbox(conn, cfg)
+        held = _held_results(cfg)
     finally:
         conn.close()
-    if not results:
+    if not results and not held:
         typer.echo("both inboxes empty — nothing to intake")
         return
     if as_json:
-        _echo_json(results)
+        _echo_json(results + held)
         _needs_attention(results)
         return
     for r in results:
@@ -325,6 +355,7 @@ def intake(as_json: bool = typer.Option(False, "--json")) -> None:
                        f"({r['journal_date']}, {r['segments']} segments)")
         else:
             typer.echo(f"{r['file']}: {r['status']}")
+    _report_held(held, False)
     _needs_attention(results)
 
 
@@ -538,9 +569,11 @@ def status(as_json: bool = typer.Option(False, "--json")) -> None:
 
 
 def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
-    from .transcribe import scan_inbox, scan_text_inbox
+    from .transcribe import held_call_info, scan_inbox, scan_text_inbox
     pending_audio = [p.name for p in scan_inbox(cfg)]
     pending_text = [p.name for p in scan_text_inbox(cfg)]
+    held = [{k: c[k] for k in ("n", "file", "who", "journal_date", "local_time")}
+            for c in held_call_info(cfg)]
     unprocessed = [dict(r) for r in conn.execute(
         "SELECT s.id AS source_id, s.journal_date, s.type, s.created_at, "
         "MAX(LENGTH(t.text)) AS chars "
@@ -578,6 +611,7 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
         "today": today_str,
         "pending_audio": pending_audio,
         "pending_text": pending_text,
+        "held_calls": held,
         "unprocessed_sources": unprocessed,
         "open_extraction_runs": open_runs,
         "open_loops": open_loops,
@@ -594,6 +628,9 @@ def _status_body(conn: sqlite3.Connection, cfg: Config, as_json: bool) -> None:
                + (f" ({', '.join(pending_audio)})" if pending_audio else ""))
     typer.echo(f"pending text notes: {len(pending_text)}"
                + (f" ({', '.join(pending_text)})" if pending_text else ""))
+    if held:
+        typer.echo(f"call recordings held for your pick: {len(held)} — "
+                   f"`lifecrm calls list`, then take or skip each")
     if unprocessed:
         typer.echo("sources awaiting extraction:")
         for s in unprocessed:
