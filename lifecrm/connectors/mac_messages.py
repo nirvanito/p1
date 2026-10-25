@@ -196,6 +196,8 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         unmapped=parts["unmapped"],
         skipped=parts["skipped"],
         facts=facts,
+        coverage=im.coverage_for(parts["facts"], _account(owners), None,
+                                 "the Mac's Messages database: its whole store"),
         present_ids=result["present"],
         mirror_streams=list(streams),
         target_kind="live" if live else "file",

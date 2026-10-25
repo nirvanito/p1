@@ -215,14 +215,15 @@ def test_a_backup_job_writes_a_snapshot_restore_then_lists(tmp_path):
 # ---------------------------------------------------------------- launchd plists
 
 @needs_bash
-def test_install_tasks_writes_five_valid_launch_agents(tmp_path):
+def test_install_tasks_writes_six_valid_launch_agents(tmp_path):
     agents = tmp_path / "LaunchAgents"
     done = _run("install-tasks.sh", "--no-load",
                 env=_env(LIFECRM_LAUNCHAGENTS_DIR=agents.as_posix()))
     assert done.returncode == 0, done.stdout + done.stderr
     files = sorted(p.name for p in agents.iterdir())
     assert files == ["local.lifecrm.backup.plist", "local.lifecrm.doctor.plist",
-                     "local.lifecrm.intake.plist", "local.lifecrm.review.plist",
+                     "local.lifecrm.intake.plist", "local.lifecrm.reminders.plist",
+                     "local.lifecrm.review.plist",
                      "local.lifecrm.verify-restore.plist"]
     jobs = {p.stem: plistlib.loads(p.read_bytes()) for p in agents.iterdir()}
 
@@ -235,6 +236,8 @@ def test_install_tasks_writes_five_valid_launch_agents(tmp_path):
         # Monday after the rollover: the default period is then the week
         # that has just ended (test_fix_ops.py pins the reasoning).
         "local.lifecrm.review": ("review.sh", {"Weekday": 1, "Hour": 7, "Minute": 30}),
+        # Daily after the rollover: an overdue reminder moves to this morning.
+        "local.lifecrm.reminders": ("reminders.sh", {"Hour": 7, "Minute": 15}),
     }
     for label, (script, when) in expected.items():
         job = jobs[label]
@@ -302,7 +305,7 @@ def test_install_tasks_print_changes_nothing(tmp_path):
     done = _run("install-tasks.sh", "--print",
                 env=_env(LIFECRM_LAUNCHAGENTS_DIR=agents.as_posix()))
     assert done.returncode == 0, done.stderr
-    assert done.stdout.count("<?xml") == 5
+    assert done.stdout.count("<?xml") == 6
     assert "local.lifecrm.verify-restore" in done.stdout
     assert not agents.exists()
 
@@ -322,4 +325,4 @@ def test_uninstall_tasks_removes_what_install_wrote(tmp_path):
     done = _run("uninstall-tasks.sh", "--no-load", env=env)
     assert done.returncode == 0, done.stderr
     assert list(agents.iterdir()) == []
-    assert done.stdout.count("removed: local.lifecrm.") == 5
+    assert done.stdout.count("removed: local.lifecrm.") == 6

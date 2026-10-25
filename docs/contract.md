@@ -108,6 +108,20 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
   `secondary` list (extensible via `lifecrm categories add`).
 - **occurred_at / ended_at / due_at** — ISO dates or datetimes; future values
   are valid here.
+- **entries[].data** — an object or null; genuinely uncommon metadata. Two
+  shapes are known. A kept brief carries `derived_from` starting with
+  `lifecrm ` and is never re-read as evidence. A **goal** is a `plan` whose
+  `data.goal` names a measurable target ([assistant.md](assistant.md),
+  "Goals"): `{"metric": "workouts", "target": 3, "per": "week"}` with
+  `metric` one of `workouts`, `exercise_minutes`, `spending`, `texts`,
+  `contact` (plus `entity`, the person's name), `steps`, `sleep`,
+  `sleep_hours`, `mood`, `energy` or `cat:<category>`; `per` `day` | `week` |
+  `month`; optional `op` (`>=` default, `<=`), `start` (a date; default the
+  journal date), `currency` (spending only) and `min_known` (days a level
+  needs before a period is decided). The domain layer validates the shape on
+  create and edit, a goal needs kind `plan`, and `lifecrm ingest` reports a
+  bad one as `entries[i].data.goal...`. Contract version stays 2: the field
+  was already an optional object.
 - **entities[]** — `{"ref": "existing", "id": N, "role": R}` or
   `{"ref": "new", "type": T, "name": "...", "aliases": [...], "role": R}`.
   A `new` entity whose name exactly matches an existing active entity (or

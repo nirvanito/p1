@@ -1210,6 +1210,16 @@ def scan(target: Path, cfg: Config) -> base.Scan:
                 for k, v in sorted(acc.unmapped.items())]
     unmapped += [{"what": e, "count": 1, "example": None} for e in errors]
     dates = [r["journal_date"] for r in records]
+    as_of = max(f["as_of"] for f in files)
+    # Strong, Hevy and Strava export every workout the app holds: between the
+    # first one and the export's newest moment, a day without a row is a day
+    # without a workout in that app (docs/assistant.md).
+    coverage = []
+    if dates:
+        coverage.append({"stream": "workout", "account": _account(target, files),
+                         "start": min(dates), "end": max(max(dates), as_of[:10]),
+                         "basis": "full-history export (Strong, Hevy and Strava export "
+                                  "every workout)"})
     return base.empty_scan(
         name,
         account=_account(target, files),
@@ -1221,9 +1231,10 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         skipped=skipped,
         facts={"files": files, "weight_unit": units["weight"],
                "distance_unit": units["distance"],
-               "as_of": max(f["as_of"] for f in files),
+               "as_of": as_of,
                "oldest_workout": min(dates) if dates else None,
                "newest_workout": max(dates) if dates else None},
+        coverage=coverage,
         target_kind=kind,
         files=files,
         timezone=cfg.timezone)

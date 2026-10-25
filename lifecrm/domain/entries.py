@@ -118,6 +118,8 @@ def create(conn: sqlite3.Connection, *, journal_date: str, kind: str, title: str
     days.ensure_day(conn, journal_date)
     kid = kind_id(conn, kind)
     _validate_common(time_of_day, occurred_at, ended_at, due_at, confidence)
+    from . import goals as goals_mod
+    goals_mod.validate_entry_data(kind, data)
     now = now_utc()
     uid = new_uuid()
     cur = conn.execute(
