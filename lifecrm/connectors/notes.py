@@ -626,7 +626,7 @@ def _snapshot(src: Path, tmp: Path) -> sqlite3.Connection:
                 # keeps the temporary folder from being removed.
                 copy = sqlite3.connect(dest)
                 try:
-                    source.backup(copy)
+                    base.sqlite_backup(source, copy, src)      # gives up, never hangs
                 finally:
                     copy.close()
             finally:

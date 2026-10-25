@@ -457,7 +457,7 @@ def default_target(cfg: Config) -> Path:
     if len(found) == 1:
         return found[0]
     if found:
-        raise DomainError("found several Spotify downloads — put them in one folder and "
+        raise base.Ambiguous("found several Spotify downloads — put them in one folder and "
                           "pass the folder: " + "; ".join(str(p) for p in found))
     raise DomainError(
         "no Spotify download found — looked for my_spotify_data*.zip in "

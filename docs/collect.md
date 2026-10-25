@@ -85,7 +85,32 @@ dry run shows. Then, per source:
   reader, not a yes.
 
 A source found for the first time that the reader cannot read, or that holds
-no records, is not offered at all: there is nothing to ask. A **conflict** (a
+no records, is not offered at all: there is nothing to ask.
+
+**On a Mac, a source macOS refuses is never "not found".** Messages, calls,
+Contacts, Notes, Photos, Mail and Safari sit behind Full Disk Access; until
+it is granted, each one the job finds is an `error` that says so, and
+/morning shows them as one item ("macOS is keeping the daily import out of
+Messages on this Mac, notes. Give Full Disk Access?", key
+`collect:macos:blocked`). `collect setup` marks them `!` with the two steps:
+your terminal, and `/bin/bash` plus the venv's Python for the 06:30 job
+(docs/mac.md, section 5). The same goes for **Downloads and iCloud Drive**,
+where exports land: macOS can keep a scheduled job out of them without an
+error anywhere, so the job lists each folder itself and, when it may not,
+says so once as that folder's own row ("the Downloads folder"); `collect
+decline downloads` silences it if you never save exports there.
+
+**Several candidates are a question too.** Two iPhone backups on one Mac
+(an iPad's, an old phone's), two camera folders, several downloaded
+exports: the job never guesses between them, and says which it found. Set
+the one to use in `config.toml` (`[connectors.ios_messages] path`,
+`[connectors.photos] path`, …) or import it by hand.
+
+**Messages that age out are kept.** A phone set to keep messages for 30
+days or a year empties its oldest end by itself. For texts (the iPhone
+backup, the Mac's Messages, SMS Backup & Restore) only a message missing
+from *inside* the span the source still holds counts as deleted; older
+ones aged out and stay, with the days they were in. A **conflict** (a
 stored record the source now spells differently, with no newer modification
 time) is never written by any import, so it holds nothing back: the plan
 applies around it and the count is kept, as `observe` reports it.

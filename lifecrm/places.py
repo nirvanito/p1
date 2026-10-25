@@ -669,6 +669,14 @@ def fetch(cfg: Config, *, dataset: str = DEFAULT_DATASET, base: str = GEONAMES_B
             with opener(url) as resp:
                 return resp.read()
         except OSError as e:
+            if "CERTIFICATE_VERIFY_FAILED" in str(e):
+                # python.org's macOS Python ships without a CA store until its
+                # "Install Certificates.command" has run once.
+                raise DomainError(
+                    f"could not download {url}: this Python cannot check HTTPS "
+                    f"certificates — on a Mac with python.org's Python, run "
+                    f"'/Applications/Python 3.12/Install Certificates.command' once "
+                    f"(or use Homebrew's python@3.12), then fetch again") from e
             raise DomainError(f"could not download {url}: {e}") from e
 
     raw_zip = get(cities_url)

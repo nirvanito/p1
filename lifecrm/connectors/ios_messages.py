@@ -352,12 +352,22 @@ def _choose(found: list[dict], searched: str) -> Path:
         f"{b['path']} ({b.get('device') or 'unknown device'}, "
         f"{b.get('backup_date') or 'undated'}{', encrypted' if b['encrypted'] else ''})"
         for b in found)
-    raise DomainError(f"{len(found)} iPhone backups found — pass one of them: {listing}")
+    raise base.Ambiguous(f"{len(found)} iPhone backups found — pass one of them: {listing}")
 
 
 def default_target(cfg: Config) -> Path:
-    """The backup to read when no path is given: the only one on this
-    machine, looked for where Apple's tools put them."""
+    """The backup to read when no path is given: `[connectors.ios_messages]
+    path` (the one to use when this machine holds several — an iPad's, an
+    old phone's), else the only one on this machine, looked for where
+    Apple's tools put them."""
+    configured = cfg.connector_settings(name).get("path")
+    if isinstance(configured, str) and configured.strip():
+        p = cfg.resolve(configured.strip())
+        with privacy_guard(p):
+            if not p.exists():
+                raise DomainError(f"[connectors.ios_messages] path {p} does not exist "
+                                  f"— fix it in config.toml, or pass the backup's path")
+        return p
     roots = backup_roots()
     return _choose([b for root in roots for b in find_backups(root)],
                    ", ".join(str(r) for r in roots))
@@ -415,8 +425,10 @@ def _snapshot(src: Path, wal: Path | None, tmp: Path,
             source = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True)
             try:
                 copy = sqlite3.connect(dest)
-                source.backup(copy)
-                copy.close()
+                try:
+                    base.sqlite_backup(source, copy, src)      # gives up, never hangs
+                finally:
+                    copy.close()
             finally:
                 source.close()
         conn = sqlite3.connect(dest)
@@ -1065,6 +1077,10 @@ def scan(target: Path, cfg: Config) -> base.Scan:
                               "(Info.plist Last Backup Date)"),
         present_ids=result["present"],
         mirror_streams=list(streams),
+        # Keep Messages (30 days, a year) empties the oldest end by itself:
+        # what is older than the phone's oldest message aged out, it was not
+        # deleted (domain/observations._mirror_plan).
+        mirror_ages_out=True,
         target_kind=files["kind"],
         contacts_read=files["contacts"] is not None,
         named_handles=parts["named_handles"],

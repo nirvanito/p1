@@ -164,6 +164,12 @@ file that is the phone's **whole** state:
 | a `count` that disagrees with what it holds | never — the file is incomplete |
 | anything, with `mirror = false` | never |
 
+A text older than the backup's oldest one is **kept**, not removed: Messages'
+*delete old messages* limit empties the phone's oldest end by itself, which is
+an age-out, not a deletion (the report says `kept: N older than the oldest
+message the source still holds`). Only a text missing from inside the span the
+backup still holds counts as deleted.
+
 Every id in a mirroring file counts as present, including drafts and the
 other rows this connector skips.
 

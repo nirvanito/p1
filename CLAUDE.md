@@ -219,7 +219,14 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   `domain/observations.py` (a connector that declares `present_ids` has what
   its source no longer holds removed, scoped to its own streams and a named
   account; a row an entry or a relationship cites is hidden, not deleted;
-  the owner chose "mirror the source" over "remember", 2026-09-24).
+  the owner chose "mirror the source" over "remember", 2026-09-24; a store
+  that ages out its oldest end by itself — the three text connectors, for a
+  keep-messages limit — declares `mirror_ages_out`, and only what is missing
+  from inside the span it still holds is removed: older rows aged out and
+  stay, with their declared days). A `default_target` that finds several
+  candidates raises `base.Ambiguous`; a snapshot copy goes through
+  `base.sqlite_backup`, which gives up on a locked source instead of
+  hanging.
   Importers emit *handles*, never names — linking one handle attributes
   every observation that referenced it, with no backfill pass. See
   `docs/observed-tier.md`. Connectors (each has a doc: `docs/<name>.md`, except
@@ -227,7 +234,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   ios_calls -> `docs/calls.md`, android_sms -> `docs/android-texts.md`;
   `meta_messages` and `google_activity` keep the underscore):
   - `ai_chat` — Claude/ChatGPT exports; mirrors per vendor + account.
-  - `ios_messages` — iPhone backup -> iMessage/SMS/RCS; mirrors.
+  - `ios_messages` — iPhone backup -> iMessage/SMS/RCS; mirrors;
+    `[connectors.ios_messages] path` names the backup when there are several.
     `connectors/typedstream.py` decodes `attributedBody` (written from the
     format; crabstep/imessage-exporter are GPL-3.0 — never copy their code).
   - `mac_messages` — the Mac's `chat.db` via ios_messages' reader under its
@@ -391,7 +399,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   applied | unchanged | held (first_import per connector + account,
   mass_removal, invalid) | missing (named only) | error; with no list, a
   source not found, or found for the first time but unreadable or empty, is
-  `skipped` and leaves no row. `approve` = the owner's yes (preview = the
+  `skipped` and leaves no row — but a source macOS refuses (`blocked()`: a
+  PermissionError in the chain or a connector's "Full Disk Access" line) is
+  always an `error`, never skipped, and the nudges pack folds every such
+  source into one `collect:macos:blocked` item. `approve` = the owner's yes (preview = the
   connector's report_lines; apply allows the held removal, records the run
   with actor user, clears a decline); `decline` = a dismissed nudge key
   `collect:<source>:declined` (the first-import key dismissed counts too).

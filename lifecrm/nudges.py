@@ -556,7 +556,7 @@ def _collect(conn: sqlite3.Connection, cfg: Config, ids: _Ids,
         no = collect_mod.declined(conn)
     except sqlite3.OperationalError:     # pre-v8: nothing collected yet
         return []
-    out = []
+    out, refused = [], []
     for source in (configured if configured is not None else sorted(latest)):
         row = latest.get(source)
         if row is None or row["outcome"] not in collect_dom.ATTENTION or source in no:
@@ -570,11 +570,24 @@ def _collect(conn: sqlite3.Connection, cfg: Config, ids: _Ids,
             "type": "collect", "tier": "system", "run_uuid": row["run_uuid"],
             "source": source, "outcome": row["outcome"], "hold": row["hold"],
             "date": day, "reason": row["reason"], "target": row["target"]})
+        if row["outcome"] == "error" and "Full Disk Access" in (row["reason"] or ""):
+            refused.append((source, day, cid))
+            continue
         out.append({"kind": "collect", "key": f"collect:{source}:{why}",
                     "title": _COLLECT_TITLES[why].format(
                         s=source, label=_first_upper(collect_mod.label(source))),
                     "detail": row["reason"], "date": day,
                     "ids": [cid], "tier": "system", "_sort": (source,)})
+    if refused:
+        # One thing for the owner to do, however many sources it unlocks.
+        names = ", ".join(collect_mod.label(s) for s, _, _ in refused)
+        out.append({"kind": "collect", "key": "collect:macos:blocked",
+                    "title": f"macOS is keeping the daily import out of {names}. "
+                             f"Give Full Disk Access?",
+                    "detail": " ".join(collect_mod.FULL_DISK_ACCESS_STEPS),
+                    "date": max(d for _, d, _ in refused),
+                    "ids": [c for _, _, c in refused], "tier": "system",
+                    "_sort": ("",)})
     return out
 
 

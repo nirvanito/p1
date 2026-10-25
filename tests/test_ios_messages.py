@@ -581,15 +581,16 @@ def test_removing_most_of_the_archive_at_once_is_refused(cfg, conn, tmp_path, mo
     _apply(conn, im.scan(make_backup(tmp_path / "a"), cfg))
     scan = im.scan(make_backup(tmp_path / "b", variant="few"), cfg)
     plan = obs.build_plan(conn, scan)
-    assert len(plan["removed"]) == 19
-    with pytest.raises(DomainError, match="remove 19 of 21.*--allow-mass-removal"):
+    # the one record older than the backup's oldest aged out of the phone: kept
+    assert len(plan["removed"]) == 18 and plan["aged_out"] == 1
+    with pytest.raises(DomainError, match="remove 18 of 21.*--allow-mass-removal"):
         obs.apply_plan(conn, scan, plan)
     conn.rollback()
     assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 21
 
     obs.apply_plan(conn, scan, plan, allow_mass_removal=True)
     conn.commit()
-    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 2
+    assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 3
 
 
 @pytest.mark.parametrize("removed,scope,refused", [
