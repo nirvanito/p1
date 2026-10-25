@@ -57,7 +57,11 @@ Roughly 150-300 words, advisor's voice, second person:
 - **Try this week** — one to three suggestions, each a question or a small,
   reversible experiment with a way to tell if it worked ("for the next 7
   nights, lights out by 23:00 — next week's pack will show whether the short
-  nights [H1] drop").
+  nights [H1] drop"). If the user takes one up, it can be measured: a plan
+  carrying `data.experiment` (`{"change": "lights out by 23:00", "outcome":
+  "sleep", "days": 14}`, docs/features.md), proposed through `/log` like any
+  other plan — later packs' `experiments` section then compares the days of
+  the change with the days before, co-occurrence and never cause.
 
 The `/review-week` rules hold: every factual sentence cites its ids, numbers
 are copied exactly from the pack, nothing outside the pack, co-occurrence is

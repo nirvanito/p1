@@ -300,6 +300,24 @@ def _op_observe_ios_messages(conn, cfg, tmp_path):
     obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
 
 
+def _op_collect(conn, cfg, tmp_path):
+    from test_android_sms import make_backup
+    from lifecrm import collect
+    from lifecrm.connectors import android_sms
+    folder = make_backup(tmp_path / "sms")
+    cfg.connectors = {"android_sms": {"folder": str(folder)}}
+    cfg.extra = {"collect": {"sources": ["android_sms"]}}
+    conn.commit()        # the green check above leaves doctor's FTS probe open
+    collect.run(conn, cfg)                   # held: the first import is the owner's
+    scan = android_sms.scan(folder, cfg)
+    obs.apply_plan(conn, scan, obs.build_plan(conn, scan))   # the owner's own run
+    conn.commit()
+    for p in folder.iterdir():
+        p.unlink()
+    make_backup(folder, variant="deleted", stamp="20260921020003")
+    collect.run(conn, cfg)                   # applied: one text deleted on the phone
+
+
 def _op_handle_link(conn, cfg, tmp_path):
     scan = _ai_chat_scan(cfg, tmp_path)
     obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
@@ -328,6 +346,7 @@ DOMAIN_OPS = {
     "observe apply": _op_observe_apply,
     "observe retract": _op_observe_retract,
     "observe ios_messages": _op_observe_ios_messages,
+    "collect": _op_collect,
     "handles link": _op_handle_link,
 }
 

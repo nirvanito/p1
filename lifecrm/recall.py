@@ -3832,6 +3832,13 @@ def build_evidence(conn: sqlite3.Connection, cfg: Config, question: str, *,
             # the journal not also stating it is not a gap worth reporting.
             no_data.append(missing_label(spec["label"], "journal")
                            + (f" ({ALL_RECORDS})" if span else ""))
+    # ---- the read-side features' own question shapes (lifecrm/ask_extra.py):
+    # places, subscriptions, weekdays, links — each adds nothing unless the
+    # question is its kind and its feature is checked.
+    if observed:
+        from . import ask_extra
+        metrics += ask_extra.evidence(conn, cfg, question, window=window, today=today,
+                                      add=O.add, no_data=no_data)
     for i, m in enumerate(metrics, start=1):
         m["id"] = f"M{i}"
 
@@ -4289,13 +4296,25 @@ def _line_nutrient(m: dict) -> str:
     return line + _listed(m, "days")
 
 
+def _line_extra(m: dict) -> str:
+    """A read-side feature's metric (lifecrm/ask_extra.py) carries its own
+    evidence line, built where its facts are."""
+    return f"[{m['id']}] {m['label']} ({m['origin']}) — {m['line']}"
+
+
+# The read-side features' metric kinds (ask_extra.KINDS), spelled here so
+# this module never imports that one at load time.
+_EXTRA_KINDS = ("places", "subscriptions", "weekday", "links")
+
 _NEW_METRIC_LINES = {"txn_person": _line_payments, "workout_best": _line_best,
                      "activity_total": _line_total, "nutrient_report": _line_report,
-                     "nutrient": _line_nutrient}
+                     "nutrient": _line_nutrient,
+                     **{k: _line_extra for k in _EXTRA_KINDS}}
 _INDEX_TEXT = {"txn_person": _payments_text, "workout_best": _best_text,
                "activity_total": _total_text,
                "nutrient_report": lambda m: f"{m['days_counted']} day(s) counted",
-               "nutrient": _nutrient_text}
+               "nutrient": _nutrient_text,
+               **{k: (lambda m: m["summary"]) for k in _EXTRA_KINDS}}
 
 
 def _card_text(o: dict) -> str | None:
@@ -4437,6 +4456,8 @@ def render_evidence(bundle: dict, max_series: int = 14) -> str:
     lines = [context[0]]
     for m in bundle["metrics"]:
         lines.append(by_id[m["id"]])
+        if m["metric"] in _EXTRA_KINDS and not m["series"]:
+            continue
         series = m["series"][-max_series:]
         fmt = (lambda v: fmt_money(v, m["unit"], signed=m["metric"] == "txn_person")) \
             if m["metric"] in ("txn_spend", "txn_person") \
@@ -4645,6 +4666,9 @@ def _metric_sentences(m: dict, items: dict, used: set[str]) -> list[str]:
         return [f"Over {w['start']} to {w['end']} ({w['label']}), {m['days_counted']} of "
                 f"{w['days']} day(s) were counted from the food diary, against the "
                 f"reference intakes for {m['profile']} [{mid}]."]
+    if m["metric"] in _EXTRA_KINDS:
+        used.update(m.get("transactions") or ())
+        return [s.replace("{mid}", mid) for s in m.get("sentences") or ()]
     return []
 
 

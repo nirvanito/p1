@@ -1,6 +1,6 @@
 ---
 name: morning
-description: The morning brief — what matters today, written from the deterministic nudges pack (`lifecrm nudges`: what is due, whose birthday is near, nutrients below reference, stale imports, the agenda) in an advisor's voice, every sentence cited to a nudge id and checked against the saved pack before it is shown; suggestions as questions or small experiments, never a diagnosis. Optionally kept as a reflection entry through the normal review gate. Use when the user asks what matters today, what they should not forget, for a morning brief or a start-of-day check-in, or runs /morning.
+description: The morning brief — what matters today, written from the deterministic nudges pack (`lifecrm nudges`: what is due, whose birthday is near, nutrients below reference, stale imports, imports the daily collect job held for the user, the agenda) in an advisor's voice, every sentence cited to a nudge id and checked against the saved pack before it is shown; suggestions as questions or small experiments, never a diagnosis. Optionally kept as a reflection entry through the normal review gate. Use when the user asks what matters today, what they should not forget, for a morning brief or a start-of-day check-in, or runs /morning.
 ---
 
 # /morning — what matters today
@@ -40,8 +40,15 @@ a closed task renumbers the next run.
 
 - Ids: `N#` a nudge (its `kind`, `key`, `title`, `detail`, and the `ids` it
   rests on), `E#` a confirmed entry, `O#` an observed row or a count over
-  observed rows. `index[id]` has the details behind every id (uuids, dates,
-  import ids).
+  observed rows, `C#` a daily collect run's outcome for one source.
+  `index[id]` has the details behind every id (uuids, dates, import ids).
+- A `collect` nudge (tier `system`) is about the daily imports
+  (docs/collect.md), never a fact about the user's life. Its key says which:
+  `collect:<source>:first_import` is a **question** — a source found on this
+  computer for the first time, its `detail` saying what it holds (how many
+  records, which days, where); `mass_removal` is a large removal the job held
+  for their yes; `invalid`, `missing` and `error` are problems to mention
+  plainly (a source they named found nothing, or a reader failed).
 - `tier` matters. `confirmed` nudges (a due task or plan) rest on what the
   user reviewed. `observed` nudges (a birthday from a contact card, a
   nutrient from the food diary, a stale import, the agenda) rest on bulk
@@ -52,6 +59,16 @@ a closed task renumbers the next run.
   is defensible, "you forgot to reply" is not. Keep that register.
 - `notes` says what could not be computed (no `[nutrition]` profile, a bad
   `[owner]` table). A thin pack gets a short brief that says it is thin.
+- The read-side features (docs/features.md; each `{"enabled": false}` while
+  the user unchecked it) add more to read. Under an `agenda` event, `prep`
+  lists `A#` ids, one per person on it: `index[A#].lines` is what the records
+  hold about them (last message each way, open loops, LinkedIn position, a
+  birthday, gift ideas), each line ending in the ids it rests on.
+  `on_this_day.years` is the same date in earlier years (`D#` that journal
+  day, `E#` its entries, `O#` its records, `years_ago`). `prompts` is
+  yesterday's moments worth a word in the journal, `highlights` today's three
+  book highlights. Newer nudge kinds — `experiment`, `anniversary`,
+  `price_change`, `new_recurring`, `job_change` — read like the others.
 
 ## Step 3 — write the brief
 
@@ -71,6 +88,22 @@ Rules (non-negotiable):
   advice. A nutrient below reference is at most a question for a clinician;
   the pack's own disclaimer line says so and you keep its spirit.
 - Observed items are what the records show, not what happened.
+
+**From the read-side features (optional, each only when the pack holds
+it).** A meeting today with prep: one sentence for the person most worth
+preparing for, citing `[A#]`. An earlier year on this date: one sentence,
+"N years ago today ..." citing its `[D#]`/`[E#]`/`[O#]` (the years count is
+the pack's, so it checks). Prompts: at most two, as questions for tonight's
+note ("anything to say about the visit to Barton Springs? [O7]") — a prompt
+is never a fact about the day. One highlight may close the brief, quoted
+exactly, citing its `[O#]`. Keep the whole brief under 250 words.
+
+**Questions (collect, optional).** For each `first_import` or
+`mass_removal` collect nudge, at most three, end the brief with one short
+question the user can answer in a word, copying the numbers and days from its
+`detail`: "Import your browser history — 12,034 records, 2023-03-02 to
+2026-10-24? (yes / not now / never) [N4]". A removal: "The texts backup would
+remove 37 of 120 messages — import it anyway? [N5]". Never answer for them.
 
 **Patterns (experimental, optional).** Only when the pack's `patterns`
 block has `enabled: true` (the user set `[assistant] patterns = "on"`) and it
@@ -94,7 +127,25 @@ lists each sentence whose numbers or dates are not in the lines it cites —
 fix the brief (remove the claim or cite the right id) and re-run until it
 passes. The check verifies ids and numbers; whether a sentence's claim
 follows from them is your responsibility. Then show the user the brief with
-a **Sources** list: each cited `N#` with the `E#`/`O#` ids it rests on.
+a **Sources** list: each cited `N#` (and `A#`) with the `E#`/`O#`/`C#` ids it rests on.
+
+When the user answers a collect question:
+
+- **yes** — first `python -m lifecrm collect approve <source>`: a preview,
+  writing nothing (the connector's own dry-run report, then one summary
+  line). If it matches what the question said and the report flags nothing
+  odd (no unknown fields or skipped rows in bulk, no warning line), run
+  `python -m lifecrm collect approve <source> --yes` and say in a sentence
+  what came in. If something looks off, show the user those lines and the
+  doc the summary names (its first-real-import checklist) and ask before
+  importing. From then on the daily job collects it by itself.
+- **not now** — `python -m lifecrm nudges snooze <key> --days 7`.
+- **never** — `python -m lifecrm collect decline <source>`: the job stops
+  looking at it (`collect approve` takes it back).
+
+When a `missing` nudge, or the user, asks how to get a source onto this
+computer (texts, health, photos), run `python -m lifecrm collect setup`
+and walk them through its first `to do` item, one step at a time.
 
 If the user waves something off ("not this week", "never again"), do it by
 key, never by number:
@@ -103,8 +154,9 @@ key, never by number:
     python -m lifecrm nudges dismiss <key>
 
 `<key>` is the nudge's `key` field (`due:<uuid>`, `birthday:<id>:<year>`,
-`nutrient:<name>`, `stale:<connector>`). An `N#` works only together with the
-saved pack: `nudges snooze N2 --days 7 --pack <pack file>`.
+`nutrient:<name>`, `stale:<connector>`, `collect:<source>:<why>`). An `N#`
+works only together with the saved pack: `nudges snooze N2 --days 7 --pack
+<pack file>`.
 
 ## Step 5 — keep it? (only if the user says yes)
 

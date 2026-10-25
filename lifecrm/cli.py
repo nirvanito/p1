@@ -1326,24 +1326,12 @@ def observe(
                 typer.echo("dry run — nothing written. Re-run with --apply to write.")
             return
 
-        refusal = obs.mass_removal(plan)
-        if refusal and not allow_mass_removal:
-            conn.rollback()
-            _fail(refusal)
-        snapshot = None
-        if plan.get("removed"):
-            # Removal is the one write here that a re-import cannot always
-            # undo, so it gets the migration treatment: a snapshot first. Not
-            # named lifecrm-*: tiered retention keeps one of those per day, the
-            # newest, so the next backup that day — taken after the removal —
-            # would prune the only copy of what this removes. pre-removal-*
-            # has its own retention (lifecrm/retention.py).
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            snapshot = db_mod.snapshot(conn, cfg.backups_dir / f"pre-removal-{ts}.db")
+        # Refused on a mass removal, a snapshot first when anything goes —
+        # the one write path `lifecrm collect` shares (lifecrm/collect.py).
+        from .collect import apply_observed
         try:
-            summary = obs.apply_plan(conn, scan, plan,
-                                     allow_mass_removal=allow_mass_removal,
-                                     snapshot=snapshot.name if snapshot else None)
+            summary, snapshot = apply_observed(conn, cfg, scan, plan,
+                                               allow_mass_removal=allow_mass_removal)
             conn.commit()
         except DomainError as e:
             conn.rollback()

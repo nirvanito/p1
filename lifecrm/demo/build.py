@@ -38,6 +38,17 @@ from ..domain.days import journal_date_for
 from . import journal, persona
 
 MARKER = ".lifecrm-demo"
+# The towns the persona's located records are near — real towns, with the
+# positions and populations GeoNames gives them (CC BY 4.0): (name, lat,
+# lon, country code, region, population), the compact gazetteer's rows.
+DEMO_TOWNS = (
+    ("Austin", 30.26715, -97.74306, "US", "Texas", 961855),
+    ("Round Rock", 30.50826, -97.6789, "US", "Texas", 133372),
+    ("San Antonio", 29.42412, -98.49363, "US", "Texas", 1434625),
+    ("El Paso", 31.75872, -106.48693, "US", "Texas", 681728),
+    ("Ljubljana", 46.05108, 14.50513, "SI", "Ljubljana", 284355),
+    ("Bled", 46.36917, 14.11361, "SI", "Bled", 5165),
+)
 # The demo's [time] day_rollover_hour. Its default "today" uses the same
 # hour, so a build at 01:00 is anchored on the journal day the demo's own
 # ask and status call today — not on a calendar date they see as tomorrow.
@@ -357,6 +368,12 @@ class DemoBuilder:
         self.sync = sync
         self.echo(f"demo root: {self.root}")
         self._run("init")
+        # The places feature reads a GeoNames file `places fetch` downloads; the
+        # demo carries the few real towns its persona was in instead, so trips
+        # and countries show without the network (docs/places.md).
+        from .. import places
+        places.write_compact(self.root / "data" / "geo" / "places.tsv", DEMO_TOWNS,
+                             source="demo gazetteer: the persona's towns")
 
     def _write_notes(self, notes: list[dict]) -> None:
         inbox = self.sync / "inbox-text"

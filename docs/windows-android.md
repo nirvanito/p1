@@ -153,11 +153,13 @@ This registers, for your user (no admin):
 
 | task | when | does | log |
 |---|---|---|---|
+| LifeCRM collect | daily 06:30 | every source on this laptop, found by itself (section 7): routine changes applied, a new source or anything unusual a yes/no question in /morning | `data\collect.log` |
 | LifeCRM intake | daily 07:00 and at logon | transcribes audio, imports text notes | `data\transcribe.log` |
 | LifeCRM doctor | daily 08:00 | doctor against the live database | `data\doctor.log` (WARN/FAIL lines) |
 | LifeCRM backup | daily 21:30 | tiered snapshots, local + OneDrive | — |
 | LifeCRM verify-restore | Sundays 12:00 | `lifecrm verify-backup`: restores the newest snapshot into a scratch folder, runs doctor on it, checks every table against live | `data\verify-restore.log` |
 | LifeCRM review | Mondays 07:30 | the review pack for the week that just ended, in `data\staging\`, for `/review-week` | `data\review.log` |
+| LifeCRM reminders | daily 07:15 | republishes the reminders calendar (docs/assistant.md) | `data\reminders.log` |
 
 On a laptop:
 
@@ -217,6 +219,18 @@ counts, date spans and sample lines; then run the same command with
 | WhatsApp | ⋮ › More › Export chat › Quick Share | `Downloads\WhatsApp Chat with ….zip` | `lifecrm observe whatsapp ["<zip>"]`; set `[connectors.whatsapp] me` first ([whatsapp.md](whatsapp.md)) |
 | Bank and card | the bank's website | a `.csv` / `.ofx` / `.qfx` | `lifecrm observe finance "<file or folder>"` ([finance.md](finance.md)) |
 | AI chats | Claude / ChatGPT data export | a `.zip` | `lifecrm observe ai_chat "<zip>"` ([ai-chat.md](ai-chat.md)) |
+
+**Or let the morning job do it.** Once the phone sends texts and calls (SMS
+Backup & Restore's nightly backup), health (Health Connect's scheduled
+export) and photos (Gallery's OneDrive sync) to the laptop, and with the
+browser's own history already here, the 06:30 task finds each one by
+itself — no config. A source it has never imported is a question in
+/morning ("New on this computer: texts and calls. Import it?"); your yes
+imports it (`lifecrm collect approve android_sms` shows the same dry run as
+the commands below), and from then on it comes in every morning.
+`lifecrm collect setup` is the phone's side as a checklist: what is
+collected, what is ready, the steps for the rest. [collect.md](collect.md)
+has the rules.
 
 A path in brackets is optional: with none, the connector looks where that
 export usually lands. For health, texts and WhatsApp, `lifecrm where` shows
