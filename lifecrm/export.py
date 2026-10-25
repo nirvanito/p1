@@ -249,6 +249,12 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
                    "JOIN observations o ON o.id=eo.observation_id "
                    "ORDER BY e.uuid, o.uuid")]
 
+    # v6: the assistant's state (lifecrm/domain/nudges.py, domain/reminders.py).
+    tables["nudge_states"] = [dict(r) for r in q(
+        "SELECT * FROM nudge_states ORDER BY nudge_key")]
+    tables["reminder_revisions"] = [dict(r) for r in q(
+        "SELECT * FROM reminder_revisions ORDER BY uid")]
+
     for name, rows in tables.items():
         (out_dir / f"{name}.jsonl").write_text(_jl(rows), encoding="utf-8",
                                                newline="\n")

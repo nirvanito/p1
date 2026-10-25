@@ -117,9 +117,15 @@ LOOP_KINDS = ("task", "plan")
 
 # A saved brief is an entry like any other; this mark keeps it out of the
 # next pack's evidence, so an interpretation is never re-read as a fact.
+# Every generated interpretation (a review brief, a morning brief) carries a
+# data.derived_from that starts with "lifecrm ". An entry whose data has no
+# marker at all (a goal, anything else) is ordinary evidence, so the NULL case
+# is spelled out: NOT LIKE on a missing key is NULL, which would drop it.
 BRIEF_MARK = "lifecrm review"
-_NOT_BRIEF = ("(data IS NULL OR NOT json_valid(data) "
-              f"OR json_extract(data, '$.derived_from') IS NOT '{BRIEF_MARK}')")
+DERIVED_PREFIX = "lifecrm "
+NOT_DERIVED = ("(data IS NULL OR NOT json_valid(data) "
+               "OR json_extract(data, '$.derived_from') IS NULL "
+               f"OR json_extract(data, '$.derived_from') NOT LIKE '{DERIVED_PREFIX}%')")
 
 DEFAULT_QUIET_WEEKS = 3
 TOP_PEOPLE = 8
@@ -331,14 +337,18 @@ def _person(ctx: _Ctx, kind: str, value: str, entity_id: int | None,
 
 # ---------------------------------------------------------------- entries
 
-def _is_brief(data: str | None) -> bool:
+def is_derived(data: str | None) -> bool:
+    """True for a generated interpretation — an entry whose data.derived_from
+    starts with "lifecrm " (a review brief, a morning brief). The Python twin
+    of NOT_DERIVED; both leave an entry without the marker as evidence."""
     if not data:
         return False
     try:
         parsed = json.loads(data)
     except ValueError:
         return False
-    return isinstance(parsed, dict) and parsed.get("derived_from") == BRIEF_MARK
+    mark = parsed.get("derived_from") if isinstance(parsed, dict) else None
+    return isinstance(mark, str) and mark.startswith(DERIVED_PREFIX)
 
 
 def _load_entries(ctx: _Ctx, where: str, args: tuple, *,
@@ -352,7 +362,7 @@ def _load_entries(ctx: _Ctx, where: str, args: tuple, *,
         "FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
         f"WHERE e.status = 'active' AND ({where}) "
         "ORDER BY e.journal_date, e.id", args)
-        if _is_brief(r["data"]) == briefs]
+        if is_derived(r["data"]) == briefs]
     by_id = {r["id"]: {
         "uuid": r["uuid"], "date": r["journal_date"], "kind": r["kind"],
         "title": r["title"], "body": _excerpt(r["body"]),
@@ -451,7 +461,7 @@ def _section_days(ctx: _Ctx) -> list[dict]:
         said.setdefault(r["journal_date"], {})[r["metric"]] = round(r["v"], 2)
     counts = {r["journal_date"]: r["n"] for r in ctx.conn.execute(
         "SELECT journal_date, COUNT(*) AS n FROM entries WHERE status = 'active' "
-        f"AND journal_date BETWEEN ? AND ? AND {_NOT_BRIEF} GROUP BY journal_date",
+        f"AND journal_date BETWEEN ? AND ? AND {NOT_DERIVED} GROUP BY journal_date",
         (p["start"], p["end"]))}
     out = []
     for d in sorted(set(summaries) | set(said) | set(counts)):
@@ -1279,7 +1289,7 @@ def _payment_app(r) -> str | None:
     return app if app in PAYMENT_APPS else None
 
 
-def _classify_txns(ctx: _Ctx, rows: list) -> dict:
+def classify_txns(conn: sqlite3.Connection, rows: list) -> dict:
     """FINANCE_RULE applied to one period's txn rows: what the totals count
     (bank lines and payments), payments by counterparty, and what is left
     out — transfers between your own accounts, and bank lines funding a
@@ -1287,7 +1297,7 @@ def _classify_txns(ctx: _Ctx, rows: list) -> dict:
     apps_present = {_payment_app(r) for r in rows} - {None}
     counterparties: dict[int, list] = {}
     for part in _chunks([r["id"] for r in rows if _payment_app(r)]):
-        for a in ctx.conn.execute(
+        for a in conn.execute(
                 "SELECT p.observation_id, p.handle_kind, p.handle_value, "
                 "h.entity_id, h.display_name, h.ignored "
                 "FROM observation_participants p JOIN entity_handles h "
@@ -1361,8 +1371,8 @@ def _section_finance(ctx: _Ctx, entries: list[dict]) -> dict:
     out = {"totals": [], "merchants": [], "merchants_total": 0,
            "payments": [], "payments_total": 0, "excluded": {}, "rule": FINANCE_RULE}
     if ctx.observed:
-        cls = _classify_txns(ctx, _obs_rows(ctx, TXN_STREAMS, p["start"], p["end"]))
-        prior = _txn_totals(_classify_txns(ctx, _obs_rows(
+        cls = classify_txns(ctx.conn, _obs_rows(ctx, TXN_STREAMS, p["start"], p["end"]))
+        prior = _txn_totals(classify_txns(ctx.conn, _obs_rows(
             ctx, TXN_STREAMS, p["prior"]["start"], p["prior"]["end"]))["counted"])
         rows = cls["merchant_rows"]
         for cur, t in _txn_totals(cls["counted"]).items():
@@ -1524,7 +1534,7 @@ def _coverage(ctx: _Ctx, n_entries: int) -> dict:
         "days_in_period": p["days"],
         "days_with_entries": one(
             "SELECT COUNT(DISTINCT journal_date) FROM entries WHERE status='active' "
-            f"AND journal_date BETWEEN ? AND ? AND {_NOT_BRIEF}", p["start"], p["end"]),
+            f"AND journal_date BETWEEN ? AND ? AND {NOT_DERIVED}", p["start"], p["end"]),
         "days_with_summary": one(
             "SELECT COUNT(*) FROM days WHERE summary IS NOT NULL AND summary <> '' "
             "AND journal_date BETWEEN ? AND ?", p["start"], p["end"]),

@@ -113,7 +113,7 @@ No audio handy? Paste text straight into `/log`.
 ## Background jobs
 
 `scripts/install-tasks.ps1` (Task Scheduler, tasks `LifeCRM *`) or
-`scripts/install-tasks.sh` (launchd, `local.lifecrm.*`) registers five jobs
+`scripts/install-tasks.sh` (launchd, `local.lifecrm.*`) registers six jobs
 for your user, with no admin rights needed:
 
 | job | when | does | log |
@@ -123,6 +123,7 @@ for your user, with no admin rights needed:
 | backup | daily 21:30 | snapshot with tiered retention (14 daily, 12 weekly, 24 monthly, yearly kept forever), local and the cloud copy (`cloud_backups_dir`: OneDrive or iCloud Drive) | — |
 | verify-restore | Sundays 12:00 | `lifecrm verify-backup`: restores the newest snapshot into a scratch folder, runs doctor on it, and checks every table holds at least the rows live had when the snapshot was taken | `data/verify-restore.log` (Windows) |
 | review | Mondays 07:30 | `lifecrm review --lens all --write-only`: the review pack for the week that just ended, waiting in `data/staging/` | `data/review.log` |
+| reminders | daily 07:15 | `lifecrm reminders publish --if-configured`: republishes the reminders calendar so an overdue task moves to this morning's slot (docs/assistant.md); one line and exit 0 when no `[assistant] reminders_dir` is set | `data/reminders.log` |
 
 The Windows tasks also run on battery. A failed run exits non-zero, so Task
 Scheduler's *Last Run Result* shows `0x1` and launchd's `last exit code`
@@ -334,6 +335,23 @@ In Claude Code, `/review-week` and `/advise <lens>` write a short brief in
 which every claim cites a pack id. The pack itself holds no interpretation.
 A brief you keep becomes a `reflection` entry through the normal import →
 ingest → review → apply gate ([docs/review.md](docs/review.md)).
+
+**The assistant: what matters today**
+
+```
+lifecrm nudges                               # due tasks and plans, birthdays, nutrients below reference, stale imports, the agenda — cited
+lifecrm nudges --json --out pack.json        # save the pack (what /morning writes from and checks against)
+lifecrm nudges --check brief.md --pack pack.json   # verify a brief's ids, numbers and dates against that pack
+lifecrm nudges snooze due:<uuid> --days 7    # "not now", by key; dismiss <key> for "never"; restore <key> undoes
+lifecrm reminders publish                    # the reminders calendar (.ics) for the phone: due items and birthdays
+```
+
+Every nudge is recomputed from the records and rests on ids you can check;
+the only thing you tell it is "not now" or "never", by a durable key. In
+Claude Code, `/morning` writes a short cited brief from a saved pack. The
+calendar is published to `[assistant] reminders_dir` (a synced folder) and
+served by `lifecrm serve` at `/reminders.ics` for an iPhone subscription
+([docs/assistant.md](docs/assistant.md)).
 
 **Dashboards**
 

@@ -238,3 +238,11 @@ max_loops = 10                     # open tasks/plans listed
 
 # [review]                          # `lifecrm review` (docs/review.md)
 # quiet_weeks = 3                   # relationships: people not contacted for this many weeks
+
+# [assistant]                       # `lifecrm nudges`, `lifecrm reminders` (docs/assistant.md)
+# due_days = 7                      # a task or plan due within this many days is a nudge
+# birthday_days = 14                # a linked contact card's birthday within this many days
+# nutrient_days = 14                # the food-diary window for "below reference" nudges
+# reminders_dir = "~/OneDrive/LifeCRM reminders"  # a synced folder the phone's calendar reads; unset = no calendar
+# reminder_hour = 9                 # local hour a due item's calendar alarm fires
+# auto_publish = true               # republish the calendar after every command that changes the database

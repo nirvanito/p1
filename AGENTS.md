@@ -15,7 +15,7 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   never edit files under `data\` by hand.
 - Ad-hoc reads: `python -m lifecrm sql "SELECT ..." --json` (read-only
   connection; writes are blocked at the connection level).
-- The extraction contract is `docs/contract.md` (contract v2, schema v5). A
+- The extraction contract is `docs/contract.md` (contract v2, schema v6). A
   day with several sources extracts as ONE draft. Drafts go to
   `data\staging\`, then `lifecrm ingest` -> review -> `lifecrm apply`. A
   draft that will never be applied is ended with `lifecrm admin discard-run`
@@ -57,11 +57,11 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - On a Mac: `.venv/bin/python -m lifecrm ...`; scripts are
   `/bin/bash scripts/x.sh` (LF, enforced by .gitattributes); `LIFECRM_PYTHON`
   overrides the interpreter the .sh scripts use. Scripts (.ps1 / .sh): setup,
-  transcribe-inbox, doctor, backup, verify-restore, restore, review, demo,
-  install-tasks (+ uninstall-tasks.sh). install-tasks registers intake (07:00
-  + logon), doctor (08:00), backup (21:30), verify-restore (Sun 12:00),
-  review (Mon 07:30) as Task Scheduler `LifeCRM *` / launchd
-  `local.lifecrm.*`; logs in `data\*.log`.
+  transcribe-inbox, doctor, backup, verify-restore, restore, review,
+  reminders, demo, install-tasks (+ uninstall-tasks.sh). install-tasks
+  registers intake (07:00 + logon), doctor (08:00), backup (21:30),
+  verify-restore (Sun 12:00), review (Mon 07:30), reminders (07:15) as Task
+  Scheduler `LifeCRM *` / launchd `local.lifecrm.*`; logs in `data\*.log`.
 - Tests: `.venv\Scripts\python.exe -m pytest tests -q` (pass
   `--basetemp=<scratch dir>` if the default temp root is blocked). Every
   concurrent pytest run needs its own `--basetemp`: pytest deletes a basetemp
@@ -98,6 +98,16 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [nutrition] sex/age: low/borderline/high, the foods behind each, every
   number cited; --days/--start/--end, --sex/--age, --json; read-only, no
   model, "not medical advice" first),
+  nudges (what matters today, cited: reminder | birthday | nutrient | stale
+  nudges N# resting on E#/O#, plus the agenda; --json, --all, --today,
+  --out FILE saves the pack, --check BRIEF --pack FILE checks against that
+  saved pack, never a rebuild; `nudges snooze|dismiss <key>` by durable
+  key (an N# only with --pack), `restore <key>`, `states`; the clock's
+  journal date for the CLI, the as-of date for the vault),
+  reminders (publish [--today] [--now] [--out] [--dry-run]
+  [--if-configured]: the one publisher of the .ics — revisions recorded
+  in reminder_revisions, data/reminders/ + `[assistant] reminders_dir`,
+  served by `serve` at /reminders.ics),
   demo (--combo android|iphone|windows-iphone|both|all — both = android +
   iphone; --dir, --anchor, --force, --with-audio, --no-ask, --json),
   observe/connectors/imports/handles (observed tier — bulk imports that never
@@ -120,7 +130,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - Skills (`.claude/skills/`, mirrored identically in `.agents/skills/`):
   /log, /ask <question> (Claude writes a cited answer from `ask --json
   --no-llm`, verified by `ask "<q>" --check <file>` before it is shown),
-  /review-week, /advise <lens>.
+  /review-week, /advise <lens>, /morning (a cited "what matters today"
+  from a saved `nudges --json --out` pack, checked with `nudges --check
+  --pack` against that file; a kept brief is a reflection with
+  data.derived_from = "lifecrm morning").
 
 ## Layout
 
@@ -253,6 +266,28 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   /review-week and /advise skills write the cited brief; a kept brief is a
   `reflection` entry (data.derived_from = "lifecrm review") through import ->
   ingest -> review -> apply, excluded from later packs. `docs/review.md`.
+  Every generated interpretation's derived_from starts with "lifecrm "
+  (`review.NOT_DERIVED` / `is_derived`); an entry without the mark is
+  evidence.
+- `lifecrm/nudges.py` + `lifecrm/commands/nudges.py` — the assistant's
+  "what matters today" (schema v6). Read-only, deterministic: reminder
+  (due within `due_days`), birthday (linked contact cards), nutrient
+  (`nutrients.build_report` lows), stale (connector freshness), the agenda;
+  N# nudges rest on E#/O# through `review._Ids`; `pack_id` hashes the pack;
+  `check` = `recall.check_text` against a SAVED pack. State (snooze /
+  dismiss / restore) is `lifecrm/domain/nudges.py` -> `nudge_states`, keyed
+  by durable key, audited. `docs/assistant.md`.
+- `lifecrm/reminders.py` + `lifecrm/commands/reminders.py` +
+  `lifecrm/domain/reminders.py` + `lifecrm/ics.py` — the reminders calendar.
+  ONE publisher (`publish`: BEGIN IMMEDIATE, components, revisions, atomic
+  file, commit, copies); revisions in `reminder_revisions` (fingerprint,
+  sequence, tombstones) through the domain module, whose audit rows the
+  as-of stamp ignores (`domain.reminders.CONTENT_CHANGE`). Due items are
+  timed events (overdue -> today), birthdays dated occurrences this year and
+  next, never RRULEs; snoozed moves, dismissed omits. Runs from the CLI, the
+  after-write hook (`cli._arm_vault_refresh`, with the vault refresh) and the
+  07:15 job; `serve` returns the published bytes at /reminders.ics.
+  `ics.py` is the shared RFC 5545 writer (the demo's calendar uses it too).
 - `lifecrm/web/` + `lifecrm/commands/web.py` — `lifecrm serve`: stdlib HTTP
   over a backup-API snapshot in data/web/lifecrm.db, re-copied when the live
   db or its -wal changes; one read-only connection per request; `api.py`
@@ -268,8 +303,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
   cli.py: calls, configure, demo, entity_links, filedate, gui (open),
-  nutrients, obsidian, review, verify (verify-backup), voice, web (serve),
-  where.
+  nudges, nutrients, obsidian, reminders, review, verify (verify-backup),
+  voice, web (serve), where.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export
   generator per source in `demo/sources/`, run through the real CLI into a
   `.lifecrm-demo`-marked root (never the project's data). `docs/demo.md`.

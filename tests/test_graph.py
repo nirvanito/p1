@@ -60,8 +60,8 @@ def _v4_db(cfg, tmp_path):
 
 # ---------------------------------------------------------------- migration
 
-def test_schema_version_is_five():
-    assert SCHEMA_VERSION == 5
+def test_schema_version_is_six():
+    assert SCHEMA_VERSION == 6
 
 
 def test_migration_0005_takes_a_v4_database_to_v5_and_keeps_its_data(cfg, tmp_path):
@@ -71,8 +71,8 @@ def test_migration_0005_takes_a_v4_database_to_v5_and_keeps_its_data(cfg, tmp_pa
         el_paso = entities.create(conn, "place", "El Paso, TX")
         conn.commit()
         snap = cfg.backups_dir / "pre-migration-v5.db"
-        assert db_mod.migrate(conn, snapshot_to=snap) == [5]
-        assert db_mod.schema_version(conn) == 5
+        assert db_mod.migrate(conn, snapshot_to=snap) == [5, 6]
+        assert db_mod.schema_version(conn) == SCHEMA_VERSION
         assert conn.execute("SELECT value FROM meta WHERE key='contract_version'"
                             ).fetchone()["value"] == "2"   # backwards-compatible key
         names = {r["name"] for r in conn.execute("SELECT name FROM entity_link_types")}
@@ -110,7 +110,7 @@ def test_v4_plus_0005_matches_a_fresh_init_schema_and_seed_rows(cfg, tmp_path):
 
 def test_the_v1_chain_reaches_v5_with_the_relationship_tables(v1_conn):
     applied = db_mod.migrate(v1_conn)
-    assert applied[-1] == 5 and db_mod.schema_version(v1_conn) == 5
+    assert applied[-1] == SCHEMA_VERSION == db_mod.schema_version(v1_conn)
     v1_conn.execute("SELECT * FROM entity_links LIMIT 0")
     assert v1_conn.execute("SELECT COUNT(*) c FROM entity_link_types"
                            ).fetchone()["c"] == len(SEEDED)

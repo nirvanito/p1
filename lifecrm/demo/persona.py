@@ -123,6 +123,9 @@ PEOPLE: tuple[Person, ...] = (
 
 # Maya's birthday falls inside the demo window, whatever the anchor.
 MAYA_BIRTHDAY_OFFSET = -9
+# Sam's falls a few days after it, whatever the anchor, so the morning's
+# nudges (docs/assistant.md) always have a birthday coming up.
+SAM_BIRTHDAY_OFFSET = 4
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,8 @@ def birthday_date(p: Person, anchor: date) -> date | None:
     the demo window so the birthday storyline always shows up)."""
     if p.key == "maya":
         return day(anchor, MAYA_BIRTHDAY_OFFSET)
+    if p.key == "sam":
+        return day(anchor, SAM_BIRTHDAY_OFFSET)
     if p.birthday is None:
         return None
     m, d = p.birthday
@@ -423,9 +428,10 @@ JOURNAL: tuple[JournalDay, ...] = (
 
     JournalDay(-2, [
         Note("13:05:12", "quick", [
-            ("Remember to book flights to Ljubljana before prices go up.",
+            ("Remember to book flights to Ljubljana before prices go up, by this weekend.",
              _e(kind="task", primary="travel", title="Book flights to Ljubljana",
-                entities=[("ljubljana", "subject")], links=[("part_of", "bled_plan")])),
+                entities=[("ljubljana", "subject")], links=[("part_of", "bled_plan")],
+                due_offset=3)),
         ]),
         Note("21:26:30", "evening", [
             ("Lifted with Sam again, back on track.",

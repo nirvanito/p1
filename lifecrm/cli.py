@@ -49,36 +49,53 @@ def _root_option(
 
 
 def _arm_vault_refresh(ctx: typer.Context) -> None:
-    """With an Obsidian vault set (`[obsidian] vault`, auto_refresh not
-    false), re-export it once the command is done if the command changed the
-    database — the audit log's newest row moved (lifecrm/obsidian.py). A
-    failed refresh is one warning on stderr; the command's own result and
-    exit code stand. Never in the way: no config, a bad one or no database
-    simply means no refresh."""
-    from . import obsidian
+    """The after-write hooks. Once the command is done, if it changed the
+    database — the audit log's newest content row moved (lifecrm/obsidian.py)
+    — re-export the Obsidian vault (`[obsidian] vault`, auto_refresh not
+    false) and publish the reminders calendar (`[assistant] reminders_dir`,
+    auto_publish not false). Each hook's failure is one warning on stderr;
+    the command's own result and exit code stand. Never in the way: no
+    config, a bad one or no database simply means no hook."""
+    from . import obsidian, reminders as reminders_mod
     root = os.environ.get("LIFECRM_ROOT")
     try:
         cfg = load_config(Path(root) if root else None)
-        if not obsidian.auto_refresh(cfg):
-            return
-        vault = obsidian.vault_dir(cfg)
+        want_vault = obsidian.auto_refresh(cfg)
+        vault = obsidian.vault_dir(cfg) if want_vault else None
+        want_publish = reminders_mod.auto_publish(cfg)
     except (ConfigError, DomainError):
+        return
+    if not (want_vault or want_publish):
         return
     before = obsidian.change_stamp(cfg)
 
     def after() -> None:
         if obsidian.change_stamp(cfg) == before:
             return
-        try:
-            result = obsidian.refresh(cfg, vault)
-        except (DomainError, sqlite3.Error, OSError) as e:
-            typer.echo(f"warning: Obsidian vault not refreshed — {e} — run: "
-                       f"python -m lifecrm obsidian refresh", err=True)
-            return
-        n = obsidian.changed(result)
-        if n:
-            typer.echo(f"obsidian vault refreshed: {n} note(s) changed in {vault}",
-                       err=True)
+        if want_vault:
+            try:
+                result = obsidian.refresh(cfg, vault)
+                n = obsidian.changed(result)
+                if n:
+                    typer.echo(f"obsidian vault refreshed: {n} note(s) changed in {vault}",
+                               err=True)
+            except (DomainError, sqlite3.Error, OSError) as e:
+                typer.echo(f"warning: Obsidian vault not refreshed — {e} — run: "
+                           f"python -m lifecrm obsidian refresh", err=True)
+        if want_publish:
+            try:
+                from . import nudges as nudges_mod
+                day, now = nudges_mod.today_and_now(cfg)
+                result = reminders_mod.publish(cfg, today=day, now=now, if_configured=True)
+                moved = sum(result[k] for k in ("added", "changed", "restored", "removed"))
+                if moved:
+                    typer.echo(f"reminders calendar published: {moved} component(s) "
+                               f"revised", err=True)
+                for w in result["warnings"]:
+                    typer.echo(f"warning: {w}", err=True)
+            except (DomainError, sqlite3.Error, OSError) as e:
+                typer.echo(f"warning: reminders calendar not published — {e} — run: "
+                           f"python -m lifecrm reminders publish", err=True)
 
     ctx.call_on_close(after)
 

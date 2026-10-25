@@ -108,6 +108,11 @@ def auto_refresh(cfg: Config) -> bool:
 
 # ---------------------------------------------------------------- refresh
 
+# What counts as a change to the database's content: every audited write
+# except a reminders-calendar publication (lifecrm/domain/reminders.py).
+from .domain.reminders import CONTENT_CHANGE  # noqa: E402
+
+
 def change_stamp(cfg: Config) -> tuple | None:
     """What moves when the database changes: the newest audit row (every
     domain write logs one) and the schema version (a migration). None when
@@ -120,7 +125,8 @@ def change_stamp(cfg: Config) -> tuple | None:
     except sqlite3.Error:
         return None
     try:
-        row = conn.execute("SELECT MAX(id), MAX(ts) FROM audit_log").fetchone()
+        row = conn.execute(f"SELECT MAX(id), MAX(ts) FROM audit_log "
+                           f"WHERE {CONTENT_CHANGE}").fetchone()
         version = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'").fetchone()
         return (row[0], row[1], version[0] if version else None)
@@ -254,7 +260,8 @@ def open_vault(vault: Path, *, launcher=None, settings: Path | None = None) -> l
 # ---------------------------------------------------------------- start pages
 
 def _last_change(conn: sqlite3.Connection) -> datetime | None:
-    row = conn.execute("SELECT MAX(ts) FROM audit_log").fetchone()
+    row = conn.execute(f"SELECT MAX(ts) FROM audit_log WHERE {CONTENT_CHANGE}"
+                       ).fetchone()
     try:
         return datetime.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc) if row and row[0] else None
@@ -342,6 +349,62 @@ def _quiet(people: list[dict], as_of_date: str) -> list[dict]:
     return sorted(quiet, key=lambda p: (p["last_contact"]["date"], p["name"].casefold()))
 
 
+_HOME_NUDGES = 12
+
+
+def _today_section(ctx: dict, pack: dict) -> list[str]:
+    """`## Today` on Home: the nudges pack (lifecrm/nudges.py) built for the
+    as-of date. Confirmed titles are the owner's own words and stay as
+    written; anything from an import (a card's name, a connector, a calendar
+    title) is made inert with _md_text, as every other imported text in the
+    vault. Each line ends with the key `lifecrm nudges snooze|dismiss` takes;
+    the vault is one way, so that is where the "not now" goes."""
+    shown, hidden, agenda = pack["nudges"], pack["hidden"], pack["agenda"]
+    lines = ["## Today", ""]
+    head = (f"As of {pack['today']}: {len(shown)} nudge{'' if len(shown) == 1 else 's'}"
+            + (f", {len(hidden)} snoozed or dismissed" if hidden else "")
+            + ". Live list, snooze and dismiss: `lifecrm nudges` (docs/assistant.md).")
+    lines += [head, ""]
+    if not shown and not agenda:
+        lines += ["Nothing due, no birthday near, nothing stale.", ""]
+    disclaimer_shown = False
+    for n in shown[:_HOME_NUDGES]:
+        key = f"`{n['key']}`"
+        if n["kind"] == "reminder":
+            e = pack["index"].get(n["ids"][0], {})
+            lines.append(f"- **{n['title']}** `{e.get('kind', 'task')}` · recorded "
+                         f"{ex._wikilink(e['date']) if e.get('date') else '?'} · {key}")
+        elif n["kind"] == "birthday":
+            title = ex._md_text(n["title"])
+            ent = (ctx.get("ents") or {}).get(n.get("entity_id"))
+            if ent is not None:
+                name = ex._md_text(ent["name"])
+                if title.startswith(name):      # the person's note, when there is one
+                    title = ex._entity_link(ctx, n["entity_id"], name) + title[len(name):]
+            lines.append(f"- {title} *(observed: a contact card)* · {key}")
+        elif n["kind"] == "nutrient":
+            if not disclaimer_shown:
+                lines.append(f"- *{ex._md_text(n['detail'].split(' Food diary')[0])}*")
+                disclaimer_shown = True
+            lines.append(f"- {ex._md_text(n['title'])} *(observed: the food diary)* · {key}")
+        else:
+            lines.append(f"- {ex._md_text(n['title'])} *(observed)* — "
+                         f"{ex._md_text(n['detail'])} · {key}")
+    if len(shown) > _HOME_NUDGES:
+        lines.append(f"- {len(shown) - _HOME_NUDGES} more: `lifecrm nudges`")
+    if shown:
+        lines.append("")
+    if agenda:
+        lines += ["**Agenda** *(calendar, observed)*", ""]
+        for a in agenda:
+            when = f"{ex._wikilink(a['date'])} {a['time'] or 'all day'}"
+            who = f" with {', '.join(ex._md_text(w) for w in a['with'])}" if a["with"] else ""
+            lines.append(f"- {when} — {ex._md_text(a['title'])}{who}"
+                         + (" *(cancelled)*" if a["cancelled"] else ""))
+        lines.append("")
+    return lines
+
+
 def _loop_line(e: dict) -> str:
     due = e.get("due_at")
     lead = ("**overdue** " if e.get("overdue") else "") + (f"**{due[:10]}** · " if due else "")
@@ -377,6 +440,9 @@ def _home_note(ctx: dict, cfg: Config, hub: dict) -> str:
               f"edits made here are not read back.", "",
               " · ".join(ex._wikilink(s) for s in ("People", "Health", "Loops",
                                                      "Sources", "Index")), ""]
+
+    if hub.get("nudges") is not None:
+        lines += _today_section(ctx, hub["nudges"])
 
     days = [d for d in hub["days"] if d <= as_of_date]
     if days:
@@ -666,6 +732,10 @@ def hub_notes(ctx: dict, cfg: Config, days: list[str]) -> dict[str, str]:
     hub["health7"] = api.health(conn, cfg, days=7, end=as_of_date, as_of=as_of_date)
     hub["health30"] = api.health(conn, cfg, days=30, end=as_of_date, as_of=as_of_date)
     hub["sources"] = api.imports(conn, cfg, now=now)
+    # What matters "today": the as-of date stands in for today and the as-of
+    # instant for now, so the section is a pure function of the database.
+    from . import nudges as nudges_mod
+    hub["nudges"] = nudges_mod.build(conn, cfg, today=as_of_date, now=now)
     return {"Home.md": _home_note(ctx, cfg, hub),
             "People.md": _people_note(ctx, hub),
             "Health.md": _health_note(hub),

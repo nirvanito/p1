@@ -197,6 +197,10 @@ note does:
    interpretation, not new facts.
 4. `ingest` -> you review the one-line diff -> `apply`.
 
+Every generated interpretation carries a `derived_from` that starts with
+`lifecrm ` — `"lifecrm review"` for these briefs, `"lifecrm morning"` for a
+kept `/morning` brief ([assistant.md](assistant.md)); an entry whose data has
+no such mark is evidence like any other.
 The `derived_from` mark is what keeps a saved brief out of later packs'
 evidence: it is listed under `briefs`, excluded from entries, counts and
 coverage, so an interpretation is never re-read as a fact. A brief you no

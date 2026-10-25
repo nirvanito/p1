@@ -462,10 +462,51 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     except sqlite3.OperationalError:
         pass   # pre-v5 schema; pending_migrations already failed above
 
+    try:
+        _assistant_state_checks(conn, _add, _rows)
+    except sqlite3.OperationalError:
+        pass   # pre-v6 schema; pending_migrations already failed above
+
     failures = sum(1 for c in checks if c["status"] == "fail")
     warnings = sum(1 for c in checks if c["status"] == "warn")
     return {"checks": checks, "failures": failures, "warnings": warnings,
             "healthy": failures == 0}
+
+
+def _assistant_state_checks(conn: sqlite3.Connection, _add, _rows) -> None:
+    """nudge_states and reminder_revisions (lifecrm/domain/nudges.py,
+    domain/reminders.py). The schema pairs state with until; what it cannot
+    see is a key of an unknown kind, a date that is not one, a snooze whose
+    task or plan has since closed, or a publication stamp that is no
+    instant."""
+    from .domain.nudges import KINDS
+    kinds = ", ".join(f"'{k}'" for k in KINDS)
+    _rows("nudge_states_keys",
+          "SELECT nudge_key FROM nudge_states WHERE instr(nudge_key, ':') = 0 "
+          f"OR substr(nudge_key, 1, instr(nudge_key, ':') - 1) NOT IN ({kinds})",
+          "nudge state(s) with an unknown kind prefix")
+    _rows("nudge_states_until",
+          "SELECT nudge_key, until FROM nudge_states WHERE state = 'snoozed' "
+          "AND until NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'",
+          "snoozed nudge(s) whose until is not YYYY-MM-DD")
+    closed = conn.execute(
+        "SELECT s.nudge_key FROM nudge_states s JOIN entries e "
+        "ON e.uuid = substr(s.nudge_key, instr(s.nudge_key, ':') + 1) "
+        "WHERE substr(s.nudge_key, 1, instr(s.nudge_key, ':') - 1) IN ('due', 'goal') "
+        "AND (e.closed_at IS NOT NULL OR e.status <> 'active') "
+        "ORDER BY s.nudge_key").fetchall()
+    if closed:
+        _add("warn", "nudge_states_closed_loops",
+             f"{len(closed)} snoozed/dismissed nudge(s) whose task or plan is closed "
+             f"or retracted: {'; '.join(r[0] for r in closed[:5])} — harmless; "
+             f"python -m lifecrm nudges restore <key> clears one")
+    else:
+        _add("ok", "nudge_states_closed_loops")
+    _rows("reminder_revisions_dates",
+          "SELECT uid, last_modified FROM reminder_revisions WHERE last_modified "
+          "NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T"
+          "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'",
+          "published calendar component(s) whose last_modified is not an ISO instant")
 
 
 def _owner_check(conn: sqlite3.Connection, cfg: Config, _add) -> None:

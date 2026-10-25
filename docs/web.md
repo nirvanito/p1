@@ -177,6 +177,8 @@ Everything the page shows is plain JSON, for scripts or another front end. Error
 | `GET /api/imports` | import runs, unresolved handles, connector freshness, health files, journal sources |
 | `GET /api/health?days=14[&end=YYYY-MM-DD]` | daily series per metric (the ones `ask` cites) and the journal's own; `workouts` (sessions and minutes per week, or null when none were imported); `nutrition` (the nutrient report's low / borderline / high with its `disclaimer`, or null when nothing was logged in the window) |
 | `GET /api/status` | today, counts, demo or not, example questions, snapshot time, model and voice state, `dashboards` (`running` at this page's host name, `local_only` when only this computer can open them) |
+| `GET /api/nudges` | what matters today (`lifecrm nudges --json`'s shape: `nudges`, `agenda`, `hidden`, `index`, `pack_id`) on the clock's date, like `/api/loops`; read-only — snooze and dismiss are CLI writes ([assistant.md](assistant.md)) |
+| `GET /reminders.ics` | the published reminders calendar, byte for byte as `lifecrm reminders publish` last wrote it (`text/calendar`); 404 before the first publication; what an iPhone subscribes to, key included (`?k=`) |
 | `POST /api/transcribe` | body = recorded audio → `{"text", "language", "duration_sec", "model"}` |
 
 ## Troubleshooting

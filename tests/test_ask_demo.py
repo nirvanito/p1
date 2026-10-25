@@ -155,9 +155,17 @@ def contacts_scan(cfg, anchor, combo):
         if p.email:
             parts.append({"kind": "email", "value": p.email, "role": "participant"})
             handles.append({"kind": "email", "value": p.email, "display_name": p.name})
+        # The card's structured fields, as the contacts connector stores them:
+        # the birthday (pinned for Maya and Sam, like the demo's vCards).
+        detail = {}
+        when = persona.birthday_date(p, anchor)
+        if when is not None:
+            detail["birthday"] = (f"{p.birth_year}-{when.month:02d}-{when.day:02d}"
+                                  if p.birth_year else f"--{when.month:02d}-{when.day:02d}")
         records.append(_rec(cfg, "contact_card", f"card-{p.key}",
                             _utc(persona.local_dt(anchor, -60, "09:00")),
                             title=p.name, body="\n".join(lines),
+                            value_json=canonical_json(detail) if detail else None,
                             participants=parts))
     return _scan("contacts", records, handles, account=persona.OWNER.email)
 
