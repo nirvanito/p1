@@ -49,6 +49,9 @@ a closed task renumbers the next run.
   records, which days, where); `mass_removal` is a large removal the job held
   for their yes; `invalid`, `missing` and `error` are problems to mention
   plainly (a source they named found nothing, or a reader failed).
+  `collect:macos:blocked` is one item for every source macOS refuses until
+  Full Disk Access is granted: say which (its title lists them) and give its
+  two steps as they stand in its `detail`.
 - `tier` matters. `confirmed` nudges (a due task or plan) rest on what the
   user reviewed. `observed` nudges (a birthday from a contact card, a
   nutrient from the food diary, a stale import, the agenda) rest on bulk

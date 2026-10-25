@@ -194,7 +194,7 @@ def default_target(cfg: Config) -> Path:
             "no camera folder found — looked for Pictures/Camera Roll and "
             "Pictures/Samsung Gallery under " + ", ".join(str(r) for r in roots)
             + "; pass the folder, or set [connectors.photos] path in config.toml")
-    raise DomainError(f"{len(found)} camera folders found — pass one of them (they "
+    raise base.Ambiguous(f"{len(found)} camera folders found — pass one of them (they "
                       f"often hold the same photos): " + "; ".join(str(p) for p in found))
 
 
@@ -844,8 +844,10 @@ def _snapshot(db: Path, tmp: Path) -> sqlite3.Connection:
             source = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
             try:
                 copy = sqlite3.connect(dest)
-                source.backup(copy)
-                copy.close()
+                try:
+                    base.sqlite_backup(source, copy, db)       # gives up, never hangs
+                finally:
+                    copy.close()
             finally:
                 source.close()
         conn = sqlite3.connect(dest)

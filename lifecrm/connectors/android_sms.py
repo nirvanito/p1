@@ -913,8 +913,11 @@ def scan(target: Path, cfg: Config) -> base.Scan:
     }
     source_hash = hashlib.sha256("".join(
         f"{i['kind']}:{i['sha256']};" for i in infos).encode()).hexdigest()
-    extra = {"present_ids": present, "mirror_streams": sorted(mirror_streams)} \
-        if mirror_streams else {}
+    # mirror_ages_out: Messages' "delete old messages" limit empties the
+    # oldest end by itself; what is older than the backup's oldest text aged
+    # out of the phone, it was not deleted (domain/observations._mirror_plan).
+    extra = {"present_ids": present, "mirror_streams": sorted(mirror_streams),
+             "mirror_ages_out": True} if mirror_streams else {}
     # A full backup whose count matches is the phone's whole text store: from
     # its oldest message to the day it was taken, a day without a text is a
     # day without one (docs/assistant.md). Calls never: the log ages out.

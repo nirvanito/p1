@@ -54,10 +54,17 @@ With no path, it looks where Apple's tools write backups —
 `%USERPROFILE%\Apple\MobileSync\Backup` (Apple Devices), then
 `%APPDATA%\Apple Computer\MobileSync\Backup` (desktop iTunes), then a Mac's
 `~/Library/Application Support/MobileSync/Backup` — and uses the backup it
-finds there. If there are several (two phones, or an old one), it lists them
-with device name and date and asks you to pass one; it never guesses which
-phone you meant. A path works too: the `<device id>` folder that holds
-`Manifest.db`, or the `Backup` folder above it when that holds just one.
+finds there. If there are several (two phones, an iPad, or an old one), it
+lists them with device name and date and asks you to pass one; it never
+guesses which phone you meant. A path works too: the `<device id>` folder
+that holds `Manifest.db`, or the `Backup` folder above it when that holds
+just one. To make the choice once — for the daily `collect` job too — name
+the backup in `config.toml`:
+
+```toml
+[connectors.ios_messages]
+path = "~/Library/Application Support/MobileSync/Backup/00008110-001A2B3C4D5E6F"
+```
 
 The report says which folder it read, names the device and backup date, then
 shows per stream how many records are new or changed, the date span, and the
@@ -250,6 +257,14 @@ Deleted and unsent messages do not stay in the archive.
   report counts it (`skipped: N × deleted message waiting in Recently
   Deleted`). A row still linked to its conversation as well counts as present.
 - **Recovered on the phone** (Recently Deleted): back on the next import.
+- **Aged out** (Settings › Messages › *Keep Messages*: 30 days or 1 year, which
+  Messages in iCloud carries to the Mac): **kept.** The phone empties its
+  oldest end by itself; that is not a deletion. Only a message missing from
+  *inside* the span the source still holds — newer than its oldest message —
+  is removed; anything older stays, and so do the days its import declared
+  complete. The report says how many it kept (`kept: N older than the oldest
+  message the source still holds`). The price: deleting your very oldest
+  conversation reads the same as an age-out, so it stays too.
 - **Edited:** re-imported with the current text and the edit time as
   `last_modified_at`, so it updates through the normal newer-wins path;
   `value_json.versions` carries the version history from

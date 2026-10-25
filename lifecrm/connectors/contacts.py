@@ -146,9 +146,11 @@ def _snapshot(src: Path, wal: Path | None, tmp: Path, label: str) -> sqlite3.Con
             source = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True)
             try:
                 copy = sqlite3.connect(dest)
-                copy.execute("PRAGMA synchronous = OFF")   # a throwaway copy
-                source.backup(copy)
-                copy.close()
+                try:
+                    copy.execute("PRAGMA synchronous = OFF")   # a throwaway copy
+                    base.sqlite_backup(source, copy, src)      # gives up, never hangs
+                finally:
+                    copy.close()
             finally:
                 source.close()
         conn = sqlite3.connect(dest)
