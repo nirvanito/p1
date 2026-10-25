@@ -41,6 +41,7 @@ entries, measurements, mentions, aliases or entity links.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,7 +71,15 @@ LABELS = {
     "photos": "photo dates and places", "reading": "Kindle highlights and Goodreads books",
     "rides": "Uber rides and Eats orders", "spotify": "Spotify listening",
     "telegram": "Telegram messages", "whatsapp": "WhatsApp chats",
+    # the folders exports land in, when macOS keeps the job out of them
+    "downloads": "the Downloads folder", "icloud_drive": "iCloud Drive",
 }
+# Where exports land. macOS guards both (TCC); a listing it refuses is an
+# empty list to pathlib's glob, so a refusal is looked for here, directly.
+DROP_FOLDERS = ("downloads", "icloud_drive")
+# Sources whose files exist on any Mac whether or not the phone feeds them:
+# their checklist steps show until they are collected.
+ALWAYS_STEPS = {"ios_calls", "mac_messages"}
 # The owner's "never" for a source: a dismissed nudge key, so `nudges
 # restore` undoes it like any other dismissal (domain/nudges.py).
 DECLINE_KEYS = ("declined", "first_import")
@@ -252,6 +261,55 @@ class NotFound(DomainError):
     they named the source."""
 
 
+class Blocked(DomainError):
+    """The source is there, but macOS privacy (TCC) refuses the read until
+    the owner grants Full Disk Access — never 'not found', which would hide
+    the one thing they need to do."""
+
+
+FULL_DISK_ACCESS_STEPS = [
+    "System Settings › Privacy & Security › Full Disk Access › + › your terminal "
+    "(Terminal, iTerm, or the app Claude Code runs in), then quit and reopen it.",
+    "For the 06:30 job too: add /bin/bash (in the file picker press ⌘⇧G, type "
+    "/bin/bash) and the venv's real Python — docs/mac.md, section 5."]
+
+
+def refused_folders() -> dict[str, Path]:
+    """{key: folder} for each drop folder (Downloads, iCloud Drive) this
+    process may not list. Looks only."""
+    places = {"downloads": platforms.home() / "Downloads",
+              "icloud_drive": platforms.icloud_drive()}
+    out = {}
+    for key in DROP_FOLDERS:
+        path = places[key]
+        try:
+            if path.is_dir():
+                os.listdir(path)
+        except PermissionError:
+            out[key] = path
+        except OSError:
+            continue
+    return out
+
+
+def _folder_refusal(path: Path) -> str:
+    return (f"macOS did not let this look in {path} — exports saved there are not "
+            f"found until it may: give Full Disk Access (docs/mac.md, section 5)")
+
+
+def blocked(e: BaseException | None) -> bool:
+    """macOS refused a read: a PermissionError anywhere in the chain, or a
+    connector's own one-line Full Disk Access error (every Mac connector
+    words its denial that way)."""
+    seen: set[int] = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, PermissionError) or "Full Disk Access" in str(e):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
 def _health_dirs(cfg: Config) -> list[Path]:
     """Where a health export is looked for: [collect] health_dir, the usual
     places (`health import`'s), and one folder down in the cloud drives — a
@@ -296,7 +354,11 @@ def _read(conn: sqlite3.Connection, cfg: Config, name: str) -> dict:
     c = conn_base.get(name)
     try:
         target = c.default_target(cfg)
-    except DomainError as e:
+    except (DomainError, PermissionError) as e:
+        if blocked(e):
+            raise Blocked(_error_line(e)) from e
+        if isinstance(e, conn_base.Ambiguous):
+            raise                         # several candidates: a question, not absence
         raise NotFound(str(e)) from e
     scan = c.scan(target, cfg)
     return {"kind": "observed", "target": target, "scan": scan,
@@ -328,18 +390,40 @@ def _question(name: str, src: dict) -> str:
 
 
 def _decide(conn: sqlite3.Connection, cfg: Config, name: str, *, dry_run: bool,
-            auto: bool) -> dict:
+            auto: bool, refused: dict[str, Path] | None = None) -> dict:
     """One source's outcome, writing only an applied plan (uncommitted). A
     found-for-the-first-time source the reader cannot read, or holding
     nothing, is `skipped` when it was found rather than named: there is
-    nothing to ask."""
+    nothing to ask. Several candidates (two phones' backups) are an error
+    that says which, whichever way the source came."""
+    from .connectors import base as conn_base
     using = in_use(conn, name)
+
+    def refusal(e: BaseException) -> dict:
+        line = _error_line(e)
+        if auto and any(str(p) in line for p in (refused or {}).values()):
+            # the folder's own row already says it, once for every source
+            return {"outcome": "skipped", "reason": line, "skip": "hidden"}
+        return {"outcome": "error", "reason": line, "blocked": True}
     try:
         src = _read(conn, cfg, name)
+    except Blocked as e:
+        return refusal(e)
     except NotFound as e:
+        hidden = [p for p in (refused or {}).values() if str(p) in str(e)]
+        if hidden and not auto:           # named, and it looked where macOS said no
+            return {"outcome": "error", "reason": _folder_refusal(hidden[0]),
+                    "blocked": True}
         return {"outcome": "skipped" if auto else "missing", "reason": str(e),
                 "skip": "not found"}
+    except conn_base.Ambiguous as e:
+        return {"outcome": "error",
+                "reason": f"{e} — set its path in [connectors.{name}] or import the one "
+                          f"you mean by hand; never: python -m lifecrm collect decline "
+                          f"{name}"}
     except Exception as e:
+        if blocked(e):                    # refused while reading, not while looking
+            return refusal(e)
         if auto and not using:
             return {"outcome": "skipped", "reason": _error_line(e), "skip": "unreadable"}
         raise
@@ -398,14 +482,15 @@ def _record(conn: sqlite3.Connection, out: dict, run_uuid: str, started: str,
 
 
 def collect_source(conn: sqlite3.Connection, cfg: Config, name: str, *,
-                   run_uuid: str, dry_run: bool = False, auto: bool = False) -> dict:
+                   run_uuid: str, dry_run: bool = False, auto: bool = False,
+                   refused: dict[str, Path] | None = None) -> dict:
     """One source, start to finish: decide, apply when routine, record. An
     applied import and the row that says so commit together; a failure rolls
     the source back and is recorded instead; a skipped source leaves no row.
     Never raises for one source — the next one still runs."""
     started = now_utc()
     try:
-        found = _decide(conn, cfg, name, dry_run=dry_run, auto=auto)
+        found = _decide(conn, cfg, name, dry_run=dry_run, auto=auto, refused=refused)
     except Exception as e:                # one source failing never stops the others
         conn.rollback()
         found = {"outcome": "error", "reason": _error_line(e)}
@@ -431,6 +516,7 @@ def run(conn: sqlite3.Connection, cfg: Config, sources: list[str] | None = None,
     if auto:
         names = collectable()
     no = declined(conn)
+    refused = refused_folders()
     run_uuid = new_uuid()
     results = []
     for n in names:
@@ -440,8 +526,33 @@ def run(conn: sqlite3.Connection, cfg: Config, sources: list[str] | None = None,
                             "import_uuid": None, "counts": {}})
             continue
         results.append(collect_source(conn, cfg, n, run_uuid=run_uuid, dry_run=dry_run,
-                                      auto=auto))
+                                      auto=auto, refused=refused))
+    if auto:
+        results += _drop_folders(conn, {k: p for k, p in refused.items() if k not in no},
+                                 run_uuid, dry_run)
     return {"run_uuid": run_uuid, "dry_run": dry_run, "auto": auto, "sources": results}
+
+
+def _drop_folders(conn: sqlite3.Connection, refused: dict[str, Path], run_uuid: str,
+                  dry_run: bool) -> list[dict]:
+    """A drop folder macOS keeps the job out of is said once, as a row of its
+    own (one thing to fix, whichever sources would have looked there); the
+    morning it may look again, one row says so and the item goes."""
+    latest = collect_dom.latest(conn)
+    out = []
+    for key in DROP_FOLDERS:
+        was = latest.get(key)
+        if key in refused:
+            row = {"source": key, "outcome": "error", "hold": None, "blocked": True,
+                   "reason": _folder_refusal(refused[key]),
+                   "target": str(refused[key]), "import_uuid": None, "counts": {}}
+        elif was is not None and was["outcome"] == "error":
+            row = {"source": key, "outcome": "unchanged", "hold": None, "reason": None,
+                   "target": was["target"], "import_uuid": None, "counts": {}}
+        else:
+            continue
+        out.append(row if dry_run else _record(conn, row, run_uuid, now_utc()))
+    return out
 
 
 # ---------------------------------------------------------------- the owner's answers
@@ -511,8 +622,11 @@ def approve(conn: sqlite3.Connection, cfg: Config, name: str, *,
 
 def decline(conn: sqlite3.Connection, name: str) -> dict:
     """The owner's never: the source is not looked at again (`collect
-    approve` or `nudges restore collect:<source>:declined` take it back)."""
-    check_sources([name], where="collect decline")
+    approve` or `nudges restore collect:<source>:declined` take it back). A
+    drop folder (downloads, icloud_drive) can be declined too: the job stops
+    saying macOS keeps it out."""
+    if name not in DROP_FOLDERS:
+        check_sources([name], where="collect decline")
     row = nudge_state.dismiss(conn, f"collect:{name}:declined",
                               note="never collect this source")
     conn.commit()
@@ -603,17 +717,21 @@ def guess_phone() -> str:
     return "android"
 
 
-def _found(cfg: Config, name: str) -> bool:
-    """Something is where the source looks. Looks only: nothing is read."""
-    if name == HEALTH:
-        from . import health_import as hi
-        return bool(hi.find_exports(_health_dirs(cfg))["found"])
-    from .connectors import base as conn_base
+def _found(cfg: Config, name: str) -> str:
+    """'found', 'missing', or 'blocked' (macOS refuses the look). Looks only:
+    nothing is read."""
     try:
+        if name == HEALTH:
+            from . import health_import as hi
+            if hi.find_exports(_health_dirs(cfg))["found"]:
+                return "found"
+            # an export in a folder macOS hides is an empty glob, not an error
+            return "blocked" if refused_folders() else "missing"
+        from .connectors import base as conn_base
         conn_base.get(name).default_target(cfg)
-        return True
-    except (DomainError, OSError):
-        return False
+        return "found"
+    except (DomainError, OSError) as e:
+        return "blocked" if blocked(e) else "missing"
 
 
 def setup_checklist(conn: sqlite3.Connection, cfg: Config,
@@ -629,18 +747,23 @@ def setup_checklist(conn: sqlite3.Connection, cfg: Config,
     configured = settings(cfg)["sources"]
     items = []
     for name, what, steps in sources:
+        found = None if name in no else _found(cfg, name)
         if name in no:
             state = "declined"
+        elif found == "blocked":
+            state, steps = "blocked", FULL_DISK_ACCESS_STEPS
         elif in_use(conn, name):
             state = "collecting"
-        elif _found(cfg, name):
+        elif found == "found":
             state = "waiting"
         else:
             state = "to do"
         if configured is not None and name not in configured and state != "declined":
             state += " (not in [collect] sources)"
+        shown = state.startswith(("to do", "blocked")) or (
+            state.startswith("waiting") and name in ALWAYS_STEPS)
         items.append({"source": name, "what": what, "state": state,
-                      "steps": steps if state.startswith("to do") else []})
+                      "steps": steps if shown else []})
     return {"phone": phone, "title": title, "guide": guide, "items": items}
 
 

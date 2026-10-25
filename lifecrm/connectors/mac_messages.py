@@ -200,6 +200,9 @@ def scan(target: Path, cfg: Config) -> base.Scan:
                                  "the Mac's Messages database: its whole store"),
         present_ids=result["present"],
         mirror_streams=list(streams),
+        # Keep Messages reaches the Mac through Messages in iCloud: what is
+        # older than the store's oldest message aged out, it was not deleted.
+        mirror_ages_out=True,
         target_kind="live" if live else "file",
         contacts_read=books_read > 0,
         named_handles=parts["named_handles"],

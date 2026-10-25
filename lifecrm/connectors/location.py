@@ -491,7 +491,7 @@ def default_target(cfg: Config) -> Path:
     if len(found) == 1:
         return found[0]
     if found:
-        raise DomainError("found several Timeline exports — pass the one to import: "
+        raise base.Ambiguous("found several Timeline exports — pass the one to import: "
                           + "; ".join(str(p) for p in found))
     raise DomainError(
         "no Timeline export found — looked for Timeline.json and location-history.json "

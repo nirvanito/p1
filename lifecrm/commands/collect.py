@@ -31,7 +31,7 @@ _COUNT_LABELS = (("added", "added"), ("new", "new"), ("updated", "updated"),
                  ("conflicts", "conflict(s) kept existing"), ("invalid", "invalid"),
                  ("absent", "stored but not in this export"))
 _SETUP_MARKS = {"collecting": "done ", "waiting": "ready", "to do": "to do",
-                "declined": "  no "}
+                "declined": "  no ", "blocked": "  !  "}
 
 collect_app = typer.Typer(
     help="The daily imports: every source on this computer, routine changes applied, "
@@ -330,6 +330,8 @@ def setup_cmd(phone: str = typer.Option(
                     f"{it['source']}")
         elif state.startswith("declined"):
             text = "you declined it"
+        elif state.startswith("blocked"):
+            text = "on this computer, but macOS blocks reading it — Full Disk Access:"
         else:
             text = "not on this computer yet:"
         extra = state[len(state.split(' (')[0]):]

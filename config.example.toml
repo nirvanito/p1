@@ -95,6 +95,9 @@ max_loops = 10                     # open tasks/plans listed
 # account = "+15125550100"          # this phone's own number; scopes mirroring
 # mirror = true                     # only if your backups do not say type="full"
 
+# [connectors.ios_messages]         # docs/texts.md
+# path = "~/Library/Application Support/MobileSync/Backup/<device id>"   # the backup to use when there are several (an iPad's, an old phone's)
+
 # [connectors.whatsapp]             # docs/whatsapp.md
 # me = "Your Name"                  # your name as your own lines show it (or a list)
 # date_order = "mdy"                # mdy | dmy | ymd — only if the dry run says it had to guess

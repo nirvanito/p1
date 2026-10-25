@@ -1091,7 +1091,7 @@ def default_target(cfg: Config) -> Path:
     if len(found) == 1:
         return found[0]
     if found:
-        raise DomainError("found several workout exports — pass the one to import: "
+        raise base.Ambiguous("found several workout exports — pass the one to import: "
                           + "; ".join(str(p) for p in found))
     raise DomainError(
         "no workout export found — looked for strong.csv, workouts.csv and "

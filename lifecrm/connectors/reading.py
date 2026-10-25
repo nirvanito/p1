@@ -623,7 +623,7 @@ def default_target(cfg: Config) -> Path:
     if len(found) == 1:
         return found[0]
     if found:
-        raise DomainError("found several reading exports — pass the one to import: "
+        raise base.Ambiguous("found several reading exports — pass the one to import: "
                           + "; ".join(str(p) for p in found))
     raise DomainError(
         f"no reading export found — no Kindle is plugged in (documents/{CLIPPINGS}) "
