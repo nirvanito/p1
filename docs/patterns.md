@@ -21,9 +21,10 @@ is co-occurrence, never cause.
 day or the next day, more than chance would make them? It is statistics
 over your own records and nothing else — no model — and it is
 **experimental**: off everywhere by default (the nudges pack, the review
-pack, `/morning`) until the validation below has been run at full strength
-and recorded here. `[assistant] patterns = "on"` turns it on in those
-places; the command itself always runs.
+pack, `/morning`). The validation below has been run at full strength and
+recorded (2026-10-25, every suite passing); the default stays off because
+turning it on is a decision, not a test result. `[assistant] patterns =
+"on"` turns it on in those places; the command itself always runs.
 
 ## What a reported pair means, and what it does not
 
@@ -75,6 +76,22 @@ heart rate, weight, exercise minutes, workouts, spending, people in touch).
 Journal categories never join (positives only); `--keys` or `[assistant]
 pattern_series` add others.
 
+## Caveats a reader must keep
+
+- **A next-day pattern between two associated series may be an echo.** When
+  two series go together the same day and either is autocorrelated, today's
+  value of one also goes with tomorrow's value of the other (a same-day
+  association of 0.6 between series with lag-1 autocorrelation 0.4 carries a
+  next-day association near 0.24 in population, and the finder reports it
+  in some windows). A lag of one says "the next day", never "first" or
+  "because". When the same pair is also reported the same day, read the
+  next-day line as part of the same co-occurrence.
+- **A window is a window.** Twelve 90-day windows over a year find a real
+  association in nearly all of them and a chance one in at most one or two;
+  a pattern that appears in one window and not the next is weak evidence.
+- **Nothing here is a mechanism.** A trip, a sick week, a launch or a
+  holiday moves many series at once.
+
 ## Validation
 
 `tests/test_patterns_validation.py` measures the method on simulated
@@ -111,7 +128,14 @@ series have structure no simulation has.
 |---|---|---|---|
 | 2026-10-24 | dev, before the conservative n_eff | 40 | null FDR: independent 0.00, phi 0.4 0.22, phi 0.5 0.10, phi 0.8 0.03, trend 0.00, ties 0.05, missing 0.03 — the phi 0.4 figure is what led to lifting the autocorrelation estimate by one standard error |
 | 2026-10-24 | dev, conservative n_eff | 40-80 | null FDR: independent 0.03, phi 0.4 0.03, phi 0.5 0.03, phi 0.8 0.00, missing in runs 0.05; power 0.80 at rho 0.5 over 90 days, 1.00 at rho 0.6 lag 1 |
-| | reserved | 200 | not yet run — patterns stay off by default |
+| 2026-10-25 | reserved, first run | 200 | null FDR (P(any false) 95 %): independent 0.025 (0.011-0.057), phi 0.4 0.010 (0.003-0.036), phi 0.8 0.000 (0.000-0.019), shared trend 0.025 (0.011-0.057), heavy ties 0.030 (0.014-0.064), missing at random 0.015 (0.005-0.043), missing in runs 0.005 (0.001-0.028); power 0.835 at rho 0.5, 0.990 at rho 0.6 lag 1; sliding windows: the planted pair found in 12 of 12. The sliding suite FAILED on its own bookkeeping: it counted the planted pair's next-day echo (s0 -> s1 at lag 1, reported in 5 of 12 windows) as a false pair. The measurement was corrected to count only pairs involving an independent series as false — the method itself did not change — and re-run on the same seeds (next row). |
+| 2026-10-25 | reserved, corrected bookkeeping | 200 | **all nine suites pass.** Null FDR (P(any false) 95 %): independent 0.025 (0.011-0.057), phi 0.4 0.010 (0.003-0.036), phi 0.8 0.000 (0.000-0.019), shared trend 0.025 (0.011-0.057), heavy ties 0.030 (0.014-0.064), missing at random 0.015 (0.005-0.043), missing in runs 0.005 (0.001-0.028); power 0.835 at rho 0.5 same day and 0.990 at rho 0.6 next day, with FDR 0.030 and 0.028 among independent pairs; sliding windows: the planted pair found in 12 of 12, its next-day echo reported in 5, no false pair. The regular-strength run (R 40, three suites) passes too. |
+
+With this run recorded, the method has done what was asked of it on these
+scenarios. The default stays **off** all the same: turning it on
+(`[assistant] patterns = "on"`) is the owner's decision, made knowing that
+real series have structure no simulation has, and the caveats above apply
+to every pattern it reports.
 
 ## In the fronts
 
