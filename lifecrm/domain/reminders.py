@@ -16,15 +16,22 @@ from __future__ import annotations
 import sqlite3
 
 from . import audit
+from .collect import TABLE as COLLECT_TABLE
 from .util import DomainError, is_iso_datetime
 
 TABLE = "reminder_revisions"
 
 # What counts as a change to the database's content: every audited write
 # except a publication here, which is bookkeeping about the records and must
-# not re-date the vault's start pages or re-trigger the hook that caused it.
-# obsidian.change_stamp / as_of and nudges.as_of_date all filter by this.
-CONTENT_CHANGE = f"table_name IS NOT '{TABLE}'"
+# not re-date the vault's start pages or re-trigger the hook that caused it,
+# and a collect run's outcome (domain/collect.py), bookkeeping about the
+# imports. obsidian's as-of date and nudges.as_of_date filter by this.
+CONTENT_CHANGE = f"table_name NOT IN ('{TABLE}', '{COLLECT_TABLE}')"
+# What re-renders the vault and republishes the calendar after a command
+# (obsidian.change_stamp): content, and a collect outcome too — a source held
+# this morning belongs on Home's Today this morning. Never a publication,
+# which the hook itself writes.
+REFRESH_CHANGE = f"table_name IS NOT '{TABLE}'"
 
 
 def revisions(conn: sqlite3.Connection) -> dict[str, dict]:

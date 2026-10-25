@@ -628,6 +628,20 @@ disagree, that disagreement is information.
 
 **Observed records**, as above.
 
+**The read-side features** ([features.md](features.md)) answer four more
+question shapes, each only while its feature is checked, each with an
+`M#` metric whose evidence line holds every number its sentences state, and
+the first and last records behind it as `O#` (lifecrm/ask_extra.py):
+
+- places ([places.md](places.md)): "which countries have I been to", "what
+  trips did I take in 2024", "where was I on 2022-05-12" (or "last weekend"),
+  "when was I in Slovenia", "have I been to Bled" — town and country names
+  from the local GeoNames file; with no explicit time, all records;
+- subscriptions: "what subscriptions do I pay for", "recurring charges";
+- weekdays: "which day of the week do I sleep the least", "what day do I
+  walk most" — over the last 90 days unless the question names a window;
+- links: "who sent me nytimes.com", "where did I see <a link>".
+
 Anything else in the question becomes a full-text search over entry titles,
 bodies, transcripts and the observed tier, plus entity resolution for names.
 Words that say *how* something was communicated ("text", "said", "asked")

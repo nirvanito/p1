@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -48,7 +49,7 @@ GUIS = ("web", "obsidian")
 HOME = "Home"
 # The start pages, as the stems the vault reserves for them (no entity note
 # may take one of these names: export.unique_stems escalates it).
-HUB_STEMS = ("Home", "People", "Health", "Sources")
+HUB_STEMS = ("Home", "People", "Health", "Sources", "Trips")
 # Set by the demo builder (and usable in any script): a run of many writes
 # refreshes once at the end instead of after every command.
 NO_REFRESH_ENV = "LIFECRM_NO_VAULT_REFRESH"
@@ -109,8 +110,9 @@ def auto_refresh(cfg: Config) -> bool:
 # ---------------------------------------------------------------- refresh
 
 # What counts as a change to the database's content: every audited write
-# except a reminders-calendar publication (lifecrm/domain/reminders.py).
-from .domain.reminders import CONTENT_CHANGE  # noqa: E402
+# except a reminders-calendar publication or a collect outcome; what
+# re-renders the vault: every one but a publication (lifecrm/domain/reminders.py).
+from .domain.reminders import CONTENT_CHANGE, REFRESH_CHANGE  # noqa: E402
 
 
 def change_stamp(cfg: Config) -> tuple | None:
@@ -126,7 +128,7 @@ def change_stamp(cfg: Config) -> tuple | None:
         return None
     try:
         row = conn.execute(f"SELECT MAX(id), MAX(ts) FROM audit_log "
-                           f"WHERE {CONTENT_CHANGE}").fetchone()
+                           f"WHERE {REFRESH_CHANGE}").fetchone()
         version = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'").fetchone()
         return (row[0], row[1], version[0] if version else None)
@@ -390,6 +392,10 @@ def _today_section(ctx: dict, pack: dict) -> list[str]:
         elif n["tier"] == "confirmed":
             # A goal: the plan is the owner's own words, the rest computed.
             lines.append(f"- {n['title']} — {n['detail']} · {key}")
+        elif n["kind"] == "collect":
+            # A source name and a path off this machine: inert, never observed.
+            lines.append(f"- {ex._md_text(n['title'])} *(the daily import)* — "
+                         f"{ex._md_text(n['detail'])} · {key}")
         else:
             lines.append(f"- {ex._md_text(n['title'])} *(observed)* — "
                          f"{ex._md_text(n['detail'])} · {key}")
@@ -404,6 +410,61 @@ def _today_section(ctx: dict, pack: dict) -> list[str]:
             who = f" with {', '.join(ex._md_text(w) for w in a['with'])}" if a["with"] else ""
             lines.append(f"- {when} — {ex._md_text(a['title'])}{who}"
                          + (" *(cancelled)*" if a["cancelled"] else ""))
+            for pid in a.get("prep") or ():
+                p = pack["index"][pid]
+                name = ex._entity_link(ctx, p["entity_id"], ex._md_text(p["name"]))
+                lines.append(f"    - before you meet {name}:")
+                # The lines mix your own words and imported text: inert, as
+                # every imported text in the vault.
+                lines += [f"        - {ex._md_text(_CITE_TAIL.sub('', x))}" for x in p["lines"]] \
+                    or ["        - nothing on record"]
+        lines.append("")
+    lines += _extras_section(ctx, pack)
+    return lines
+
+
+_CITE_TAIL = re.compile(r"\s*\[(?:[A-Z]\d+)(?:,\s*[A-Z]\d+)*\]$")
+
+
+def _extras_section(ctx: dict, pack: dict) -> list[str]:
+    """Home's read-side sections (lifecrm/features.py): on this day, the
+    prompts for the day before, today's highlights — imported text inert,
+    every item ending in the row it rests on."""
+    lines: list[str] = []
+    index = pack["index"]
+
+    def ref(cid: str) -> str:
+        it = index.get(cid) or {}
+        uuid = it.get("uuid") or it.get("first_uuid")
+        if it.get("type") == "entry":
+            return f" — entry `{uuid}`"
+        if it.get("type") == "day":
+            return f" — {ex._wikilink(it['date'])}"
+        return f" — observed `{uuid}`" if uuid else ""
+
+    otd = pack.get("on_this_day") or {}
+    if otd.get("years"):
+        lines += ["## On this day", ""]
+        for y in otd["years"]:
+            ago = f"{y['years_ago']} year{'' if y['years_ago'] == 1 else 's'} ago"
+            lines.append(f"- {ex._wikilink(y['date'])} · {ago}")
+            for it in y["items"]:
+                text = it["text"] if it["tier"] == "confirmed" else ex._md_text(it["text"])
+                lines.append(f"    - {text}{ref(it['id'])}")
+        lines.append("")
+    pr = pack.get("prompts") or {}
+    if pr.get("items"):
+        lines += [f"## Worth a word — {ex._wikilink(pr['date'])}", "",
+                  "*Moments in that day's imports the journal does not mention: a prompt "
+                  "for a note, never an entry (observed).*", ""]
+        lines += [f"- {ex._md_text(it['text'])}{ref(it['id'])}" for it in pr["items"]]
+        lines.append("")
+    hl = pack.get("highlights") or {}
+    if hl.get("items"):
+        lines += [f"## From your highlights", "",
+                  f"*{len(hl['items'])} of {hl['total']}, a fixed rotation (observed).*", ""]
+        lines += [f"- “{ex._md_text(it['text'])}” — *{ex._md_text(it['title'] or 'a book')}*"
+                  f"{ref(it['id'])}" for it in hl["items"]]
         lines.append("")
     return lines
 
@@ -739,7 +800,55 @@ def hub_notes(ctx: dict, cfg: Config, days: list[str]) -> dict[str, str]:
     # instant for now, so the section is a pure function of the database.
     from . import nudges as nudges_mod
     hub["nudges"] = nudges_mod.build(conn, cfg, today=as_of_date, now=now)
-    return {"Home.md": _home_note(ctx, cfg, hub),
-            "People.md": _people_note(ctx, hub),
-            "Health.md": _health_note(hub),
-            "Sources.md": _sources_note(cfg, hub)}
+    notes = {"Home.md": _home_note(ctx, cfg, hub),
+             "People.md": _people_note(ctx, hub),
+             "Health.md": _health_note(hub),
+             "Sources.md": _sources_note(cfg, hub)}
+    trips = _trips_note(ctx, cfg, as_of_date)
+    if trips is not None:
+        notes["Trips.md"] = trips
+    return notes
+
+
+def _trips_note(ctx: dict, cfg: Config, as_of_date: str) -> str | None:
+    """Trips and countries (lifecrm/places.py) while the places feature is
+    checked and a gazetteer is on this machine; None otherwise. Each line
+    names the record it starts from."""
+    from . import features, places
+    if not features.enabled(cfg, "places"):
+        return None
+    tl = places.timeline(ctx["conn"], cfg)
+    if not tl["ok"]:
+        return None
+    lines = ex._front_matter([("tags", ["lifecrm", "trips"]), ("as_of", as_of_date)])
+    lines += ["# Trips", "",
+              f"Days with a located record (a place visit or a photo) more than "
+              f"{tl['trip_km']:g} km from that day's home, and the countries those records "
+              f"fall in. Each town is the one nearest the recorded position in the local "
+              f"gazetteer — names from {places.ATTRIBUTION} — a derived reading of "
+              f"*observed* records, never stored.", ""]
+    homes = (tl["home"] or {}).get("homes") or []
+    if homes:
+        lines += ["Home: " + "; ".join(f"{ex._md_text(h['label'])} ({ex._wikilink(h['first_date'])}"
+                                       f" … {ex._wikilink(h['last_date'])})" for h in homes), ""]
+    lines += ["## Trips", ""]
+    if tl["trips"]:
+        for t in reversed(tl["trips"]):
+            span = (ex._wikilink(t["start"]) if t["start"] == t["end"]
+                    else f"{ex._wikilink(t['start'])} … {ex._wikilink(t['end'])}")
+            towns = ", ".join(ex._md_text(x["name"]) for x in t["towns"][:8]) or "unnamed places"
+            countries = ", ".join(ex._md_text(c["name"]) for c in t["countries"])
+            lines.append(f"- {span} · {towns}" + (f" ({countries})" if countries else "")
+                         + f" · {t['days']} day{'' if t['days'] == 1 else 's'}, up to "
+                           f"{t['far_km']} km — observed `{t['first_uuid']}`")
+    else:
+        lines.append("No day away from home yet.")
+    lines += ["", "## Countries", ""]
+    for c in tl["countries"]:
+        span = (ex._wikilink(c["first_date"]) if c["first_date"] == c["last_date"]
+                else f"{ex._wikilink(c['first_date'])} … {ex._wikilink(c['last_date'])}")
+        lines.append(f"- **{ex._md_text(c['name'])}** · {span} · {c['days']} "
+                     f"day{'' if c['days'] == 1 else 's'} · "
+                     + ", ".join(ex._md_text(t) for t in c["towns"][:8])
+                     + f" — observed `{c['first_uuid']}`")
+    return ex._render(lines)

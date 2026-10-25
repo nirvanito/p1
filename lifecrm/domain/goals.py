@@ -114,6 +114,11 @@ def validate_entry_data(kind: str | None, data) -> None:
         return
     if not isinstance(data, dict):
         raise DomainError("entry data must be an object or null")
+    # The read-side features' shapes ride the same rule (lifecrm/features.py:
+    # checked here whether or not the feature is shown).
+    from . import experiments, gifts
+    experiments.validate_entry_data(kind, data)
+    gifts.validate_entry_data(kind, data)
     if "goal" not in data:
         return
     if kind != "plan":

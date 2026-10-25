@@ -7,6 +7,7 @@
 #   local.lifecrm.verify-restore  Sunday 12:00 (an untested backup is not a backup)
 #   local.lifecrm.review          Monday 07:30 (the week that just ended, waiting for /review-week)
 #   local.lifecrm.reminders       daily 07:15 (republish the reminders calendar; docs/assistant.md)
+#   local.lifecrm.collect         daily 06:30 (the [collect] sources' imports; docs/collect.md)
 # Run once, as yourself (no sudo); re-running replaces the jobs:
 #   /bin/bash scripts/install-tasks.sh             write + load the jobs
 #   /bin/bash scripts/install-tasks.sh --print     show the plists, change nothing
@@ -31,7 +32,7 @@ done
 
 AGENTS="${LIFECRM_LAUNCHAGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOGDIR="$LIFECRM_REPO/data"
-JOBS="intake backup doctor verify-restore review reminders"
+JOBS="intake backup doctor verify-restore review reminders collect"
 
 # The plists are built from bash builtins only — no $(...) or cat per job.
 # Every fork is slow under Git Bash, where the tests run this on Windows.
@@ -67,6 +68,7 @@ plist_for() {
         verify-restore) script=verify-restore.sh; hour=12; minute=0; weekday=0 ;;
         review) script=review.sh; hour=7; minute=30; weekday=1 ;;
         reminders) script=reminders.sh; hour=7; minute=15 ;;
+        collect) script=collect.sh; hour=6; minute=30 ;;
     esac
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -168,7 +170,7 @@ if [ "$mode" = install ]; then
     echo "  ('last exit code' is the last run's result; 1 means look at the log)"
     echo "  run a job now:  launchctl kickstart gui/$uid/local.lifecrm.backup"
 fi
-echo "logs: data/transcribe.log, data/doctor.log, data/review.log, data/launchd-<job>.log"
+echo "logs: data/transcribe.log, data/doctor.log, data/review.log, data/collect.log, data/launchd-<job>.log"
 echo "a log saying 'Operation not permitted' means macOS privacy settings are" \
      "blocking the job - see Full Disk Access in docs/mac.md"
 exit $status

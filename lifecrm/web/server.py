@@ -18,12 +18,17 @@ Three rules shape this file:
 - **One read-only connection per request** (`db.connect(snap, readonly=True)`
   — mode=ro plus query_only). sqlite3 connections are not shared across
   threads, and a snapshot connection cannot write even by accident.
-- **The only write is the question log.** With [web] log_questions (default
-  on, --no-log to stop), each question asked lands in recall_log through
+- **Two writes, neither a record.** With [web] log_questions (default on,
+  --no-log to stop), each question asked lands in recall_log through
   domain/recall.log_question on a short-lived live connection — the same row
-  `lifecrm ask` writes, `answered` included (domain/recall.answered).
-  There is no capture endpoint: logging a day stays the reviewed /log path
-  (standing decision).
+  `lifecrm ask` writes, `answered` included (domain/recall.answered). And on
+  a server started with a key (--token), the Sources page's checklist checks
+  and unchecks the read-side features: POST /api/features, same-origin JSON
+  only, through lifecrm/features.save, which rewrites only [features] in
+  config.toml and refuses unless the rest of the file reads back the same.
+  The database is never written from here otherwise, and there is no
+  capture endpoint: logging a day stays the reviewed /log path (standing
+  decision).
 
 Requests are refused when they come from another site (Sec-Fetch-Site:
 cross-site) or name a Host that is not this machine (a DNS-rebinding page
@@ -62,6 +67,7 @@ PAGE = Path(__file__).parent / "index.html"
 COOKIE = "lifecrm_k"
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_QUESTION = 500
+MAX_FEATURES_BODY = 4096
 DEFAULT_PORT = 8765
 
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -313,6 +319,42 @@ class WebApp:
         self._probe_lock = threading.Lock()
         self._llm_state: tuple[float, dict] | None = None
         self._dash_state: dict[str, tuple[float, bool]] = {}
+        # The feature switches are read from config.toml again whenever it
+        # changes on disk — a `lifecrm features uncheck` in the terminal shows
+        # on the next request, not the next restart; config_lock serializes
+        # the page's own writes (features_save).
+        self.config_lock = threading.Lock()
+        self._config_stamp = self._config_file_stamp()
+
+    def _config_file_stamp(self) -> tuple | None:
+        try:
+            st = (self.cfg.root / "config.toml").stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def refresh_features(self, force: bool = False) -> None:
+        """Re-read [features] when config.toml changed (or `force`). Only that
+        table: every other setting stays what the server started with."""
+        stamp = self._config_file_stamp()
+        if not force and stamp == self._config_stamp:
+            return
+        self._config_stamp = stamp
+        from ..config import ConfigError, load_config
+        try:
+            fresh = load_config(self.cfg.root)
+        except ConfigError as e:
+            print(f"warning: config.toml not re-read ({e})", file=sys.stderr)
+            return
+        table = (fresh.extra or {}).get("features")
+        if table is None:
+            self.cfg.extra.pop("features", None)
+        else:
+            self.cfg.extra["features"] = table
+
+    def features_writable(self) -> bool:
+        """The page may check and uncheck features only on a server with a key."""
+        return bool(self.token)
 
     def host_allowed(self, name: str) -> bool:
         """A Host name that is this machine's own, or listed in [web]
@@ -401,7 +443,7 @@ class WebApp:
                     f"you have") from e
             return self._model
 
-    # ---- the one write
+    # ---- the writes: the question log here, [features] in Handler.features_save
 
     def log_question(self, question: str, result: dict) -> bool:
         if not self.log_questions:
@@ -429,6 +471,28 @@ class WebApp:
 def _one(query: dict, name: str, default: str | None = None) -> str | None:
     values = query.get(name)
     return values[0] if values else default
+
+
+def feature_changes(body) -> dict[str, bool]:
+    """A features write's body as {key: on}: {"changes": {"places": false}}
+    or {"all": true}. Every key a feature's, every value true or false —
+    one-line ValueError otherwise."""
+    from .. import features as features_mod
+    if not isinstance(body, dict) or len(body) != 1 or not set(body) & {"changes", "all"}:
+        raise ValueError('send {"changes": {"<feature>": true|false}} or {"all": true|false}')
+    if "all" in body:
+        if not isinstance(body["all"], bool):
+            raise ValueError('"all" must be true or false')
+        return {k: body["all"] for k in features_mod.KEYS}
+    changes = body["changes"]
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError('"changes" must name at least one feature')
+    for key, on in changes.items():
+        if key not in features_mod.BY_KEY:
+            raise ValueError(f"no feature '{key}' — known: {', '.join(features_mod.KEYS)}")
+        if not isinstance(on, bool):
+            raise ValueError(f"{key} must be true or false, got {on!r}")
+    return dict(changes)
 
 
 def _int(query: dict, name: str, default: int | None, lo: int, hi: int) -> int | None:
@@ -555,13 +619,18 @@ class Handler(BaseHTTPRequestHandler):
             if path not in PUBLIC and not self._token_ok(query):
                 return self._error(401, "this server needs its key — open the link "
                                         "`lifecrm serve` printed (it ends in ?k=...)")
+            self.app.refresh_features()
+            verbs = []
             for verb, pattern, fn in ROUTES:
                 m = pattern.match(path)
                 if m is None:
                     continue
                 if verb != method:
-                    return self._error(405, f"{path} accepts {verb} only")
+                    verbs.append(verb)
+                    continue
                 return fn(self, query, *m.groups())
+            if verbs:
+                return self._error(405, f"{path} accepts {' or '.join(verbs)} only")
             return self._error(404, f"no such endpoint: {path}")
         except api.NotFound as e:
             return self._error(404, str(e))
@@ -647,6 +716,7 @@ class Handler(BaseHTTPRequestHandler):
                       "loaded": self.app._model is not None},
             "dashboards": self.app.dashboards_state(self._probe_host()),
             "token": bool(self.app.token),
+            "feature_writes": self.app.features_writable(),
         })
         self._json(200, out)
 
@@ -724,6 +794,103 @@ class Handler(BaseHTTPRequestHandler):
         days = _int(query, "days", 14, 1, 366)
         self._json(200, self._read(api.health, days, _one(query, "end") or None))
 
+    def search(self, query):
+        """Every match across the journal and the imports, with facets
+        (lifecrm/search.py); read-only."""
+        q = (_one(query, "q") or "").strip()
+        if len(q) > MAX_QUESTION:
+            raise ValueError(f"search is {len(q)} characters — keep it under {MAX_QUESTION}")
+        person = _int(query, "person", None, 1, 2 ** 62)
+        self._json(200, self._read(
+            lambda conn, cfg: api.search(
+                conn, cfg, q, tier=_one(query, "tier") or None,
+                stream=_one(query, "stream") or None, person=person,
+                year=_one(query, "year") or None,
+                limit=_int(query, "limit", 50, 1, 200),
+                offset=_int(query, "offset", 0, 0, 100000))))
+
+    def trips(self, query):
+        self._json(200, self._read(api.trips))
+
+    def conversation(self, query, raw_id: str):
+        try:
+            entity_id = int(raw_id)
+        except ValueError:
+            raise ValueError(f"person id must be a number, got '{raw_id}'") from None
+        before = _one(query, "before") or None
+        self._json(200, self._read(lambda conn, cfg: api.conversation(
+            conn, cfg, entity_id, before=before, limit=_int(query, "limit", 60, 1, 300))))
+
+    def features(self, query):
+        """The checklist (lifecrm/features.py), and whether this server may
+        change it (`writable`: only with its key, see features_save)."""
+        from .. import features as features_mod
+        self._json(200, {**features_mod.listing(self.app.cfg),
+                         "writable": self.app.features_writable()})
+
+    def _same_origin(self) -> bool:
+        """A write must come from this page: a browser says where a request
+        came from (Sec-Fetch-Site, Origin), and anything but this server's
+        own origin is refused — another site, and another port on this
+        machine too (same-site, but not this page)."""
+        site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+        if site and site not in ("same-origin", "none"):
+            return False
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and origin != "null":
+            try:
+                netloc = urlsplit(origin).netloc.lower()
+            except ValueError:
+                return False
+            if netloc != (self.headers.get("Host") or "").strip().lower():
+                return False
+        elif origin == "null":
+            return False
+        return True
+
+    def features_save(self, query):
+        """Check or uncheck features from the page: the server's one config
+        write, through features.save (which rewrites only [features] and
+        refuses unless everything else in config.toml reads back the same).
+        Only with the server's key, only as same-origin JSON — a browser
+        cannot send cross-origin JSON without a preflight this server never
+        answers. Body: {"changes": {"<key>": true|false, ...}} or
+        {"all": true|false}."""
+        from .. import features as features_mod
+        if not self.app.token:
+            return self._error(403, "changing features from the page needs the server's "
+                                    "key — start it with: python -m lifecrm serve --token "
+                                    "random (or, in the terminal: python -m lifecrm "
+                                    "features check|uncheck <key>)")
+        if not self._same_origin():
+            return self._error(403, "cross-origin request refused")
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            raise ValueError("send the change as JSON (Content-Type: application/json)")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if not 0 < length <= MAX_FEATURES_BODY:
+            raise ValueError(f"send the change as a JSON body of at most "
+                             f"{MAX_FEATURES_BODY} bytes")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise ValueError("the body is not JSON") from None
+        changes = feature_changes(body)
+        before = features_mod.listing(self.app.cfg)
+        with self.app.config_lock:
+            path = features_mod.save(self.app.cfg, changes)
+            self.app.refresh_features(force=True)
+        was = {x["key"]: x["on"] for x in before["features"]}
+        moved = sorted(k for k, v in changes.items() if was.get(k) != v)
+        if moved:
+            said = "; ".join(f"{k} {'checked' if changes[k] else 'unchecked'}" for k in moved)
+            print(f"features: {said} (from the page)", file=sys.stderr)
+        self._json(200, {**features_mod.listing(self.app.cfg),
+                         "writable": True, "saved": str(path), "changed": moved})
+
     def transcribe(self, query):
         """Recorded audio in the body -> its text. The page then asks it."""
         from .. import transcribe as transcribe_mod
@@ -788,6 +955,11 @@ ROUTES = [
     ("GET", re.compile(r"^/api/imports$"), Handler.imports),
     ("GET", re.compile(r"^/api/health$"), Handler.health),
     ("GET", re.compile(r"^/api/nudges$"), Handler.nudges),
+    ("GET", re.compile(r"^/api/search$"), Handler.search),
+    ("GET", re.compile(r"^/api/trips$"), Handler.trips),
+    ("GET", re.compile(r"^/api/conversation/([^/]+)$"), Handler.conversation),
+    ("GET", re.compile(r"^/api/features$"), Handler.features),
+    ("POST", re.compile(r"^/api/features$"), Handler.features_save),
     ("GET", re.compile(r"^/reminders\.ics$"), Handler.reminders_ics),
     ("POST", re.compile(r"^/api/transcribe$"), Handler.transcribe),
 ]
@@ -881,5 +1053,8 @@ def banner(cfg: Config, host: str, port: int, token: str | None,
                  f"{base}/reminders.ics{key}")
     lines.append("questions are logged to recall_log (--no-log to stop)"
                  if log_questions else "questions are not logged (--no-log)")
+    lines.append("the Sources page checks and unchecks features ([features] in config.toml)"
+                 if token else "the Sources page's feature checklist is read-only "
+                               "(--token random lets the page change it)")
     lines.append("Ctrl+C to stop")
     return lines

@@ -140,6 +140,7 @@ Home.md                      the start page (see "Obsidian as your main GUI")
 People.md                    everyone, most recent contact first
 Health.md                    the last 30 days: sensor series, journal, workouts, nutrients
 Sources.md                   connectors, handles waiting to be linked, import runs
+Trips.md                     trips and countries (the places feature, with a gazetteer)
 Index.md                     recent days, people, places, ... and what was imported
 Loops.md                     open tasks and plans, soonest due first
 Journal/2026/2026-07-27.md   one note per day
@@ -154,6 +155,8 @@ Activities/Bouldering.md         Activities, Food, Media, Topics
 (`journal` for a day you logged, `observed` for a day with imports, plus the
 day's categories) — then:
 
+- "On this day:" links to the same date in other years that have a note
+  (the `on_this_day` feature, [features.md](features.md));
 - the day summary and the day's journal measurements;
 - a **Health** line from the sensor tier: sleep hours, steps, workouts and
   weight, marked *observed* and naming the export file it came from. When two
@@ -384,3 +387,24 @@ Still to check, on a Mac and on a synced vault:
 - [ ] With the vault in OneDrive / iCloud Drive, a refresh while the sync
       client holds a note warns once and the next write's refresh catches
       up.
+
+## The read-side features in the vault
+
+While they are checked ([features.md](features.md)), four features reach the
+vault, each a pure function of the database (and, for places, of the
+gazetteer file), so the vault stays reproducible:
+
+- **On this day** — the link row on each day note, and an *On this day*
+  section on Home for the as-of date;
+- **Places** — `Trips.md` (home, trips newest first, countries) and "(near
+  Bled, Slovenia)" beside each place visit in a day note, from the local
+  GeoNames file ([places.md](places.md)); without the file there is no
+  Trips note;
+- **Meeting prep, journal prompts, highlights** — on Home: "before you meet
+  ..." under each agenda event, *Worth a word* for the day before the as-of
+  date, *From your highlights*. Imported text in them is made inert like
+  every other imported text here.
+
+Unchecking a feature removes its part on the next refresh; a note the vault
+no longer writes (Trips.md) is deleted only because the manifest owns it.
+

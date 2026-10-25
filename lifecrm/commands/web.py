@@ -37,9 +37,11 @@ def serve(
 
     It reads a snapshot of the database (data/web/lifecrm.db), refreshed
     automatically when the live file changes, so the live DB is never held
-    open. Nothing is written except, unless --no-log, the question log that
-    `lifecrm ask` also keeps. There is no capture here: logging a day stays
-    the reviewed /log path. Ctrl+C to stop.
+    open. The database gets nothing but, unless --no-log, the question log
+    that `lifecrm ask` also keeps; with --token, the Sources page can also
+    check and uncheck features, which rewrites only [features] in
+    config.toml. There is no capture here: logging a day stays the reviewed
+    /log path. Ctrl+C to stop.
     """
     from ..cli import _cfg, _conn, _fail
     from ..web import server as web_server
