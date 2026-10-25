@@ -264,6 +264,11 @@ def _config_text(root: Path, combo: str, anchor: date | None = None) -> str:
         "[obsidian]",
         'vault = "vault"',
         "",
+        # The reminders calendar, inside the demo root too: `reminders
+        # publish` writes it there, and every write republishes it.
+        "[assistant]",
+        'reminders_dir = "reminders"',
+        "",
         "[connectors.android_sms]",
         f'account = "{me.phone}"',
         "[connectors.whatsapp]",
@@ -553,6 +558,9 @@ class DemoBuilder:
         # A read-only Obsidian vault of the same data, start pages included —
         # the demo config's [obsidian] vault, to open in Obsidian.
         self._run("obsidian", "refresh")
+        # The reminders calendar (docs/assistant.md), published once here
+        # like the vault; the hooks were off for the build.
+        self._run("reminders", "publish", "--if-configured")
         self._run("backup")
         doctor = self._run("doctor", "--json", want_json=True, check=False)
         status = self._run("status", "--json", want_json=True)

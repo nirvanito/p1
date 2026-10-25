@@ -52,17 +52,22 @@ PACK_VERSION = 2
 LENSES = ("week", "health", "career", "relationships", "finance", "all")
 
 SECTIONS = ("days", "entries", "loops", "journal_metrics", "health",
-            "observations", "titles", "relationships", "career", "finance")
+            "observations", "titles", "relationships", "career", "finance",
+            "goals", "patterns")
 
 # What each lens is about. The week is the overview; an advisor lens trades
-# breadth for its own section and the entries that bear on it.
+# breadth for its own section and the entries that bear on it. Goals (a plan
+# with a measurable target, docs/contract.md) belong to every lens; so does
+# the pattern finder's section, which is empty and says so unless
+# `[assistant] patterns = "on"` (experimental, docs/patterns.md).
 LENS_SECTIONS: dict[str, tuple[str, ...]] = {
     "week": ("days", "entries", "loops", "journal_metrics", "health",
-             "observations", "titles"),
-    "health": ("days", "entries", "loops", "journal_metrics", "health"),
-    "career": ("entries", "loops", "career", "titles"),
-    "relationships": ("entries", "loops", "relationships", "observations"),
-    "finance": ("entries", "loops", "finance"),
+             "observations", "titles", "goals", "patterns"),
+    "health": ("days", "entries", "loops", "journal_metrics", "health", "goals", "patterns"),
+    "career": ("entries", "loops", "career", "titles", "goals", "patterns"),
+    "relationships": ("entries", "loops", "relationships", "observations", "goals",
+                      "patterns"),
+    "finance": ("entries", "loops", "finance", "goals", "patterns"),
     "all": SECTIONS,
 }
 
@@ -117,9 +122,15 @@ LOOP_KINDS = ("task", "plan")
 
 # A saved brief is an entry like any other; this mark keeps it out of the
 # next pack's evidence, so an interpretation is never re-read as a fact.
+# Every generated interpretation (a review brief, a morning brief) carries a
+# data.derived_from that starts with "lifecrm ". An entry whose data has no
+# marker at all (a goal, anything else) is ordinary evidence, so the NULL case
+# is spelled out: NOT LIKE on a missing key is NULL, which would drop it.
 BRIEF_MARK = "lifecrm review"
-_NOT_BRIEF = ("(data IS NULL OR NOT json_valid(data) "
-              f"OR json_extract(data, '$.derived_from') IS NOT '{BRIEF_MARK}')")
+DERIVED_PREFIX = "lifecrm "
+NOT_DERIVED = ("(data IS NULL OR NOT json_valid(data) "
+               "OR json_extract(data, '$.derived_from') IS NULL "
+               f"OR json_extract(data, '$.derived_from') NOT LIKE '{DERIVED_PREFIX}%')")
 
 DEFAULT_QUIET_WEEKS = 3
 TOP_PEOPLE = 8
@@ -331,14 +342,18 @@ def _person(ctx: _Ctx, kind: str, value: str, entity_id: int | None,
 
 # ---------------------------------------------------------------- entries
 
-def _is_brief(data: str | None) -> bool:
+def is_derived(data: str | None) -> bool:
+    """True for a generated interpretation — an entry whose data.derived_from
+    starts with "lifecrm " (a review brief, a morning brief). The Python twin
+    of NOT_DERIVED; both leave an entry without the marker as evidence."""
     if not data:
         return False
     try:
         parsed = json.loads(data)
     except ValueError:
         return False
-    return isinstance(parsed, dict) and parsed.get("derived_from") == BRIEF_MARK
+    mark = parsed.get("derived_from") if isinstance(parsed, dict) else None
+    return isinstance(mark, str) and mark.startswith(DERIVED_PREFIX)
 
 
 def _load_entries(ctx: _Ctx, where: str, args: tuple, *,
@@ -352,7 +367,7 @@ def _load_entries(ctx: _Ctx, where: str, args: tuple, *,
         "FROM entries e JOIN entry_kinds k ON k.id = e.kind_id "
         f"WHERE e.status = 'active' AND ({where}) "
         "ORDER BY e.journal_date, e.id", args)
-        if _is_brief(r["data"]) == briefs]
+        if is_derived(r["data"]) == briefs]
     by_id = {r["id"]: {
         "uuid": r["uuid"], "date": r["journal_date"], "kind": r["kind"],
         "title": r["title"], "body": _excerpt(r["body"]),
@@ -451,7 +466,7 @@ def _section_days(ctx: _Ctx) -> list[dict]:
         said.setdefault(r["journal_date"], {})[r["metric"]] = round(r["v"], 2)
     counts = {r["journal_date"]: r["n"] for r in ctx.conn.execute(
         "SELECT journal_date, COUNT(*) AS n FROM entries WHERE status = 'active' "
-        f"AND journal_date BETWEEN ? AND ? AND {_NOT_BRIEF} GROUP BY journal_date",
+        f"AND journal_date BETWEEN ? AND ? AND {NOT_DERIVED} GROUP BY journal_date",
         (p["start"], p["end"]))}
     out = []
     for d in sorted(set(summaries) | set(said) | set(counts)):
@@ -1279,7 +1294,7 @@ def _payment_app(r) -> str | None:
     return app if app in PAYMENT_APPS else None
 
 
-def _classify_txns(ctx: _Ctx, rows: list) -> dict:
+def classify_txns(conn: sqlite3.Connection, rows: list) -> dict:
     """FINANCE_RULE applied to one period's txn rows: what the totals count
     (bank lines and payments), payments by counterparty, and what is left
     out — transfers between your own accounts, and bank lines funding a
@@ -1287,7 +1302,7 @@ def _classify_txns(ctx: _Ctx, rows: list) -> dict:
     apps_present = {_payment_app(r) for r in rows} - {None}
     counterparties: dict[int, list] = {}
     for part in _chunks([r["id"] for r in rows if _payment_app(r)]):
-        for a in ctx.conn.execute(
+        for a in conn.execute(
                 "SELECT p.observation_id, p.handle_kind, p.handle_value, "
                 "h.entity_id, h.display_name, h.ignored "
                 "FROM observation_participants p JOIN entity_handles h "
@@ -1361,8 +1376,8 @@ def _section_finance(ctx: _Ctx, entries: list[dict]) -> dict:
     out = {"totals": [], "merchants": [], "merchants_total": 0,
            "payments": [], "payments_total": 0, "excluded": {}, "rule": FINANCE_RULE}
     if ctx.observed:
-        cls = _classify_txns(ctx, _obs_rows(ctx, TXN_STREAMS, p["start"], p["end"]))
-        prior = _txn_totals(_classify_txns(ctx, _obs_rows(
+        cls = classify_txns(ctx.conn, _obs_rows(ctx, TXN_STREAMS, p["start"], p["end"]))
+        prior = _txn_totals(classify_txns(ctx.conn, _obs_rows(
             ctx, TXN_STREAMS, p["prior"]["start"], p["prior"]["end"]))["counted"])
         rows = cls["merchant_rows"]
         for cur, t in _txn_totals(cls["counted"]).items():
@@ -1472,6 +1487,8 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
         "relationships": lambda: _section_relationships(ctx, people()),
         "career": lambda: _section_career(ctx, all_entries),
         "finance": lambda: _section_finance(ctx, all_entries),
+        "goals": lambda: _section_goals(ctx),
+        "patterns": lambda: _section_patterns(ctx),
     }
     for name in sections:
         pack[name] = builders[name]()
@@ -1504,6 +1521,48 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
     return pack
 
 
+def _section_goals(ctx: _Ctx) -> dict:
+    """Open plans with a data.goal (lifecrm/goals.py), each period that
+    overlaps this one decided as of the day after it, the plan cited as E#.
+    Never None: a pack without goals says so."""
+    from . import goals as goals_mod
+    p = ctx.period
+    items = []
+    for g in goals_mod.in_period(ctx.conn, ctx.cfg, p["start"], p["end"]):
+        cid = ctx.ids.cite("E", g["uuid"], {
+            "type": "entry", "tier": "confirmed", "uuid": g["uuid"], "date": g["date"],
+            "kind": "plan", "title": g["title"]})
+        items.append({"id": cid, **{k: g.get(k) for k in (
+            "title", "goal", "agg", "start", "series", "periods", "streak", "error")},
+            "line": goals_mod.describe_periods(g)})
+    return {"items": items,
+            "decided_as_of": (date.fromisoformat(p["end"]) + timedelta(days=1)).isoformat(),
+            "rule": ("a count or sum is met when it reaches a '>=' target, missed only "
+                     "when the period is over and every day was known; a level is "
+                     "decided only when the period is over with enough known days; "
+                     "an unknown day is never a zero")}
+
+
+def _section_patterns(ctx: _Ctx) -> dict:
+    """The pattern finder (lifecrm/patterns.py, experimental) over a window
+    ending on the period's last day, at least 90 days long, the series
+    filtered to this lens; off unless `[assistant] patterns = "on"`. Never
+    None: off says off."""
+    from . import nudges as nudges_mod
+    s = nudges_mod.settings(ctx.cfg)
+    if s["patterns"] != "on":
+        return {"enabled": False, "items": [],
+                "note": 'off — experimental; [assistant] patterns = "on" turns it on '
+                        '(docs/patterns.md)'}
+    p = ctx.period
+    try:
+        s = {**s, "pattern_days": max(s["pattern_days"], p["days"])}
+        return nudges_mod.pattern_items(ctx.conn, ctx.cfg, end=date.fromisoformat(p["end"]),
+                                        ids=ctx.ids, s=s, lens=ctx.lens)
+    except (DomainError, sqlite3.OperationalError) as e:
+        return {"enabled": True, "items": [], "notes": [f"patterns: {e}"]}
+
+
 def _brief_item(ctx: _Ctx, e: dict) -> dict:
     try:
         data = json.loads(e["_data"]) if e["_data"] else {}
@@ -1524,7 +1583,7 @@ def _coverage(ctx: _Ctx, n_entries: int) -> dict:
         "days_in_period": p["days"],
         "days_with_entries": one(
             "SELECT COUNT(DISTINCT journal_date) FROM entries WHERE status='active' "
-            f"AND journal_date BETWEEN ? AND ? AND {_NOT_BRIEF}", p["start"], p["end"]),
+            f"AND journal_date BETWEEN ? AND ? AND {NOT_DERIVED}", p["start"], p["end"]),
         "days_with_summary": one(
             "SELECT COUNT(*) FROM days WHERE summary IS NOT NULL AND summary <> '' "
             "AND journal_date BETWEEN ? AND ?", p["start"], p["end"]),
@@ -1544,7 +1603,7 @@ def _coverage(ctx: _Ctx, n_entries: int) -> dict:
 
 # ---------------------------------------------------------------- citations
 
-CITE_RE = re.compile(r"\[((?:[DEMHO]\d+)(?:\s*[,;]\s*[DEMHO]\d+)*)\]")
+CITE_RE = re.compile(r"\[((?:[DEMHOP]\d+)(?:\s*[,;]\s*[DEMHOP]\d+)*)\]")
 
 
 def cited_ids(text: str) -> list[str]:
@@ -1589,6 +1648,14 @@ def index_line(item: dict) -> str:
         return (f"observation {item['uuid']} · {item['date']} · {item['stream']}"
                 + (f" · {item['title']}" if item.get("title") else "")
                 + f" · import {item['import_uuid']}")
+    if t == "rows":
+        # Rows of one table behind a computed value (a series' days).
+        span = f"{item['first_date']} to {item['last_date']}"
+        sample = f" · e.g. {item['uuids'][0]}" if item.get("uuids") else ""
+        return f"{item['table']} rows: {item['what']} · {item['count']} · {span}{sample}"
+    if t == "pattern":
+        from .nudges import pattern_line
+        return pattern_line(item)
     span = f"{item['first_date']} to {item['last_date']}"
     sample = ""
     if item.get("first_uuid"):
@@ -1933,6 +2000,25 @@ def render_markdown(pack: dict) -> str:
             out += [f"- [{e['id']}] {e['date']} {e['title']}: "
                     + ", ".join(f"{m['amount']:g} {m['unit'] or ''}".strip()
                                 for m in e["money"]) for e in s["journal_spending"]]
+        out.append("")
+    if "goals" in pack:
+        s = pack["goals"]
+        out += [f"## Goals (plans with a target; decided as of {s['decided_as_of']})", ""]
+        out += [f"- [{g['id']}] {g['line']}" for g in s["items"]] or ["- (no open goals)"]
+        out.append("")
+    if "patterns" in pack:
+        s = pack["patterns"]
+        out += ["## Patterns (co-occurrence, not cause; EXPERIMENTAL)", ""]
+        if not s.get("enabled"):
+            out.append(f"- {s.get('note', 'off')}")
+        else:
+            w = s.get("window") or {}
+            out.append(f"Window {w.get('start')} to {w.get('end')}, family of "
+                       f"{s.get('family_size', 0)} tests over {len(s.get('series', []))} series.")
+            out += [f"- [{it['id']}] {it['wording']}"
+                    + (f" · shift check p {it['shift_p']}" if it.get("shift_p") is not None
+                       else "") for it in s["items"]] or ["- (nothing clears the floors)"]
+            out += [f"- {n}" for n in s.get("notes", [])]
         out.append("")
     if pack["briefs"]:
         out += ["## Briefs already saved for this period (interpretations, not evidence)", ""]

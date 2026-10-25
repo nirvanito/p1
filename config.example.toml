@@ -238,3 +238,19 @@ max_loops = 10                     # open tasks/plans listed
 
 # [review]                          # `lifecrm review` (docs/review.md)
 # quiet_weeks = 3                   # relationships: people not contacted for this many weeks
+
+# [assistant]                       # `lifecrm nudges`, `lifecrm reminders` (docs/assistant.md)
+# due_days = 7                      # a task or plan due within this many days is a nudge
+# birthday_days = 14                # a linked contact card's birthday within this many days
+# nutrient_days = 14                # the food-diary window for "below reference" nudges
+# follow_up_days = 3                # an incoming message this old with no later contact is a follow-up
+# follow_up_window = 30             # how far back follow-ups look
+# lapsed_days = 180                 # the history a person's own contact rhythm is learned from
+# drift_recent = 7                  # drift: the last N days ...
+# drift_baseline = 30               # ... against the N days before them
+# patterns = "off"                  # "on" puts the EXPERIMENTAL pattern finder in nudges, review and /morning (docs/patterns.md)
+# pattern_series = []               # extra series keys for it (docs/assistant.md lists them)
+# pattern_days = 90                 # its window
+# reminders_dir = "~/OneDrive/LifeCRM reminders"  # a synced folder the phone's calendar reads; unset = no calendar
+# reminder_hour = 9                 # local hour a due item's calendar alarm fires
+# auto_publish = true               # republish the calendar after every command that changes the database

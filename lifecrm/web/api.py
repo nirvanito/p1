@@ -1046,6 +1046,14 @@ def imports(conn: sqlite3.Connection, cfg: Config,
     return out
 
 
+def nudges(conn: sqlite3.Connection, cfg: Config) -> dict:
+    """What matters today (lifecrm/nudges.py) on the clock's date, as loops()
+    counts overdue: the page is live, the vault's start pages are not."""
+    from .. import nudges as nudges_mod
+    day, now = nudges_mod.today_and_now(cfg)
+    return nudges_mod.build(conn, cfg, today=day, now=now)
+
+
 def _connector_freshness(conn: sqlite3.Connection, now: datetime | None = None
                          ) -> tuple[list[dict], str | None]:
     """Each discovered connector: active rows per stream, newest record, last

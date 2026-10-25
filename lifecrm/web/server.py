@@ -703,6 +703,23 @@ class Handler(BaseHTTPRequestHandler):
     def imports(self, query):
         self._json(200, self._read(api.imports))
 
+    def nudges(self, query):
+        """What matters today (lifecrm/nudges.py) on the clock's date, like
+        /api/loops; read-only — snooze and dismiss are CLI writes."""
+        self._json(200, self._read(api.nudges))
+
+    def reminders_ics(self, query):
+        """The published reminders calendar, byte for byte: what `lifecrm
+        reminders publish` last wrote (lifecrm/reminders.py). Nothing is
+        computed here, so a phone subscribed to this URL sees exactly the
+        revisions the publisher recorded."""
+        from .. import reminders as reminders_mod
+        path = reminders_mod.data_path(self.app.cfg)
+        if not path.exists():
+            return self._error(404, "no reminders calendar published yet — run: "
+                                    "python -m lifecrm reminders publish")
+        self._send(200, path.read_bytes(), "text/calendar; charset=utf-8")
+
     def health(self, query):
         days = _int(query, "days", 14, 1, 366)
         self._json(200, self._read(api.health, days, _one(query, "end") or None))
@@ -770,6 +787,8 @@ ROUTES = [
     ("GET", re.compile(r"^/api/loops$"), Handler.loops),
     ("GET", re.compile(r"^/api/imports$"), Handler.imports),
     ("GET", re.compile(r"^/api/health$"), Handler.health),
+    ("GET", re.compile(r"^/api/nudges$"), Handler.nudges),
+    ("GET", re.compile(r"^/reminders\.ics$"), Handler.reminders_ics),
     ("POST", re.compile(r"^/api/transcribe$"), Handler.transcribe),
 ]
 
@@ -856,6 +875,10 @@ def banner(cfg: Config, host: str, port: int, token: str | None,
     if token:
         lines.append("every request needs the key; a cookie remembers it after "
                      "the first visit")
+    base = (f"http://{lan_ip() if host in ('0.0.0.0', '') else host}:{port}"
+            if not is_loopback(host) else f"http://127.0.0.1:{port}")
+    lines.append(f"phone calendar subscription (after `lifecrm reminders publish`): "
+                 f"{base}/reminders.ics{key}")
     lines.append("questions are logged to recall_log (--no-log to stop)"
                  if log_questions else "questions are not logged (--no-log)")
     lines.append("Ctrl+C to stop")
