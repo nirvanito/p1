@@ -143,14 +143,19 @@ it, marked unresolved — never guessed onto an entity.
 
 | lens | sections | entries and loops kept |
 |---|---|---|
-| `week` (default) | days, entries, loops, journal_metrics, health, observations, titles | all |
-| `health` | days, entries, loops, journal_metrics, health | health, exercise, sleep, food |
-| `career` | entries, loops, career, titles | work, learning |
-| `relationships` | entries, loops, relationships, observations | social, or naming a person |
-| `finance` | entries, loops, finance | purchase, or carrying an amount |
+| `week` (default) | days, entries, loops, journal_metrics, health, observations, titles, goals | all |
+| `health` | days, entries, loops, journal_metrics, health, goals | health, exercise, sleep, food |
+| `career` | entries, loops, career, titles, goals | work, learning |
+| `relationships` | entries, loops, relationships, observations, goals | social, or naming a person |
+| `finance` | entries, loops, finance, goals | purchase, or carrying an amount |
 | `all` | every section | all |
 
-A section a lens does not include is absent from the pack.
+A section a lens does not include is absent from the pack. `goals` is in
+every lens: each open plan with a `data.goal` ([assistant.md](assistant.md),
+"Goals"), the periods of it that overlap the pack decided as of the day after
+the period, the plan cited as `E#`, and a line per goal ("2026-W42: 1 of 3
+(missed)"); an unknown day is never a zero, so a period without full
+coverage reads "undecided".
 
 ## Output
 

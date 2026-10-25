@@ -569,3 +569,25 @@ CREATE TABLE reminder_revisions (
   present       INTEGER NOT NULL CHECK (present IN (0,1)),
   updated_at    TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------- v7:
+-- declared import coverage (docs/assistant.md). Kept identical to
+-- migrations/0007_import_coverage.sql so a fresh init and a migrated database
+-- produce the same sqlite_master.
+
+-- One row per declared interval: this import, this stream (and account,
+-- when the source names one), these days, and the guarantee it rests on.
+-- An interval counts only while its import is 'applied' (a retracted import
+-- establishes nothing); the series layer (lifecrm/series.py) reads it, drift
+-- and goals say "insufficient coverage" where none applies.
+CREATE TABLE import_coverage (
+  import_id  INTEGER NOT NULL REFERENCES imports(id),
+  account    TEXT,
+  stream     TEXT NOT NULL,
+  start_date TEXT NOT NULL,
+  end_date   TEXT NOT NULL,
+  basis      TEXT NOT NULL,
+  PRIMARY KEY (import_id, stream, start_date, end_date),
+  CHECK (start_date <= end_date)
+);
+CREATE INDEX idx_import_coverage_stream ON import_coverage(stream, start_date);

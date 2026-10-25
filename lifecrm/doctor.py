@@ -467,6 +467,11 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     except sqlite3.OperationalError:
         pass   # pre-v6 schema; pending_migrations already failed above
 
+    try:
+        _coverage_checks(conn, _add, _rows)
+    except sqlite3.OperationalError:
+        pass   # pre-v7 schema; pending_migrations already failed above
+
     failures = sum(1 for c in checks if c["status"] == "fail")
     warnings = sum(1 for c in checks if c["status"] == "warn")
     return {"checks": checks, "failures": failures, "warnings": warnings,
@@ -507,6 +512,19 @@ def _assistant_state_checks(conn: sqlite3.Connection, _add, _rows) -> None:
           "NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T"
           "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'",
           "published calendar component(s) whose last_modified is not an ISO instant")
+
+
+def _coverage_checks(conn: sqlite3.Connection, _add, _rows) -> None:
+    """import_coverage (schema v7): the schema orders start and end; what it
+    cannot see is a date that is not one or a basis left empty. (A complete
+    export that held no rows at all is a valid declaration: "none" is what
+    it establishes.)"""
+    _rows("import_coverage_dates",
+          "SELECT import_id, stream, start_date, end_date FROM import_coverage "
+          "WHERE start_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+          "OR end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+          "OR trim(basis) = ''",
+          "coverage declaration(s) with a malformed date or no basis")
 
 
 def _owner_check(conn: sqlite3.Connection, cfg: Config, _add) -> None:

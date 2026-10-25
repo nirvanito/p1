@@ -235,6 +235,7 @@ def bled_trip_days(anchor: date) -> list[date]:
 #   relations:     [(from ref, relationship type, to ref)] stated by this
 #                  sentence ("Jake grew up in El Paso" -> jake from el_paso)
 #   due_offset:    for tasks/plans, a due date as an anchor offset
+#   data:          the entry's data object (a plan's goal: docs/contract.md)
 #   occurred:      'HH:MM' local time of the event, when known
 
 @dataclass
@@ -421,8 +422,9 @@ JOURNAL: tuple[JournalDay, ...] = (
          _e(kind="reflection", primary="work", title="Workload piling up: three launches next week")),
         ("Only slept six hours.", None),
         ("I skipped the gym twice this week and need to get back to three sessions a week.",
-         _e(kind="task", primary="health", secondary=["exercise"],
-            title="Get back to three gym sessions a week", key="gym_task")),
+         _e(kind="plan", primary="health", secondary=["exercise"],
+            title="Get back to three gym sessions a week", key="gym_task",
+            data={"goal": {"metric": "workouts", "target": 3, "per": "week"}})),
     ])], "Stretched thin: launches, short sleep, missed workouts.",
         mood=5, energy=4, sleep_hours=6.0),
 

@@ -60,8 +60,8 @@ def _v4_db(cfg, tmp_path):
 
 # ---------------------------------------------------------------- migration
 
-def test_schema_version_is_six():
-    assert SCHEMA_VERSION == 6
+def test_schema_version_is_seven():
+    assert SCHEMA_VERSION == 7
 
 
 def test_migration_0005_takes_a_v4_database_to_v5_and_keeps_its_data(cfg, tmp_path):
@@ -71,7 +71,7 @@ def test_migration_0005_takes_a_v4_database_to_v5_and_keeps_its_data(cfg, tmp_pa
         el_paso = entities.create(conn, "place", "El Paso, TX")
         conn.commit()
         snap = cfg.backups_dir / "pre-migration-v5.db"
-        assert db_mod.migrate(conn, snapshot_to=snap) == [5, 6]
+        assert db_mod.migrate(conn, snapshot_to=snap) == [5, 6, 7]
         assert db_mod.schema_version(conn) == SCHEMA_VERSION
         assert conn.execute("SELECT value FROM meta WHERE key='contract_version'"
                             ).fetchone()["value"] == "2"   # backwards-compatible key

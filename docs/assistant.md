@@ -71,16 +71,86 @@ through `lifecrm/domain/` like every other write.
 | kind | fires when | rests on | key |
 |---|---|---|---|
 | `reminder` | an open task or plan is due within `due_days` (default 7), overdue first | `E#` the entry | `due:<entry uuid>` |
+| `follow_up` | the newest incoming 1:1 text or email from a linked person is at least `follow_up_days` (3) old, within `follow_up_window` (30), and the imported records hold no later contact from you to them: no text or email you sent them, no answered call, no past meeting that was not cancelled, no confirmed entry naming them as a participant. Not judged, with a note, when the channel's newest import predates the end of the reply window | `O#` the message | `followup:<observation uuid>` |
+| `goal` | an open plan carries a `data.goal` (below): how it stands this period, the last period, the streak | `E#` the plan, plus the rows behind the value | `goal:<entry uuid>` |
+| `drift` | the last `drift_recent` (7) days differ from the `drift_baseline` (30) days before by more than the threshold: sleep 0.5 h, mood and energy 1.0, steps 1,500 a day, workouts 1 a week, spending 25 % and at least 50. A level needs 3 recent and 8 baseline known days; a weekly rate needs 80 % of both windows known. Below that it is a note, not a nudge | `M#`/`H#`/`O#` the rows of each window | `drift:<series>` |
 | `birthday` | a contact card linked to a person carries a birthday within `birthday_days` (default 14); one nudge per person, the card that knows the year preferred; never your own | `O#` the card | `birthday:<entity id>:<year>` |
 | `nutrient` | the food diary's average over `nutrient_days` (default 14) is below 70 % of the reference for a nutrient (`lifecrm nutrients`); one nudge per nutrient, the disclaimer first | `O#` the rows averaged | `nutrient:<key>` |
 | `stale` | a connector's newest record is older than its own `stale_after_days` (the rule `doctor` and the Sources page share) | `O#` the newest row | `stale:<connector>` |
+| `lapsed` | a person with at least 6 contact days in `lapsed_days` (180) whose days since the last one exceed twice their own median gap (and a week); skipped when they already have a follow-up | `O#`/`E#` the last contact | `lapsed:<entity id>` |
 
 The **agenda** is a separate list, not a nudge: the calendar events of today
 and tomorrow (local time, who is on them, cancelled ones marked), each an
 `O#`. A multi-day event is listed on the day it starts.
 
-More kinds arrive with declared coverage: goals, drift against your own
-baseline, follow-ups and lapsed contact (see "Not yet" below).
+## Coverage: what a missing row means
+
+A day with no workout row is not a day without a workout; the export may not
+have covered it. Activity dates cannot establish completeness, and an
+observation remembers only the import that created it, so a span can never
+be rebuilt from rows. What can establish it is a guarantee in the source
+format, and a connector that has one **declares** it with the import
+(`import_coverage`, schema v7: stream, account, interval, and the basis):
+
+| source | declares | basis |
+|---|---|---|
+| finance, OFX/QFX/QBO | `txn`, per account | the statement's own `DTSTART`/`DTEND` (a CSV says nothing) |
+| android_sms | `android_sms`, `android_mms` | a backup marked `type="full"` whose count matches, from its oldest text to the day it was taken; calls never (the log ages out) |
+| ios_messages, mac_messages | `imessage`, `sms`, `rcs` | the device's or the Mac's whole Messages store, from its oldest text to the backup's date (or its newest text) |
+| fitness | `workout` | Strong, Hevy and Strava export every workout: from the first to the export's newest moment |
+
+Everything else declares nothing, and its missing days stay unknown. A
+declaration counts only while its import is applied. Every daily series
+(`lifecrm/series.py`: mood, energy, sleep, steps, resting heart rate, weight,
+workouts, spending, texts, people in touch, a person, a nutrient, a journal
+category) carries the days it knows: a measured quantity knows the days with
+a record; a count knows its positives and the declared zeros; a journal
+category has positives only, since a logged day does not establish that
+every category was recorded. People in touch take positives from every
+channel but zeros from complete texts alone, so a zero reads "no recorded
+texts". Drift, goals and follow-ups say "insufficient coverage" or "not
+judged" where the days are not known, instead of inventing inactivity.
+
+## Goals
+
+A goal is a `plan` entry whose `data.goal` names a measurable target
+([contract.md](contract.md), "Goals"):
+
+```json
+{"kind": "plan", "title": "Get back to three gym sessions a week",
+ "data": {"goal": {"metric": "workouts", "target": 3, "per": "week"}}}
+```
+
+`metric` is one of `workouts`, `exercise_minutes`, `spending`, `texts`,
+`contact` (with `entity`, the person's name), `steps`, `sleep`,
+`sleep_hours`, `mood`, `energy`, or `cat:<category>`; `per` is `day`,
+`week` or `month`; `op` is `>=` (default) or `<=`; optional `start`,
+`currency` (spending) and `min_known`. `/log` proposes one when you state a
+measurable intention; `lifecrm entry edit <uuid> --data '{"goal": ...}'`
+attaches one to an existing plan. The shape is checked by the domain layer
+on every write, and a goal needs kind `plan`: a kind-only edit of a plan
+carrying a goal is refused until the goal is removed.
+
+How a goal is decided depends on how its metric adds up:
+
+- a **count or sum** (workouts, spending, texts, contact days) is met as soon
+  as the period's value reaches a `>=` target, even with unknown days; it is
+  missed only when the period is over and every day was known; otherwise
+  undecided. `projected` = value / elapsed fraction, for the current period.
+  A `<=` budget fails as soon as it is exceeded and is met only at the end
+  with full coverage;
+- a **level** (sleep, mood, energy; steps per week) reports its observed
+  mean, its coverage and whether it is currently above target, and is
+  decided only when the period is over with at least `min_known` days known
+  (5 of a week, 20 of a month, 1 of a day);
+- the goal starts at `goal.start` or the plan's journal date; periods are
+  calendar-aligned; the first, partial period never enters a streak; the
+  streak counts consecutive complete periods met and says what ended it, a
+  miss or coverage; a closed plan ends the goal; an edited target applies
+  to every period.
+
+The review pack's `goals` section (every lens) lists each goal's periods
+that overlap the pack, decided as of the day after it.
 
 ## The pack, saving it, checking a brief
 
@@ -231,6 +301,11 @@ starts with `lifecrm ` is left out of later packs.
 due_days = 7          # a task or plan due within this many days is a nudge
 birthday_days = 14    # a linked contact card's birthday within this many days
 nutrient_days = 14    # the food-diary window for "below reference"
+follow_up_days = 3    # an incoming message this old with no later contact is a follow-up
+follow_up_window = 30 # how far back follow-ups look
+lapsed_days = 180     # the history a person's own contact rhythm is learned from
+drift_recent = 7      # drift: the last N days ...
+drift_baseline = 30   # ... against the N days before them
 reminders_dir = "~/OneDrive/LifeCRM reminders"   # unset = no calendar
 reminder_hour = 9     # local hour of a due item's alarm
 auto_publish = true   # republish after every command that changes the database
@@ -241,8 +316,8 @@ config.toml.
 
 ## Not yet
 
-Declared coverage, goals (`data.goal` on a plan), drift against your own
-baseline, follow-ups and lapsed contact arrive in the next increment;
-patterns (co-occurrence between daily series) after that, experimental until
-their validation suite passes. Anniversaries have no source field yet, and a
-birthday without a contact card has no home in the schema.
+Patterns (co-occurrence between daily series) come next, experimental until
+their validation suite passes. Coverage declarations exist only for the
+sources whose formats carry a guarantee (the table above); the others stay
+unknown. Anniversaries have no source field yet, and a birthday without a
+contact card has no home in the schema.

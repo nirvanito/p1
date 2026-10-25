@@ -2,5 +2,5 @@
 
 __version__ = "0.1.0"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CONTRACT_VERSION = 2

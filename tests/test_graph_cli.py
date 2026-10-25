@@ -150,7 +150,7 @@ def test_jsonl_export_covers_relationships_with_stable_ids(conn, cfg, tmp_path):
     _seed_graph(conn, cfg)
     out = tmp_path / "export"
     manifest = export_jsonl(conn, out)
-    assert manifest["schema_version"] == 6
+    assert manifest["schema_version"] == 7
     for table in ("entity_link_types", "entity_links"):
         assert table in manifest["tables"], f"{table} is missing from the export"
         db_count = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]

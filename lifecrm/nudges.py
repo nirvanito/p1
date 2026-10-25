@@ -44,11 +44,27 @@ from .web import api
 PACK_VERSION = 1
 SECTION = "assistant"
 DEFAULTS = {"due_days": 7, "birthday_days": 14, "nutrient_days": 14,
+            "follow_up_days": 3, "follow_up_window": 30, "lapsed_days": 180,
+            "drift_recent": 7, "drift_baseline": 30,
             "reminder_hour": 9, "reminders_dir": None, "auto_publish": True}
-_DAY_KEYS = ("due_days", "birthday_days", "nutrient_days")
+_DAY_KEYS = ("due_days", "birthday_days", "nutrient_days", "follow_up_days",
+             "follow_up_window", "lapsed_days", "drift_recent", "drift_baseline")
 _FLAG_WORDS = {"true": True, "yes": True, "on": True, "1": True,
                "false": False, "no": False, "off": False, "0": False}
-KIND_ORDER = ("reminder", "birthday", "nutrient", "stale")
+KIND_ORDER = ("reminder", "follow_up", "goal", "drift", "birthday", "nutrient", "stale",
+              "lapsed")
+# Drift: what counts as a change between the last `drift_recent` days and the
+# `drift_baseline` days before them. A level compares means and needs 3
+# recent and 8 baseline known days; a weekly rate needs 80 % of both windows
+# declared or recorded (an unknown day is never a zero).
+DRIFT = {"sleep": ("level", 0.5), "sleep_hours": ("level", 0.5), "mood": ("level", 1.0),
+         "energy": ("level", 1.0), "steps": ("level", 1500.0),
+         "workouts": ("weekly", 1.0), "spending": ("weekly_pct", 0.25)}
+DRIFT_MIN_RECENT, DRIFT_MIN_BASELINE, DRIFT_COVERAGE = 3, 8, 0.8
+SPENDING_MIN_DELTA = 50.0
+LAPSED_MIN_CONTACTS = 6
+_TABLE_PREFIX = {"measurements": "M", "health_records": "H", "observations": "O",
+                 "entries": "E"}
 TIER_NOTE = "(observed, not confirmed)"
 CALENDAR_STREAMS = STREAM_GROUPS["calendar"]
 
@@ -387,6 +403,309 @@ def _agenda(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids,
     return out
 
 
+def _cite_rows(ids: _Ids, key: tuple, refs: list[tuple[str, str]], days: list[str],
+               what: str) -> list[str]:
+    """One `rows` item per table behind a computed value (a series' days)."""
+    out = []
+    for table in sorted({t for t, _u in refs}):
+        uuids = sorted({u for t, u in refs if t == table})
+        tier = "confirmed" if table in ("measurements", "entries") else "observed"
+        out.append(ids.cite(_TABLE_PREFIX[table], ("rows", table, *key), {
+            "type": "rows", "tier": tier, "table": table, "what": what,
+            "count": len(uuids), "first_date": min(days), "last_date": max(days),
+            "uuids": uuids}))
+    return out
+
+
+def _series_refs(s, start: str, end: str) -> tuple[list, list[str]]:
+    from . import series as series_mod
+    days = [d for d in series_mod._days(start, end) if d in s.known]
+    return [r for d in days for r in s.refs.get(d, [])], days
+
+
+def _goals(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids) -> list[dict]:
+    """Every open goal (lifecrm/goals.py), as it stands today. The plan is the
+    confirmed citation; the rows behind the value come along."""
+    from . import goals as goals_mod
+    out = []
+    try:
+        items = goals_mod.progress(conn, cfg, today)
+    except sqlite3.OperationalError:
+        return []
+    for g in items:
+        eid = ids.cite("E", g["uuid"], {
+            "type": "entry", "tier": "confirmed", "uuid": g["uuid"], "date": g["date"],
+            "kind": "plan", "title": g["title"]})
+        cites = [eid]
+        detail = "a plan you set, measured from the records"
+        if g.get("error"):
+            detail = f"cannot be measured: {g['error']}"
+        else:
+            cur = g["current"]
+            if g.get("refs"):
+                cites += _cite_rows(ids, ("goal", g["uuid"]), g["refs"],
+                                    [cur["start"], min(cur["end"], today.isoformat())],
+                                    f"rows behind {g['title']} this {g['goal']['per']}")
+            if cur["known"] < cur["days_elapsed"]:
+                detail += (f"; {cur['known']} of {cur['days_elapsed']} day(s) known so "
+                           f"far — an unknown day is not a zero")
+            if g["series"]["tier"] == "observed":
+                detail += f" {TIER_NOTE}"
+            if g.get("note"):
+                detail += f"; {g['note']}"
+        out.append({"kind": "goal", "key": f"goal:{g['uuid']}", "title": goals_mod.describe(g),
+                    "detail": detail, "date": today.isoformat(), "ids": cites,
+                    "tier": "confirmed", "_sort": (0 if g.get("error") else 1, g["title"])})
+    return out
+
+
+def _drift(conn: sqlite3.Connection, cfg: Config, s: dict, today: date, ids: _Ids,
+           notes: list[str]) -> list[dict]:
+    """The last drift_recent days against the drift_baseline days before them,
+    per series in DRIFT; a comparison with your own recent record, never a
+    verdict. Below the coverage floor it is a note, not a nudge."""
+    from . import series as series_mod
+    n, m = s["drift_recent"], s["drift_baseline"]
+    recent_start = today - timedelta(days=n - 1)
+    base_end = recent_start - timedelta(days=1)
+    base_start = base_end - timedelta(days=m - 1)
+    keys = ["sleep", "steps", "workouts", "mood", "energy", "spending"]
+    out = []
+    for key in keys:
+        ser = series_mod.daily(conn, cfg, key, base_start.isoformat(), today.isoformat())
+        if key == "sleep" and not ser.known:
+            key = "sleep_hours"
+            ser = series_mod.daily(conn, cfg, key, base_start.isoformat(), today.isoformat())
+        how, threshold = DRIFT[key]
+        rec_days = [d for d in series_mod._days(recent_start.isoformat(), today.isoformat())
+                    if d in ser.known]
+        base_days = [d for d in series_mod._days(base_start.isoformat(), base_end.isoformat())
+                     if d in ser.known]
+        unit = ser.unit or ""
+        if how == "level":
+            if len(rec_days) < DRIFT_MIN_RECENT or len(base_days) < DRIFT_MIN_BASELINE:
+                notes.append(f"{ser.label}: insufficient coverage for drift "
+                             f"({len(rec_days)} of {n} recent days known, {len(base_days)} "
+                             f"of {m} baseline)")
+                continue
+            rec_v = round(sum(ser.values[d] for d in rec_days) / len(rec_days), 2)
+            base_v = round(sum(ser.values[d] for d in base_days) / len(base_days), 2)
+            delta = rec_v - base_v
+            if abs(delta) < threshold:
+                continue
+            what = (f"{ser.label} {'up' if delta > 0 else 'down'}: last {n} days averaged "
+                    f"{rec_v:g} {unit} vs {base_v:g} {unit} over the {m} before").replace("  ", " ")
+        else:
+            if len(rec_days) < DRIFT_COVERAGE * n or len(base_days) < DRIFT_COVERAGE * m:
+                notes.append(f"{ser.label}: insufficient coverage for drift "
+                             f"({len(rec_days)} of {n} recent days known, {len(base_days)} "
+                             f"of {m} baseline; days an import declared complete)")
+                continue
+            rec_v = round(sum(ser.values[d] for d in rec_days), 2)
+            base_total = sum(ser.values[d] for d in base_days)
+            base_v = round(base_total / (len(base_days) / 7), 2)
+            delta = rec_v - base_v
+            if how == "weekly" and abs(delta) < threshold:
+                continue
+            if how == "weekly_pct" and (abs(delta) < SPENDING_MIN_DELTA
+                                        or abs(delta) < threshold * max(base_v, 1e-9)):
+                continue
+            what = (f"{ser.label} {'up' if delta > 0 else 'down'}: {rec_v:g} {unit} in the "
+                    f"last {n} days vs {base_v:g} {unit} a week over the {m} before"
+                    ).replace("  ", " ")
+        refs_r, _ = _series_refs(ser, recent_start.isoformat(), today.isoformat())
+        refs_b, _ = _series_refs(ser, base_start.isoformat(), base_end.isoformat())
+        cites = (_cite_rows(ids, ("drift", key, "recent"), refs_r, rec_days,
+                            f"{ser.label}, last {n} days")
+                 + _cite_rows(ids, ("drift", key, "baseline"), refs_b, base_days,
+                              f"{ser.label}, the {m} days before"))
+        detail = (f"{len(rec_days)} of {n} recent days known, {len(base_days)} of {m} "
+                  f"baseline; a comparison with your own recent record, not a verdict"
+                  + (f" {TIER_NOTE}" if ser.tier == "observed" else ""))
+        out.append({"kind": "drift", "key": f"drift:{key}", "title": what, "detail": detail,
+                    "date": today.isoformat(), "ids": cites, "tier": ser.tier,
+                    "_sort": (keys.index(key if key != "sleep_hours" else "sleep"),)})
+    return out
+
+
+def _contact_events(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
+    """Every participant row of a contact-channel observation in the window,
+    resolved to a person; plus how many non-owner parties each row has."""
+    from .series import CONTACT_STREAMS
+    marks = ",".join("?" for _ in CONTACT_STREAMS)
+    rows = [dict(r) for r in conn.execute(
+        "SELECT o.id, o.uuid, o.stream, o.journal_date, o.started_at, o.direction, "
+        "o.value, o.value_json, o.title, o.body, i.uuid AS import_uuid, p.role, "
+        "p.handle_kind, p.handle_value, "
+        "CASE WHEN e.status = 'merged' THEN e.merged_into ELSE e.id END AS eid, "
+        "CASE WHEN e.status = 'merged' THEN m.type ELSE e.type END AS etype "
+        "FROM observations o JOIN imports i ON i.id = o.import_id "
+        "JOIN observation_participants p ON p.observation_id = o.id "
+        "LEFT JOIN entity_handles h ON h.kind = p.handle_kind AND h.value = p.handle_value "
+        "AND h.ignored = 0 "
+        "LEFT JOIN entities e ON e.id = h.entity_id "
+        "LEFT JOIN entities m ON m.id = e.merged_into "
+        f"WHERE o.status = 'active' AND o.stream IN ({marks}) "
+        f"AND o.journal_date BETWEEN ? AND ? ORDER BY o.started_at, o.id, p.role",
+        (*CONTACT_STREAMS, start, end))]
+    return rows
+
+
+def _follow_ups(conn: sqlite3.Connection, cfg: Config, s: dict, today: date, ids: _Ids,
+                owners: frozenset, owner_handles: frozenset, notes: list[str]
+                ) -> tuple[list[dict], set[int]]:
+    """The newest incoming 1:1 message from a linked person, at least
+    follow_up_days old, with no later contact in the imported records: no
+    message or email from you to them, no answered call, no past meeting that
+    was not cancelled, no confirmed entry naming them. Suppressed, with a
+    note, when the channel's imports stop before the reply window closed."""
+    from .review import NOT_DERIVED
+    from .series import CALENDAR_STREAMS, CALL_STREAMS, EMAIL_STREAMS, TEXT_STREAMS
+    window_start = today - timedelta(days=s["follow_up_window"])
+    cutoff = today - timedelta(days=s["follow_up_days"])
+    events = _contact_events(conn, window_start.isoformat(), today.isoformat())
+    by_obs: dict[int, list[dict]] = {}
+    for ev in events:
+        by_obs.setdefault(ev["id"], []).append(ev)
+    message_streams = set(TEXT_STREAMS) | set(EMAIL_STREAMS)
+    newest_by_group: dict[str, str] = {}
+    for grp, streams in (("text", TEXT_STREAMS), ("email", EMAIL_STREAMS)):
+        marks = ",".join("?" for _ in streams)
+        row = conn.execute(f"SELECT MAX(journal_date) FROM observations WHERE status = 'active' "
+                           f"AND stream IN ({marks})", streams).fetchone()
+        newest_by_group[grp] = row[0] if row else None
+    def is_group(parts: list[dict]) -> bool:
+        others = {(p["handle_kind"], (p["handle_value"] or "").lower()) for p in parts
+                  if (p["handle_kind"], (p["handle_value"] or "").lower()) not in owner_handles
+                  and p["eid"] not in owners}
+        return len(others) > 1 or bool(_detail(parts[0]["value_json"]).get("group"))
+
+    groups = {obs_id for obs_id, parts in by_obs.items() if is_group(parts)}
+    # the newest incoming 1:1 message per person
+    candidates: dict[int, dict] = {}
+    for obs_id, parts in by_obs.items():
+        head = parts[0]
+        if head["stream"] not in message_streams or head["direction"] != "in":
+            continue
+        if head["journal_date"] > cutoff.isoformat():
+            continue
+        if obs_id in groups:
+            continue
+        sender = next((p for p in parts if p["role"] == "sender" and p["eid"] is not None
+                       and p["etype"] == "person" and p["eid"] not in owners), None)
+        if sender is None:
+            continue
+        cur = candidates.get(sender["eid"])
+        if cur is None or head["started_at"] > cur["started_at"]:
+            candidates[sender["eid"]] = {**head, "eid": sender["eid"]}
+    mentioned = {}
+    for r in conn.execute(
+            "SELECT e.journal_date, "
+            "CASE WHEN en.status = 'merged' THEN en.merged_into ELSE en.id END AS eid "
+            "FROM entries e JOIN mentions mn ON mn.entry_id = e.id "
+            "JOIN entities en ON en.id = mn.entity_id "
+            f"WHERE e.status = 'active' AND mn.role = 'participant' "
+            f"AND e.journal_date >= ? AND {NOT_DERIVED}", (window_start.isoformat(),)):
+        mentioned.setdefault(r["eid"], []).append(r["journal_date"])
+    names = {r["id"]: r["name"] for r in conn.execute(
+        "SELECT id, name FROM entities WHERE id IN (%s)" % ",".join(
+            "?" for _ in candidates), list(candidates))} if candidates else {}
+    out, followed = [], set()
+    for eid, msg in sorted(candidates.items(), key=lambda kv: kv[1]["started_at"]):
+        later = False
+        for ev in events:
+            if ev["eid"] != eid or ev["started_at"] <= msg["started_at"]:
+                continue
+            # A reply is a message to THEM: a line you sent in a group they
+            # are in does not answer their text.
+            if ev["stream"] in message_streams and ev["direction"] == "out" \
+                    and ev["role"] == "recipient" and ev["id"] not in groups:
+                later = True
+            elif ev["stream"] in CALL_STREAMS and (ev["value"] or 0) > 0:
+                later = True
+            elif ev["stream"] in CALENDAR_STREAMS and ev["journal_date"] <= today.isoformat() \
+                    and (_detail(ev["value_json"]).get("status") or "").lower() != "cancelled":
+                later = True
+            if later:
+                break
+        if not later and any(d >= msg["journal_date"] for d in mentioned.get(eid, [])):
+            later = True
+        if later:
+            continue
+        grp = "text" if msg["stream"] in TEXT_STREAMS else "email"
+        needed = (date.fromisoformat(msg["journal_date"])
+                  + timedelta(days=s["follow_up_days"])).isoformat()
+        newest = newest_by_group.get(grp)
+        name = names.get(eid, "someone")
+        if newest is None or newest < needed:
+            notes.append(f"follow-up for {name}'s {grp} from {msg['journal_date']} not "
+                         f"judged: the newest imported {grp} is {newest or 'none'}, before "
+                         f"{needed} — import again first")
+            continue
+        snippet = (msg["body"] or msg["title"] or "").strip().replace("\n", " ")
+        if len(snippet) > 80:
+            snippet = snippet[:79] + "…"
+        oid = ids.cite("O", ("obs", msg["uuid"]), _obs_item(msg))
+        out.append({"kind": "follow_up", "key": f"followup:{msg['uuid']}",
+                    "title": f"No reply found in imported records: {name}'s {grp} from "
+                             f"{msg['journal_date']}",
+                    "detail": (f"\"{snippet}\" — nothing from you to them since, in texts, "
+                               f"emails, calls, meetings or the journal; newest imported "
+                               f"{grp} is {newest} {TIER_NOTE}"),
+                    "date": msg["journal_date"], "ids": [oid], "tier": "observed",
+                    "entity_id": eid, "_sort": (msg["journal_date"], name)})
+        followed.add(eid)
+    return out, followed
+
+
+def _lapsed(conn: sqlite3.Connection, cfg: Config, s: dict, today: date, ids: _Ids,
+            skip: set[int]) -> list[dict]:
+    """A person whose own rhythm has lapsed: at least LAPSED_MIN_CONTACTS
+    contact days in lapsed_days, and the days since the last one more than
+    twice the median gap (and more than a week). Observed, worded as what
+    the records hold."""
+    import statistics
+    from . import series as series_mod
+    start = today - timedelta(days=s["lapsed_days"])
+    people = series_mod.contact_days(conn, cfg, start.isoformat(), today.isoformat())
+    out = []
+    names = {r["id"]: r["name"] for r in conn.execute(
+        "SELECT id, name FROM entities WHERE type = 'person'")}
+    for eid, days in people.items():
+        if eid in skip or len(days) < LAPSED_MIN_CONTACTS:
+            continue
+        dates = sorted(date.fromisoformat(d) for d in days)
+        gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
+        median = statistics.median(gaps)
+        since = (today - dates[-1]).days
+        if since <= max(2 * median, 7):
+            continue
+        last_day = dates[-1].isoformat()
+        table, uuid = days[last_day][0]
+        if table == "observations":
+            row = conn.execute(
+                f"SELECT {_OBS_COLS} FROM observations o JOIN imports i ON i.id = o.import_id "
+                f"WHERE o.uuid = ?", (uuid,)).fetchone()
+            cid = ids.cite("O", ("obs", uuid), _obs_item(row)) if row else None
+        else:
+            row = conn.execute(
+                "SELECT e.uuid, e.journal_date, e.title, k.name AS kind FROM entries e "
+                "JOIN entry_kinds k ON k.id = e.kind_id WHERE e.uuid = ?", (uuid,)).fetchone()
+            cid = ids.cite("E", uuid, {"type": "entry", "tier": "confirmed", "uuid": uuid,
+                                       "date": row["journal_date"], "kind": row["kind"],
+                                       "title": row["title"]}) if row else None
+        name = names.get(eid, f"entity {eid}")
+        out.append({"kind": "lapsed", "key": f"lapsed:{eid}",
+                    "title": f"{name}: no recorded contact in {_days(since)}; the usual gap "
+                             f"was about {median:g} days over {len(dates)} contact days since "
+                             f"{dates[0].isoformat()}",
+                    "detail": f"last contact {last_day}; counts messages, calls, meetings, "
+                              f"emails and journal mentions {TIER_NOTE}",
+                    "date": last_day, "ids": [cid] if cid else [], "tier": "observed",
+                    "entity_id": eid, "_sort": (-since, name)})
+    return out
+
+
 # ---------------------------------------------------------------- the pack
 
 def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
@@ -408,9 +727,21 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
 
     found: list[dict] = []
     found += _reminders(conn, s, today, ids)
+    try:
+        follow_ups, followed = _follow_ups(conn, cfg, s, today, ids, owners, owner_handles,
+                                           notes)
+    except sqlite3.OperationalError:
+        follow_ups, followed = [], set()
+    found += follow_ups
+    found += _goals(conn, cfg, today, ids)
+    found += _drift(conn, cfg, s, today, ids, notes)
     found += _birthdays(conn, cfg, s, today, ids, owners)
     found += _nutrients(conn, cfg, s, today, ids, notes)
     found += _stale(conn, now, ids)
+    try:
+        found += _lapsed(conn, cfg, s, today, ids, followed)
+    except sqlite3.OperationalError:
+        pass
     agenda = _agenda(conn, cfg, today, ids, owners, owner_handles)
 
     try:

@@ -37,9 +37,15 @@ def test_the_persona_has_a_due_task_a_birthday_and_an_agenda(world):
             f"{ANCHOR.year - 1992}") in titles
     kinds = [n["kind"] for n in pack["nudges"]]
     assert kinds == sorted(kinds, key=mod.KIND_ORDER.index)
-    # Maya's birthday was nine days ago: next year's is not within 14 days
-    assert not any("Maya" in t for t in titles)
+    # Maya's birthday was nine days ago: next year's is not within 14 days;
+    # the owner's own card never becomes a birthday nudge
+    birthdays = [n["title"] for n in pack["nudges"] if n["kind"] == "birthday"]
+    assert birthdays == [f"Sam Okafor's birthday is in 4 days (2026-10-25), turning "
+                         f"{ANCHOR.year - 1992}"]
     assert not any(persona.OWNER.name in t for t in titles)
+    # Maya's late text five days before the anchor got no reply in the records
+    follow = [n for n in pack["nudges"] if n["kind"] == "follow_up"]
+    assert any("Maya Chen's text" in n["title"] for n in follow), [n["title"] for n in follow]
     # the agenda is exactly the calendar rows of today and tomorrow (the test
     # world stops its calendar at the anchor; the full demo has tomorrow's 1:1)
     rows = [r["title"] for r in conn.execute(
@@ -48,7 +54,10 @@ def test_the_persona_has_a_due_task_a_birthday_and_an_agenda(world):
         (ANCHOR.isoformat(), "2026-10-22"))]
     assert [a["title"] for a in pack["agenda"]] == rows
     assert all(persona.OWNER.name not in a["with"] for a in pack["agenda"])
-    assert pack["hidden"] == [] and pack["notes"] == []
+    assert pack["hidden"] == []
+    # what could not be judged says so, instead of guessing
+    assert all("insufficient coverage" in n or "not judged" in n for n in pack["notes"]), \
+        pack["notes"]
 
 
 def test_the_pack_is_deterministic_and_checkable(world):

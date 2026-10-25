@@ -55,6 +55,15 @@ listing every source for the day.
   plan/task — never a future journal_date.
 - Numbers become `measurements`; day-level mood/energy/sleep go in
   `day.measurements`. `day.summary`: one or two sentences.
+- **A measurable intention is a goal.** "Three gym sessions a week", "call
+  Mom every week", "under 400 on eating out a week", "in bed by eleven, seven
+  hours" become a `plan` with `data.goal` (`docs/contract.md`, "Goals"):
+  `{"metric": "workouts", "target": 3, "per": "week"}`, metric one of
+  workouts, exercise_minutes, spending, texts, contact (+ `entity`), steps,
+  sleep, sleep_hours, mood, energy or `cat:<category>`; `op` `<=` for a
+  budget. Show it in the review as its own line ("goal: workouts >= 3 per
+  week") — the user may not have meant to commit — and never attach a goal
+  to anything but a plan.
 - **Provenance per entry** — `{"source_id": N, "char_start": .., "char_end": ..}`
   (or `segments` for audio) covering the passage that supports it. Mandatory
   when the day has more than one source; do it always. If the evening note

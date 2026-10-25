@@ -387,6 +387,9 @@ def _today_section(ctx: dict, pack: dict) -> list[str]:
                 lines.append(f"- *{ex._md_text(n['detail'].split(' Food diary')[0])}*")
                 disclaimer_shown = True
             lines.append(f"- {ex._md_text(n['title'])} *(observed: the food diary)* · {key}")
+        elif n["tier"] == "confirmed":
+            # A goal: the plan is the owner's own words, the rest computed.
+            lines.append(f"- {n['title']} — {n['detail']} · {key}")
         else:
             lines.append(f"- {ex._md_text(n['title'])} *(observed)* — "
                          f"{ex._md_text(n['detail'])} · {key}")

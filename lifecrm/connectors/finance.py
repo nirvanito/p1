@@ -612,12 +612,20 @@ def _read_ofx(fname: str, raw: bytes) -> dict:
         unmapped["investment statement (holdings and trades are not imported)"] += \
             parsed["investment"]
     accounts = set()
+    coverage = []
     for st in parsed["statements"]:
         last4 = _last4(st["acctid"])
         account = f"{institution}:{last4}" if last4 else institution
         kind = "card" if st["kind"] == "card" else (st["accttype"] or "account").lower()
         holder = f"{org or 'OFX'} {kind}" + (f" ending {last4}" if last4 else "")
         currency = (st["currency"] or "USD").strip().lower()
+        # The statement says which days it covers (BANKTRANLIST DTSTART/DTEND):
+        # inside them a day without a row is a day without a transaction on
+        # this account. A CSV says nothing of the kind (docs/assistant.md).
+        if st.get("dtstart") and st.get("dtend") and st["dtstart"] <= st["dtend"]:
+            coverage.append({"stream": "txn", "account": account,
+                             "start": st["dtstart"], "end": st["dtend"],
+                             "basis": "OFX statement range (BANKTRANLIST DTSTART/DTEND)"})
         if st["pending"]:
             skipped[PENDING] += st["pending"]
         for n, tx in enumerate(st["transactions"]):
@@ -683,7 +691,7 @@ def _read_ofx(fname: str, raw: bytes) -> dict:
         t["external_id"] = "ofx:" + t["external_id"][len("csv:"):]
     dates = [t["date"] for t in txns]
     return {"txns": txns, "skipped": skipped, "unmapped": unmapped,
-            "examples": examples,
+            "examples": examples, "coverage": coverage,
             "file": {"file": fname, "kind": "ofx",
                      "format": f"OFX v{parsed['version']}"
                                + (f" from {org}" if org else ""),
@@ -800,6 +808,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
                           f"(.csv, .ofx, .qfx, .qbo) — has: {listing}")
 
     txns, files, errors = [], [], []
+    coverage: list[dict] = []
     skipped, unmapped = Counter(), Counter()
     examples: dict[str, str] = {}
     for fname, raw in found:
@@ -812,6 +821,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
             errors.append(str(e))
             continue
         txns += result["txns"]
+        coverage += result.get("coverage", [])
         files.append(result["file"])
         skipped.update(result["skipped"])
         unmapped.update(result["unmapped"])
@@ -848,6 +858,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         facts={"files": files, "accounts": accounts,
                "oldest_transaction": min(dates) if dates else None,
                "newest_transaction": max(dates) if dates else None},
+        coverage=coverage,
         target_kind=kind,
         files=files,
         unnamed=sorted({t["file"] for t in txns if not t["identified"]}))

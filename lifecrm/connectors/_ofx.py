@@ -170,6 +170,9 @@ def statements(raw: bytes, name: str) -> dict:
                 "accttype": acct.value("ACCTTYPE") or ("CREDITCARD" if kind == "card"
                                                        else None),
                 "currency": st.value("CURDEF"),
+                # The statement's own range (3.6.1): the days it is complete for.
+                "dtstart": ofx_date(tranlist.value("DTSTART")),
+                "dtend": ofx_date(tranlist.value("DTEND")),
                 "transactions": [_transaction(t) for t in tranlist.iter("STMTTRN")],
                 "pending": sum(1 for _ in pending.iter("STMTTRNP"))
                 if pending is not None else 0,

@@ -70,6 +70,11 @@ def edit_entry(conn: sqlite3.Connection, entry_uuid: str, changes: dict,
         col_updates.get("ended_at", row["ended_at"]),
         col_updates.get("due_at", row["due_at"]),
         col_updates.get("confidence", row["confidence"]))
+    # The RESULTING entry must still be a valid goal holder: a kind-only edit
+    # of a plan carrying data.goal is refused, like a bad goal itself.
+    from . import goals as goals_mod
+    goals_mod.validate_entry_data(changes.get("kind", old["kind"]),
+                                  changes["data"] if "data" in changes else old.get("data"))
 
     if col_updates:
         sets = ", ".join(f"{k}=?" for k in col_updates)

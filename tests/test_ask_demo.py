@@ -170,6 +170,26 @@ def contacts_scan(cfg, anchor, combo):
     return _scan("contacts", records, handles, account=persona.OWNER.email)
 
 
+def fitness_scan(cfg, anchor, combo):
+    """The persona's workouts as a Strong export: a full-history export, so
+    the days between the first and the last are declared complete."""
+    records = []
+    for off, (kind, hhmm, minutes, km) in sorted(persona._WORKOUTS.items()):
+        start = persona.local_dt(anchor, off, hhmm)
+        detail = {"app": "strong", "exercises": []}
+        if km:
+            detail["distance_km"] = km
+        records.append(_rec(cfg, "workout", f"strong:{-off}", _utc(start),
+                            ended_at=_utc(start + timedelta(minutes=minutes)),
+                            title=kind.capitalize(), value=float(minutes), unit="min",
+                            origin_app="strong", value_json=canonical_json(detail)))
+    scan = _scan("fitness", records, [], account="strong")
+    scan["coverage"] = [{"stream": "workout", "account": "strong",
+                         "start": persona.day(anchor, -persona.WINDOW_DAYS + 1).isoformat(),
+                         "end": anchor.isoformat(), "basis": "full-history export"}]
+    return scan
+
+
 def calendar_scan(cfg, anchor, combo):
     records, handles = [], [{"kind": "email", "value": persona.OWNER.email,
                              "display_name": persona.OWNER.name}]
@@ -262,7 +282,7 @@ def journal(conn, cfg, anchor, ids):
                     primary_category=e["primary"],
                     secondary_categories=e.get("secondary"), body=sentence,
                     time_of_day=e.get("time_of_day"), occurred_at=occurred,
-                    due_at=due)
+                    due_at=due, data=e.get("data"))
                 start = text.index(sentence)
                 entries.add_provenance(conn, entry_id=row["id"],
                                        source_id=src["source_id"],
@@ -316,7 +336,7 @@ def build_world(conn, cfg, tmp_path, anchor=ANCHOR, combo="android") -> dict:
     health_records(conn, cfg, anchor, combo)
     imports = {}
     for make in (texts_scan, whatsapp_scan, calls_scan, contacts_scan, calendar_scan,
-                 finance_scan, notes_scan, photos_scan):
+                 finance_scan, notes_scan, photos_scan, fitness_scan):
         scan = make(cfg, anchor, combo)
         imports[scan["connector"]] = _apply(conn, scan)["import_uuid"]
     for path in ai_chat_sample.write_samples(tmp_path / "ai", anchor, combo):

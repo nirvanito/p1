@@ -15,7 +15,7 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   never edit files under `data\` by hand.
 - Ad-hoc reads: `python -m lifecrm sql "SELECT ..." --json` (read-only
   connection; writes are blocked at the connection level).
-- The extraction contract is `docs/contract.md` (contract v2, schema v6). A
+- The extraction contract is `docs/contract.md` (contract v2, schema v7). A
   day with several sources extracts as ONE draft. Drafts go to
   `data\staging\`, then `lifecrm ingest` -> review -> `lifecrm apply`. A
   draft that will never be applied is ended with `lifecrm admin discard-run`
@@ -28,6 +28,16 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - **An importer may not write entries, measurements, mentions,
   entity_aliases or entity_links.** Relationships come only from a reviewed
   draft's `entity_links` (stated, never inferred) or `entities link add`.
+- **A missing row is unknown, never zero.** A connector declares a day
+  complete (`scan["coverage"]` -> `import_coverage`, schema v7) only from a
+  guarantee in its source format (an OFX statement's DTSTART/DTEND, a full
+  SMS backup, a whole Messages store, a full-history fitness export), never
+  from its rows' dates; `lifecrm/series.py` turns declarations into
+  known-zero days and drift, goals and follow-ups say "insufficient coverage"
+  or "not judged" otherwise. A goal (`data.goal` on a `plan`) is validated by
+  `domain/goals.py` on every write path and decided by its metric's
+  aggregation (a count is met when reached, a level only when the period is
+  over with enough known days).
 - Filename dates come in two conventions (`transcribe.FilenameStamp`). A
   dotted time + UTC offset is the iPhone Shortcut (and `voice` notes) and
   carries the JOURNAL date. Every other shape (Android recorders, Samsung
@@ -98,8 +108,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [nutrition] sex/age: low/borderline/high, the foods behind each, every
   number cited; --days/--start/--end, --sex/--age, --json; read-only, no
   model, "not medical advice" first),
-  nudges (what matters today, cited: reminder | birthday | nutrient | stale
-  nudges N# resting on E#/O#, plus the agenda; --json, --all, --today,
+  nudges (what matters today, cited: reminder | follow_up | goal | drift |
+  birthday | nutrient | stale | lapsed nudges N# resting on E#/M#/H#/O#,
+  plus the agenda; --json, --all, --today,
   --out FILE saves the pack, --check BRIEF --pack FILE checks against that
   saved pack, never a rebuild; `nudges snooze|dismiss <key>` by durable
   key (an N# only with --pack), `restore <key>`, `states`; the clock's
@@ -277,6 +288,22 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   `check` = `recall.check_text` against a SAVED pack. State (snooze /
   dismiss / restore) is `lifecrm/domain/nudges.py` -> `nudge_states`, keyed
   by durable key, audited. `docs/assistant.md`.
+- `lifecrm/series.py` — the daily-series registry (mood, energy, sleep,
+  steps, resting heart rate, weight, exercise minutes, workouts, spending,
+  texts, people in touch, `contact:<id>`, `cat:<name>`, `nutrient:<key>`):
+  values per day, the days each series KNOWS (`known`), and the rows behind
+  each value (`refs`, never pack ids). Known zeros only from
+  `domain/observations.coverage_days` (declared coverage); workouts merge
+  sessions across the fitness app, the sensor and the journal (overlap or
+  30 min). `contact_days` is the per-person view follow-ups and lapsed use.
+- `lifecrm/domain/goals.py` (the rule) + `lifecrm/goals.py` (the reading) —
+  goals: `validate_entry_data` runs in `entries.create`,
+  `corrections.edit_entry` (on the resulting entry) and `contract.py`;
+  `progress`/`in_period` decide periods by aggregation (cumulative:
+  reached -> met, missed only with full coverage, `projected`; level:
+  `observed_mean`, `above_target`, decided only when over with `min_known`
+  days), streaks say what ended them. Review pack section `goals` (every
+  lens, never None).
 - `lifecrm/reminders.py` + `lifecrm/commands/reminders.py` +
   `lifecrm/domain/reminders.py` + `lifecrm/ics.py` — the reminders calendar.
   ONE publisher (`publish`: BEGIN IMMEDIATE, components, revisions, atomic

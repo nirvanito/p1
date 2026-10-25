@@ -52,17 +52,19 @@ PACK_VERSION = 2
 LENSES = ("week", "health", "career", "relationships", "finance", "all")
 
 SECTIONS = ("days", "entries", "loops", "journal_metrics", "health",
-            "observations", "titles", "relationships", "career", "finance")
+            "observations", "titles", "relationships", "career", "finance",
+            "goals")
 
 # What each lens is about. The week is the overview; an advisor lens trades
-# breadth for its own section and the entries that bear on it.
+# breadth for its own section and the entries that bear on it. Goals (a plan
+# with a measurable target, docs/contract.md) belong to every lens.
 LENS_SECTIONS: dict[str, tuple[str, ...]] = {
     "week": ("days", "entries", "loops", "journal_metrics", "health",
-             "observations", "titles"),
-    "health": ("days", "entries", "loops", "journal_metrics", "health"),
-    "career": ("entries", "loops", "career", "titles"),
-    "relationships": ("entries", "loops", "relationships", "observations"),
-    "finance": ("entries", "loops", "finance"),
+             "observations", "titles", "goals"),
+    "health": ("days", "entries", "loops", "journal_metrics", "health", "goals"),
+    "career": ("entries", "loops", "career", "titles", "goals"),
+    "relationships": ("entries", "loops", "relationships", "observations", "goals"),
+    "finance": ("entries", "loops", "finance", "goals"),
     "all": SECTIONS,
 }
 
@@ -1482,6 +1484,7 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
         "relationships": lambda: _section_relationships(ctx, people()),
         "career": lambda: _section_career(ctx, all_entries),
         "finance": lambda: _section_finance(ctx, all_entries),
+        "goals": lambda: _section_goals(ctx),
     }
     for name in sections:
         pack[name] = builders[name]()
@@ -1512,6 +1515,28 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
     pack["notes"] = ctx.notes
     pack["index"] = ctx.ids.index
     return pack
+
+
+def _section_goals(ctx: _Ctx) -> dict:
+    """Open plans with a data.goal (lifecrm/goals.py), each period that
+    overlaps this one decided as of the day after it, the plan cited as E#.
+    Never None: a pack without goals says so."""
+    from . import goals as goals_mod
+    p = ctx.period
+    items = []
+    for g in goals_mod.in_period(ctx.conn, ctx.cfg, p["start"], p["end"]):
+        cid = ctx.ids.cite("E", g["uuid"], {
+            "type": "entry", "tier": "confirmed", "uuid": g["uuid"], "date": g["date"],
+            "kind": "plan", "title": g["title"]})
+        items.append({"id": cid, **{k: g.get(k) for k in (
+            "title", "goal", "agg", "start", "series", "periods", "streak", "error")},
+            "line": goals_mod.describe_periods(g)})
+    return {"items": items,
+            "decided_as_of": (date.fromisoformat(p["end"]) + timedelta(days=1)).isoformat(),
+            "rule": ("a count or sum is met when it reaches a '>=' target, missed only "
+                     "when the period is over and every day was known; a level is "
+                     "decided only when the period is over with enough known days; "
+                     "an unknown day is never a zero")}
 
 
 def _brief_item(ctx: _Ctx, e: dict) -> dict:
@@ -1599,6 +1624,11 @@ def index_line(item: dict) -> str:
         return (f"observation {item['uuid']} · {item['date']} · {item['stream']}"
                 + (f" · {item['title']}" if item.get("title") else "")
                 + f" · import {item['import_uuid']}")
+    if t == "rows":
+        # Rows of one table behind a computed value (a series' days).
+        span = f"{item['first_date']} to {item['last_date']}"
+        sample = f" · e.g. {item['uuids'][0]}" if item.get("uuids") else ""
+        return f"{item['table']} rows: {item['what']} · {item['count']} · {span}{sample}"
     span = f"{item['first_date']} to {item['last_date']}"
     sample = ""
     if item.get("first_uuid"):
@@ -1943,6 +1973,11 @@ def render_markdown(pack: dict) -> str:
             out += [f"- [{e['id']}] {e['date']} {e['title']}: "
                     + ", ".join(f"{m['amount']:g} {m['unit'] or ''}".strip()
                                 for m in e["money"]) for e in s["journal_spending"]]
+        out.append("")
+    if "goals" in pack:
+        s = pack["goals"]
+        out += [f"## Goals (plans with a target; decided as of {s['decided_as_of']})", ""]
+        out += [f"- [{g['id']}] {g['line']}" for g in s["items"]] or ["- (no open goals)"]
         out.append("")
     if pack["briefs"]:
         out += ["## Briefs already saved for this period (interpretations, not evidence)", ""]

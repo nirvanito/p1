@@ -1952,6 +1952,10 @@ def entry_edit(
     primary_category: str = typer.Option(None, "--primary-category"),
     secondary: str = typer.Option(None, "--secondary",
                                   help="Comma-separated secondary categories"),
+    data: str = typer.Option(None, "--data", metavar="JSON",
+                             help="The entry's data object as JSON, e.g. "
+                                  "'{\"goal\": {\"metric\": \"workouts\", \"target\": 3, "
+                                  "\"per\": \"week\"}}'; {} or null clears it"),
     note: str = typer.Option(None, "--note"),
 ) -> None:
     """Edit an entry (records a revision; marks it user-confirmed)."""
@@ -1966,6 +1970,14 @@ def entry_edit(
     if secondary is not None:
         changes["secondary_categories"] = [s.strip() for s in secondary.split(",")
                                            if s.strip()]
+    if data is not None:
+        try:
+            parsed = json.loads(data)
+        except ValueError as e:
+            _fail(f"--data is not valid JSON: {e}")
+        if parsed is not None and not isinstance(parsed, dict):
+            _fail("--data must be a JSON object ({...}) or null")
+        changes["data"] = parsed or None
     cfg = _cfg()
     conn = _conn(cfg)
     result = _commit_or_rollback(

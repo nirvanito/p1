@@ -347,11 +347,19 @@ lifecrm reminders publish                    # the reminders calendar (.ics) for
 ```
 
 Every nudge is recomputed from the records and rests on ids you can check;
-the only thing you tell it is "not now" or "never", by a durable key. In
-Claude Code, `/morning` writes a short cited brief from a saved pack. The
-calendar is published to `[assistant] reminders_dir` (a synced folder) and
-served by `lifecrm serve` at `/reminders.ics` for an iPhone subscription
-([docs/assistant.md](docs/assistant.md)).
+the only thing you tell it is "not now" or "never", by a durable key. Beyond
+what is due: a message the imported records show no reply to, a person whose
+own contact rhythm has lapsed, drift in the last week against the month
+before (sleep, steps, workouts, mood, energy, spending), and progress on a
+goal — a `plan` whose `data.goal` names a target ("three workouts a week",
+`/log` proposes one when you say so). A missing day is unknown, never zero:
+only a source whose format guarantees completeness (an OFX statement, a full
+SMS backup, a whole Messages store, a full-history fitness export) declares
+the days it covers, and everything else says "insufficient coverage" rather
+than guess. In Claude Code, `/morning` writes a short cited brief from a
+saved pack. The calendar is published to `[assistant] reminders_dir` (a
+synced folder) and served by `lifecrm serve` at `/reminders.ics` for an
+iPhone subscription ([docs/assistant.md](docs/assistant.md)).
 
 **Dashboards**
 
