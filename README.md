@@ -1,4 +1,4 @@
-# Life CRM
+#p1
 
 A personal life database that runs on your own computer. You talk to your
 phone (one evening note, quick dictated thoughts during the day). Local
