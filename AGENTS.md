@@ -316,8 +316,11 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   `nudges.pattern_items` cites them as P# (shared by the nudges pack and
   review's `patterns` section); off unless `[assistant] patterns = "on"`.
   The validation gate is tests/test_patterns_validation.py (R 40 in the
-  suite, LIFECRM_PATTERN_GATE=1 for R 200 on the reserved seeds); the method
-  stays off by default until that run is recorded in docs/patterns.md.
+  suite, LIFECRM_PATTERN_GATE=1 for R 200 on the reserved seeds); the
+  reserved run was recorded in docs/patterns.md on 2026-10-25 (all suites
+  pass). The default stays off: turning it on is the owner's decision, not
+  a test result. A false pair in the gate is one involving an independent
+  series (a planted pair's next-day echo is a true, dependent association).
   Wording: co-occurrence, never cause.
 - `lifecrm/reminders.py` + `lifecrm/commands/reminders.py` +
   `lifecrm/domain/reminders.py` + `lifecrm/ics.py` — the reminders calendar.

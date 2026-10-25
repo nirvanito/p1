@@ -95,6 +95,16 @@ def wilson(p_hat, n, z=1.96):
     return (centre - spread) / denom, (centre + spread) / denom
 
 
+def is_false(pair, planted) -> bool:
+    """A discovery is false when it involves an INDEPENDENT series. With a
+    planted pair, s0 and s1 are associated at every lag — a same-day
+    association between autocorrelated series carries a real next-day echo
+    (0.6 x 0.4 in population here) — so any pair between the two of them is
+    a true, if dependent, association, not a false one."""
+    x, y, _lag = pair
+    return planted is None or {x, y} != {"s0", "s1"}
+
+
 def estimate(name, **kw):
     """(FDR estimate, Wilson interval of P(any false), power) over R runs."""
     planted = kw.get("planted")
@@ -103,7 +113,7 @@ def estimate(name, **kw):
     for r in range(R):
         rng = random.Random(mod.seed_for(SEEDS, name, r))
         found = run_family(family(rng, **kw))
-        false = [f for f in found if f not in truth]
+        false = [f for f in found if is_false(f, planted)]
         fdp_sum += (len(false) / len(found)) if found else 0.0
         any_false += bool(false)
         hits += any(f in truth for f in found)
@@ -141,10 +151,12 @@ def test_a_planted_association_is_usually_found():
 def test_the_discovery_set_is_stable_across_overlapping_windows():
     """Twelve 90-day windows sliding by a week over one simulated year of a
     family with one planted pair: the planted pair is found in most windows
-    and no false pair is found in more than one."""
+    and no false pair (one involving an independent series) is found in more
+    than one. The planted pair's own next-day echo may appear; it is counted
+    separately and is not a false discovery."""
     rng = random.Random(mod.seed_for(SEEDS, "sliding"))
     year = family(rng, phi=0.4, planted=(0.6, 0), days=365)
-    found_sets, false_counts = [], {}
+    found_sets, false_counts, echo = [], {}, 0
     for w in range(12):
         lo = 7 * w
         window = {k: {i - lo: v for i, v in s.items() if lo <= i < lo + DAYS}
@@ -152,7 +164,10 @@ def test_the_discovery_set_is_stable_across_overlapping_windows():
         found = set(run_family(window))
         found_sets.append(found)
         for f in found - {("s0", "s1", 0)}:
-            false_counts[f] = false_counts.get(f, 0) + 1
+            if is_false(f, (0.6, 0)):
+                false_counts[f] = false_counts.get(f, 0) + 1
+            else:
+                echo += 1
     hits = sum(("s0", "s1", 0) in f for f in found_sets)
     assert hits >= 10, f"planted pair found in {hits} of 12 windows"
     assert not false_counts or max(false_counts.values()) <= 1, false_counts
