@@ -123,6 +123,9 @@ PEOPLE: tuple[Person, ...] = (
 
 # Maya's birthday falls inside the demo window, whatever the anchor.
 MAYA_BIRTHDAY_OFFSET = -9
+# Sam's falls a few days after it, whatever the anchor, so the morning's
+# nudges (docs/assistant.md) always have a birthday coming up.
+SAM_BIRTHDAY_OFFSET = 4
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,8 @@ def birthday_date(p: Person, anchor: date) -> date | None:
     the demo window so the birthday storyline always shows up)."""
     if p.key == "maya":
         return day(anchor, MAYA_BIRTHDAY_OFFSET)
+    if p.key == "sam":
+        return day(anchor, SAM_BIRTHDAY_OFFSET)
     if p.birthday is None:
         return None
     m, d = p.birthday
@@ -230,6 +235,7 @@ def bled_trip_days(anchor: date) -> list[date]:
 #   relations:     [(from ref, relationship type, to ref)] stated by this
 #                  sentence ("Jake grew up in El Paso" -> jake from el_paso)
 #   due_offset:    for tasks/plans, a due date as an anchor offset
+#   data:          the entry's data object (a plan's goal: docs/contract.md)
 #   occurred:      'HH:MM' local time of the event, when known
 
 @dataclass
@@ -416,16 +422,18 @@ JOURNAL: tuple[JournalDay, ...] = (
          _e(kind="reflection", primary="work", title="Workload piling up: three launches next week")),
         ("Only slept six hours.", None),
         ("I skipped the gym twice this week and need to get back to three sessions a week.",
-         _e(kind="task", primary="health", secondary=["exercise"],
-            title="Get back to three gym sessions a week", key="gym_task")),
+         _e(kind="plan", primary="health", secondary=["exercise"],
+            title="Get back to three gym sessions a week", key="gym_task",
+            data={"goal": {"metric": "workouts", "target": 3, "per": "week"}})),
     ])], "Stretched thin: launches, short sleep, missed workouts.",
         mood=5, energy=4, sleep_hours=6.0),
 
     JournalDay(-2, [
         Note("13:05:12", "quick", [
-            ("Remember to book flights to Ljubljana before prices go up.",
+            ("Remember to book flights to Ljubljana before prices go up, by this weekend.",
              _e(kind="task", primary="travel", title="Book flights to Ljubljana",
-                entities=[("ljubljana", "subject")], links=[("part_of", "bled_plan")])),
+                entities=[("ljubljana", "subject")], links=[("part_of", "bled_plan")],
+                due_offset=3)),
         ]),
         Note("21:26:30", "evening", [
             ("Lifted with Sam again, back on track.",
@@ -769,15 +777,20 @@ def health_series(anchor: date, days: int = WINDOW_DAYS) -> list[HealthDay]:
             kcal = int(minutes * (10.5 if kind == "running" else 7.5))
             workouts.append({"type": kind, "start": w_start, "minutes": minutes,
                              "distance_km": km, "kcal": kcal})
-            if kind == "running":
-                steps += int((km or 5) * 1300)
+            # A workout day walks more: the warm-up, the gym, the run itself.
+            steps += 3500 + (int((km or 5) * 1300) if kind == "running" else 0)
         weight = None
         if (off % 3 == 0) or off == -12:
             weight = 78.4 if off == -12 else round(79.3 - (off + days) * 0.022
                                                     + rng.uniform(-0.25, 0.25), 1)
+        # Resting heart rate follows the night before it: about 61 after seven
+        # hours, three beats more per hour short — which is what makes the
+        # last week's dip visible to the advisor, and gives the pattern finder
+        # a real co-occurrence to find (docs/patterns.md).
+        resting = int(round(61 + 3 * (7.0 - hours) + rng.uniform(-0.8, 0.8)))
         out.append(HealthDay(
             date=d, sleep_start=start, sleep_end=end, steps=steps,
-            resting_hr=rng.randint(57, 64) + (3 if -6 <= off <= -3 else 0),
+            resting_hr=max(48, min(80, resting)),
             weight_kg=weight, kcal_in=rng.randint(2050, 2700), workouts=workouts))
     return out
 

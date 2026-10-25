@@ -287,6 +287,15 @@ def _validate_entry(conn: sqlite3.Connection, entry, i: int, known_kinds: list[s
         errs.append(f"{p}.confidence: '{conf}' must be one of {', '.join(CONFIDENCE)}")
     if "data" in entry and entry["data"] is not None and not isinstance(entry["data"], dict):
         errs.append(f"{p}.data: must be an object or null")
+    elif isinstance(entry.get("data"), dict) and "goal" in entry["data"]:
+        # A goal (docs/contract.md, "Goals") is checked by the same rule the
+        # domain layer applies on create and edit.
+        from .domain import goals as goals_mod
+        from .domain.util import DomainError
+        try:
+            goals_mod.validate_entry_data(entry.get("kind"), entry["data"])
+        except DomainError as e:
+            errs.append(f"{p}.{e}")
 
     for j, m in enumerate(entry.get("measurements", []) or []):
         err = _validate_measurement(m, f"{p}.measurements[{j}]")

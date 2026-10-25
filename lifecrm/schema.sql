@@ -533,3 +533,61 @@ CREATE UNIQUE INDEX idx_entity_links_active
   ON entity_links(from_entity_id, to_entity_id, type) WHERE status = 'active';
 CREATE INDEX idx_entity_links_to ON entity_links(to_entity_id);
 CREATE INDEX idx_entity_links_entry ON entity_links(entry_uuid);
+
+-- ---------------------------------------------------------------- v6:
+-- the assistant layer's state (docs/assistant.md). Kept identical to
+-- migrations/0006_assistant_state.sql so a fresh init and a migrated database
+-- produce the same sqlite_master.
+
+-- One row per nudge key (due:<entry uuid>, birthday:<entity id>:<year>,
+-- followup:<observation uuid>, lapsed:<entity id>, drift:<series>,
+-- nutrient:<key>, stale:<connector>, goal:<entry uuid>). A snooze carries the
+-- date it ends; a dismissal has none. `restore` deletes the row (the audit log
+-- keeps what it was).
+CREATE TABLE nudge_states (
+  nudge_key  TEXT PRIMARY KEY,
+  state      TEXT NOT NULL CHECK (state IN ('snoozed','dismissed')),
+  until      TEXT,
+  note       TEXT,
+  actor      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK ((state = 'snoozed') = (until IS NOT NULL))
+);
+
+-- One row per calendar component ever published, by UID. `fingerprint` hashes
+-- the component without its DTSTAMP, SEQUENCE and LAST-MODIFIED; a changed
+-- fingerprint, or a component that comes back after being left out, moves
+-- `sequence` up and `last_modified` to the publication instant (RFC 5545
+-- 3.8.7.4). A component left out keeps its row as a tombstone (present = 0),
+-- so it can never come back at a sequence a client has already seen.
+CREATE TABLE reminder_revisions (
+  uid           TEXT PRIMARY KEY,
+  sequence      INTEGER NOT NULL CHECK (sequence >= 0),
+  fingerprint   TEXT NOT NULL,
+  last_modified TEXT NOT NULL,
+  present       INTEGER NOT NULL CHECK (present IN (0,1)),
+  updated_at    TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------- v7:
+-- declared import coverage (docs/assistant.md). Kept identical to
+-- migrations/0007_import_coverage.sql so a fresh init and a migrated database
+-- produce the same sqlite_master.
+
+-- One row per declared interval: this import, this stream (and account,
+-- when the source names one), these days, and the guarantee it rests on.
+-- An interval counts only while its import is 'applied' (a retracted import
+-- establishes nothing); the series layer (lifecrm/series.py) reads it, drift
+-- and goals say "insufficient coverage" where none applies.
+CREATE TABLE import_coverage (
+  import_id  INTEGER NOT NULL REFERENCES imports(id),
+  account    TEXT,
+  stream     TEXT NOT NULL,
+  start_date TEXT NOT NULL,
+  end_date   TEXT NOT NULL,
+  basis      TEXT NOT NULL,
+  PRIMARY KEY (import_id, stream, start_date, end_date),
+  CHECK (start_date <= end_date)
+);
+CREATE INDEX idx_import_coverage_stream ON import_coverage(stream, start_date);

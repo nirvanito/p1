@@ -39,10 +39,11 @@ import hashlib
 import uuid
 import zipfile
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from ... import ics as _ics_mod
 from .. import persona as P
 
 OWNER = P.OWNER
@@ -172,35 +173,10 @@ def _holidays(anchor: date) -> list[_Ev]:
 
 # ---------------------------------------------------------------- iCalendar text
 
-def _esc(text: str) -> str:
-    return (text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
-            .replace("\n", "\\n"))
-
-
-def _fold(line: str) -> str:
-    """RFC 5545 folding: 75 octets per line, never splitting a character."""
-    chunks, cur, size, limit = [], [], 0, 75
-    for ch in line:
-        n = len(ch.encode("utf-8"))
-        if size + n > limit:
-            chunks.append("".join(cur))
-            cur, size, limit = [], 0, 74
-        cur.append(ch)
-        size += n
-    chunks.append("".join(cur))
-    return "\r\n ".join(chunks)
-
-
-def _ics(lines: list[str]) -> bytes:
-    return ("\r\n".join(_fold(line) for line in lines) + "\r\n").encode("utf-8")
-
-
-def _utc(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _local(dt: datetime) -> str:
-    return dt.strftime("%Y%m%dT%H%M%S")
+# The writer helpers live in lifecrm/ics.py, shared with the reminders
+# calendar; the local names stay so the rendering below reads as before.
+_esc, _fold, _ics, _utc, _local = (_ics_mod.esc, _ics_mod.fold, _ics_mod.render,
+                                   _ics_mod.utc, _ics_mod.local)
 
 
 def _created(ev: _Ev) -> datetime:

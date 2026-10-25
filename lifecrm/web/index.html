@@ -1136,6 +1136,12 @@ async function viewDay(dateArg) {
   if (d.next) { nextBtn.disabled = false; nextBtn.onclick = () => { location.hash = "#/today/" + d.next; }; nextBtn.title = fmtDay(d.next); }
 
   const parts = [];
+  if (date === today()) {
+    // What matters today, first — live on the clock like the rest of this
+    // page (api.nudges). The day still renders if the call fails.
+    try { const card = nudgesCard(await api("/api/nudges")); if (card) parts.push(card); }
+    catch (e) { /* no card */ }
+  }
   const pills = [];
   if (d.mood !== null && d.mood !== undefined) pills.push(h("span", { class: "pill" }, "mood ", h("b", null, fmtValue(d.mood, "")), "/10"));
   if (d.energy !== null && d.energy !== undefined) pills.push(h("span", { class: "pill" }, "energy ", h("b", null, fmtValue(d.energy, "")), "/10"));
@@ -1173,6 +1179,38 @@ async function viewDay(dateArg) {
         d.next ? h("a", { class: "btn", href: "#/today/" + d.next }, fmtDay(d.next), icon("right")) : null)));
   }
   fill(body, ...parts);
+}
+
+// What the records say matters today (api.nudges, lifecrm/nudges.py): due
+// loops, birthdays, nutrients below reference, stale imports, the agenda.
+// Read-only here: snooze and dismiss are CLI writes (`lifecrm nudges`), by
+// the key each row shows. Every row links to the record it rests on.
+function nudgesCard(n) {
+  const nudges = (n && n.nudges) || [], agenda = (n && n.agenda) || [], index = (n && n.index) || {};
+  if (!nudges.length && !agenda.length) return null;
+  const target = x => { const it = index[(x.ids || [])[0]] || {}; return it.type === "entry" && it.uuid ? "#/entry/" + it.uuid : it.uuid ? "#/obs/" + it.uuid : null; };
+  const rows = nudges.slice(0, 12).map(x => {
+    const href = target(x);
+    const main = h("div", { class: "row-main" },
+      h("div", { class: "row-title" }, x.tier === "observed" ? observedBadge() : null, x.title),
+      h("div", { class: "row-meta" }, x.detail, " · ", h("code", null, x.key)));
+    const side = h("div", { class: "row-side" }, x.id);
+    return href ? h("a", { class: "link-row", href }, main, side) : h("div", { class: "link-row" }, main, side);
+  });
+  const agendaRows = agenda.map(a => {
+    const it = index[a.id] || {};
+    const main = h("div", { class: "row-main" },
+      h("div", { class: "row-title" }, observedBadge(), a.title, a.cancelled ? " (cancelled)" : ""),
+      h("div", { class: "row-meta" }, a.date + " " + (a.time || "all day") + ((a.with || []).length ? " · with " + a.with.join(", ") : "")));
+    return it.uuid ? h("a", { class: "link-row", href: "#/obs/" + it.uuid }, main) : h("div", { class: "link-row" }, main);
+  });
+  return section("Today", plural(nudges.length, "nudge"),
+    h("div", { class: "tier-note" }, "What the records say matters today, as of " + n.today + ". Snooze or dismiss in the terminal: lifecrm nudges snooze <key>."),
+    rows.length ? h("div", { class: "list" }, rows) : null,
+    nudges.length > 12 ? h("div", { class: "muted small" }, (nudges.length - 12) + " more: lifecrm nudges") : null,
+    agendaRows.length ? h("div", { class: "stream-head", style: "margin-top:10px" }, "Agenda", h("span", { class: "muted small" }, agendaRows.length)) : null,
+    agendaRows.length ? h("div", { class: "list observed" }, agendaRows) : null,
+    ((n && n.hidden) || []).length ? h("div", { class: "muted small", style: "margin-top:8px" }, plural(n.hidden.length, "nudge") + " snoozed or dismissed") : null);
 }
 
 // What the day's imports say you did, added up (api._day_activity). Every

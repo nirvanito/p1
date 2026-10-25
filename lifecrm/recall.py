@@ -1412,7 +1412,7 @@ def _health_days(conn: sqlite3.Connection, metric: str, spec: dict,
 
 def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
                    spec: dict, window: dict, entry_match: str | None = None,
-                   span: dict | None = None) -> dict | None:
+                   span: dict | None = None, refs: bool = False) -> dict | None:
     """A metric over the window, with its per-day series and provenance.
 
     Journal measurements belong either to a day or to an entry (workout
@@ -1420,6 +1420,10 @@ def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
     standing in for the measurement's own. `entry_match` (an FTS expression)
     keeps only measurements of entries that match it — 'how much did I spend
     on groceries' sums the grocery entries, not the whole month.
+
+    `refs` adds each day's contributing record uuids (`uuids`) to the series
+    point, for a caller that will cite the rows themselves (series.py); the
+    `records` count is unchanged.
     """
     factor = spec.get("factor", 1)
     window = span or window
@@ -1427,8 +1431,17 @@ def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
     multi = 0
     entry_uuids: list[str] = []
     units: list[str] = []
+    uuids_by: dict[tuple, list[str]] = {}
     if table == "health_records":
         days_out, origins, multi, sources = _health_days(conn, metric, spec, window)
+        if refs:
+            for r in conn.execute(
+                    "SELECT journal_date AS day, COALESCE(origin_app, '') AS origin, "
+                    "GROUP_CONCAT(uuid) AS uuids FROM health_records "
+                    "WHERE metric=? AND status='active' AND value IS NOT NULL "
+                    "AND journal_date BETWEEN ? AND ? GROUP BY day, origin",
+                    (metric, window["start"], window["end"])):
+                uuids_by[(r["day"], r["origin"])] = r["uuids"].split(",")
     else:
         agg = "SUM" if spec["agg"] == "sum" else "AVG"
         where = ["m.metric=?", "m.status='active'",
@@ -1452,11 +1465,14 @@ def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
             f"SELECT COALESCE(m.journal_date, e.journal_date) AS day, "
             f"{agg}(COALESCE(m.normalized_value, m.numeric_value)) AS value, "
             f"COUNT(*) AS n, GROUP_CONCAT(DISTINCT e.uuid) AS entries, "
-            f"GROUP_CONCAT(DISTINCT m.unit) AS units "
+            f"GROUP_CONCAT(DISTINCT m.unit) AS units, "
+            f"GROUP_CONCAT(DISTINCT m.uuid) AS uuids "
             f"FROM measurements m LEFT JOIN entries e ON e.id = m.entry_id "
             f"WHERE {' AND '.join(where)} GROUP BY day ORDER BY day",
             args).fetchall()
         days_out = [(r["day"], r["value"], r["n"], None) for r in rows]
+        if refs:
+            uuids_by = {(r["day"], ""): r["uuids"].split(",") for r in rows if r["uuids"]}
         sources = []
         entry_uuids = sorted({u for r in rows if r["entries"]
                               for u in r["entries"].split(",")})
@@ -1471,6 +1487,14 @@ def _metric_series(conn: sqlite3.Connection, *, table: str, metric: str,
         point = {"date": day, "value": _round(value * factor, unit), "records": n}
         if origin is not None:
             point["origin"] = origin
+        if refs:
+            # A summed health day took one app's records (origin names it when
+            # more than one app wrote that day); every other day cites all.
+            if origin is not None:
+                point["uuids"] = sorted(uuids_by.get((day, origin), []))
+            else:
+                point["uuids"] = sorted(u for (d, _o), us in uuids_by.items()
+                                        if d == day for u in us)
         series.append(point)
     values = [s["value"] for s in series]
     lo = min(series, key=lambda s: s["value"])
@@ -4947,7 +4971,9 @@ CITE_RE = re.compile(r"\[([MEPO]\d+)\]")
 # by being spelled differently.
 _BRACKET_RE = re.compile(r"\[([^\[\]\n]{1,60})\]")
 _ID_SHAPE = re.compile(r"[A-Za-z]{1,3}\d{1,5}")
-_ID_REF = re.compile(r"\b[MEPO]\d+\b")
+# Any pack-style id (M1, E12, O3, N4, P2): a context line that names one lends
+# its facts only to sentences citing it. Only ids the index knows attach.
+_ID_REF = re.compile(r"\b[A-Z]{1,3}\d{1,5}\b")
 
 _F_ISO = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
 _MONTH_ALT = "|".join(_MONTH_WORDS)
@@ -5146,27 +5172,55 @@ def check_citations(answer: str, bundle: dict) -> dict:
     "you last talked to Mom on 2026-10-12" with no citation is unsupported.
     The caller surfaces failures rather than printing them as fact.
     """
-    cited = set(_cited(answer))
-    known = evidence_ids(bundle)
     context, by_id = _evidence_lines(bundle)
+    known = evidence_ids(bundle)
+    return check_text(answer, {i: by_id[i] for i in known if i in by_id}, context)
+
+
+# A uuid or a hex digest in an evidence line (an entry's uuid, an import's)
+# is an address, not a fact: its digits must never vouch for a number in a
+# sentence. "4 days overdue" was once accepted because the cited line's uuid
+# happened to contain "-4a…".
+_HEX_ID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+                        r"|\b[0-9a-f]{12,64}\b", re.IGNORECASE)
+
+
+def _without_ids(line: str) -> str:
+    return _HEX_ID_RE.sub(" ", line)
+
+
+def check_text(text: str, lines: dict[str, str], context=()) -> dict:
+    """check_citations over any evidence index. `lines` maps each citable id
+    to the line that states it (an ask bundle's evidence, a review or nudges
+    pack's index); `context` holds lines every sentence may draw on (the
+    window, a disclaimer, today's date).
+
+    What it verifies: every cited id exists, and every number, date and time
+    a sentence states appears in the lines it cites (or in the context). What
+    it does not: whether the sentence's claim follows from those lines — a
+    correctly cited number in a wrong conclusion passes. That judgement stays
+    with the reader."""
+    cited = set(_cited(text))
+    known = set(lines)
     shared, attached = [], {}
     for line in context:
         refs = [r for r in _ID_REF.findall(line) if r in known]
         for r in refs:
             attached.setdefault(r, []).append(line)
         if not refs:
-            shared.append(line)
+            shared.append(_without_ids(line))
     base = _facts("\n".join(shared), evidence=True)
     per_id: dict[str, dict] = {}
     unsupported = []
-    for sentence in _sentences(answer):
+    for sentence in _sentences(text):
         ids = [i for i in _cited(sentence) if i in known]
         f = _facts(_BRACKET_RE.sub(" ", sentence))
         if not (f["dates"] or f["md"] or f["times"] or f["nums"]):
             continue
         for i in ids:
             if i not in per_id:
-                per_id[i] = _facts("\n".join([by_id[i], *attached.get(i, [])]),
+                per_id[i] = _facts("\n".join(_without_ids(x) for x in
+                                             [lines[i], *attached.get(i, [])]),
                                    evidence=True)
         pool = _merge([base, *(per_id[i] for i in ids)])
         if not _supported(f, pool):

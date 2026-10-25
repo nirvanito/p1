@@ -40,9 +40,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date, timedelta
 
 from . import audit, days
-from .util import DomainError, canonical_json, new_uuid, now_utc
+from .util import DomainError, canonical_json, is_iso_date, new_uuid, now_utc
 
 __all__ = [
     "COMPARE_FIELDS", "HANDLE_KINDS", "ROLES", "validate", "existing_by_key",
@@ -648,6 +649,8 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
     import_id, import_uuid = start_import(
         conn, scan["connector"], account=scan.get("account"),
         source_file=scan.get("source_file"), source_hash=scan.get("source_hash"))
+    declared = declare_coverage(conn, import_id, scan.get("coverage") or [],
+                                default_account=scan.get("account"))
     for h in scan.get("handles", ()):
         _upsert_handle(conn, h)
     for rec in plan["new"]:
@@ -677,8 +680,75 @@ def apply_plan(conn: sqlite3.Connection, scan: dict, plan: dict,
             counts["retracted_cited"] = retracted
         if snapshot:
             counts["snapshot"] = snapshot
+    if declared:
+        counts["coverage"] = declared
     finish_import(conn, import_id, "applied", counts, actor)
     return {**counts, "import_uuid": import_uuid}
+
+
+def declare_coverage(conn: sqlite3.Connection, import_id: int, coverage: list,
+                     *, default_account: str | None = None) -> int:
+    """Store what a scan declared complete (schema v7, `import_coverage`):
+    `[{stream, start, end, basis, account?}]`, each resting on a guarantee in
+    the source format — never on the rows' own dates. A declaration with no
+    stream, a date that is not one, an interval that ends before it starts,
+    or no basis is a DomainError: a wrong "complete" would manufacture
+    inactivity. Returns how many rows were stored."""
+    if not isinstance(coverage, (list, tuple)):
+        raise DomainError("coverage must be a list of {stream, start, end, basis}")
+    n = 0
+    for i, c in enumerate(coverage):
+        if not isinstance(c, dict):
+            raise DomainError(f"coverage[{i}] must be an object")
+        stream, basis = c.get("stream"), c.get("basis")
+        if not isinstance(stream, str) or not stream.strip():
+            raise DomainError(f"coverage[{i}] needs a stream")
+        if not isinstance(basis, str) or not basis.strip():
+            raise DomainError(f"coverage[{i}] ({stream}) needs a basis: the guarantee "
+                              f"in the source it rests on")
+        start, end = c.get("start"), c.get("end")
+        for label, v in (("start", start), ("end", end)):
+            if not is_iso_date(v):
+                raise DomainError(f"coverage[{i}] ({stream}) {label} must be YYYY-MM-DD, "
+                                  f"got {v!r}")
+        if end < start:
+            raise DomainError(f"coverage[{i}] ({stream}) ends {end} before it starts {start}")
+        account = c.get("account", default_account)
+        if account is not None and not isinstance(account, str):
+            raise DomainError(f"coverage[{i}] ({stream}) account must be a string or null")
+        conn.execute(
+            "INSERT OR IGNORE INTO import_coverage (import_id, account, stream, "
+            "start_date, end_date, basis) VALUES (?, ?, ?, ?, ?, ?)",
+            (import_id, account, stream.strip(), start, end, basis.strip()))
+        n += 1
+    return n
+
+
+def coverage_days(conn: sqlite3.Connection, streams: tuple[str, ...], start: str,
+                  end: str, *, account: str | None = None) -> set[str]:
+    """The days in [start, end] some APPLIED import declared complete for one
+    of `streams` (and `account`, when given): the only days on which a
+    missing row means "none". Empty when nothing was declared."""
+    marks = ",".join("?" for _ in streams)
+    args: list = [*streams, end, start]
+    where = ""
+    if account is not None:
+        where = " AND (c.account IS NULL OR c.account = ?)"
+        args.append(account)
+    rows = conn.execute(
+        f"SELECT c.start_date, c.end_date FROM import_coverage c "
+        f"JOIN imports i ON i.id = c.import_id "
+        f"WHERE i.status = 'applied' AND c.stream IN ({marks}) "
+        f"AND c.start_date <= ? AND c.end_date >= ?{where}", args).fetchall()
+    out: set[str] = set()
+    lo, hi = date.fromisoformat(start), date.fromisoformat(end)
+    for r in rows:
+        d = max(lo, date.fromisoformat(r["start_date"]))
+        last = min(hi, date.fromisoformat(r["end_date"]))
+        while d <= last:
+            out.add(d.isoformat())
+            d += timedelta(days=1)
+    return out
 
 
 def _id_ranges(ids: list[int]) -> list[list[int]]:

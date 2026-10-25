@@ -217,6 +217,10 @@ class Scan(dict):             # a plain dict with a fixed shape (empty_scan buil
     skipped:     list[str]    # what it deliberately dropped, as 'N × reason'
     present_ids:    set|list  # mirroring connectors only: ids the source still holds
     mirror_streams: list[str] # mirroring connectors only: the streams mirroring may remove from
+    coverage:       list[dict] # optional: [{stream, account?, start, end, basis}] the source
+                               # GUARANTEES complete (an OFX statement's DTSTART/DTEND, a full
+                               # backup's span) — never the rows' own dates; stored in
+                               # import_coverage (schema v7), read by lifecrm/series.py
 
 class Connector(Protocol):
     name:    str

@@ -915,6 +915,20 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         f"{i['kind']}:{i['sha256']};" for i in infos).encode()).hexdigest()
     extra = {"present_ids": present, "mirror_streams": sorted(mirror_streams)} \
         if mirror_streams else {}
+    # A full backup whose count matches is the phone's whole text store: from
+    # its oldest message to the day it was taken, a day without a text is a
+    # day without one (docs/assistant.md). Calls never: the log ages out.
+    coverage = []
+    for info in infos:
+        if info["kind"] != "texts" or not info["mirrored"] or not account \
+                or not facts["oldest_message"]:
+            continue
+        end = _local_date(info["backup_date"], cfg) or facts["newest_message"]
+        if end and end >= facts["oldest_message"]:
+            coverage += [{"stream": s, "account": account, "start": facts["oldest_message"],
+                          "end": end, "basis": 'SMS Backup & Restore full backup '
+                                               '(type="full", count matches)'}
+                         for s in _MESSAGE_STREAMS]
     return base.empty_scan(
         name,
         account=account,
@@ -925,6 +939,7 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         unmapped=[{"what": k, "count": v} for k, v in sorted(reader.unmapped.items())],
         skipped=[f"{v} × {k}" for k, v in sorted(reader.skipped.items())],
         facts=facts,
+        coverage=coverage,
         target_kind=target_kind,
         not_mirroring=not_mirroring,
         named_handles=sum(1 for h in handles if h["display_name"]

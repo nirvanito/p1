@@ -143,6 +143,8 @@ def build_draft(jday: persona.JournalDay, anchor: date, source_ids: list[int],
                 entry["occurred_at"] = _utc(anchor, jday.offset, spec["occurred"])
             if spec.get("due_offset") is not None:
                 entry["due_at"] = persona.day(anchor, spec["due_offset"]).isoformat()
+            if spec.get("data") is not None:
+                entry["data"] = spec["data"]
             ms = []
             for metric, value, unit in spec.get("measurements", []):
                 m = {"metric": metric, "numeric_value": value}

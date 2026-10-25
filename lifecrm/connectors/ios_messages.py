@@ -995,6 +995,20 @@ def read_database(db: Path, wal: Path | None,
     return result, wal_read, books
 
 
+def coverage_for(facts: dict, account: str | None, end: str | None, basis: str) -> list[dict]:
+    """A whole Messages store (a backup, a Mac's chat.db) is complete from its
+    oldest message to `end` (the backup's date, else its newest message): on
+    those days a missing text is a text that was not sent
+    (docs/assistant.md). Nothing without an account: the declaration names
+    whose store it is."""
+    start = facts.get("oldest_message")
+    stop = end or facts.get("newest_message")
+    if not start or not stop or stop < start or not account:
+        return []
+    return [{"stream": s, "account": account, "start": start, "end": stop, "basis": basis}
+            for s in ("imessage", "sms", "rcs")]
+
+
 def scan_parts(result: dict, folder: Path, wal_read: bool) -> dict:
     """The sorted, scan-shaped pieces of a _read result, and the facts a first
     real import has to check — stated by the import itself rather than left
@@ -1046,6 +1060,9 @@ def scan(target: Path, cfg: Config) -> base.Scan:
         unmapped=parts["unmapped"],
         skipped=parts["skipped"],
         facts=parts["facts"],
+        coverage=coverage_for(parts["facts"], result["account"], info.get("backup_date"),
+                              "iPhone backup: the device's whole Messages store "
+                              "(Info.plist Last Backup Date)"),
         present_ids=result["present"],
         mirror_streams=list(streams),
         target_kind=files["kind"],

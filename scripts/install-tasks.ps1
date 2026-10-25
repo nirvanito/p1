@@ -4,6 +4,7 @@
 #   LifeCRM backup         - daily 21:30 (tiered retention)
 #   LifeCRM verify-restore - weekly Sunday 12:00 (an untested backup is not a backup)
 #   LifeCRM review         - weekly Monday 07:30 (the week that just ended, for /review-week)
+#   LifeCRM reminders      - daily 07:15 (republish the reminders calendar; docs/assistant.md)
 # Run once, as your own user (no admin needed); re-running replaces them:
 #   powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 
@@ -53,5 +54,11 @@ Register-LifeCrmTask "LifeCRM verify-restore" "verify-restore.ps1" @(
 Register-LifeCrmTask "LifeCRM review" "review.ps1" @(
     (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 07:30)
 )
+# Every morning after the rollover and after intake: an overdue task moves to
+# today's slot and the phone's calendar sees a new revision. Exits 0 with one
+# log line when no [assistant] reminders_dir is set.
+Register-LifeCrmTask "LifeCRM reminders" "reminders.ps1" @(
+    (New-ScheduledTaskTrigger -Daily -At 07:15)
+)
 Write-Host "done - inspect with: Get-ScheduledTask -TaskName 'LifeCRM*'"
-Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log, data\review.log"
+Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log, data\review.log, data\reminders.log"
