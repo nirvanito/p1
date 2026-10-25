@@ -47,7 +47,19 @@ in the day view, the Health page and `ask` alike (and in the Obsidian
 export and the Health dashboards). A day tile names that app (`origin_app`)
 when more than one recorded the day. Averages (weight, heart rate) pool every
 app.
-| **Sources** | Import runs with counts, the unresolved-handle queue, each connector's newest record and whether it has gone stale, health export files, and the journal's own sources. |
+| **Sources** | Import runs with counts, the unresolved-handle queue, each connector's newest record and whether it has gone stale, health export files, and the journal's own sources. At the end, the **Features** checklist ([features.md](features.md)): on a server started with a key (`--token`), each box checks or unchecks its feature, and *Check all* / *Uncheck all* do every one — saved in `[features]` of `config.toml`, nothing else in the file touched; without a key the list is read-only and says how to change it (`--token random`, or `lifecrm features` in the terminal). |
+| **Search** | (`search` feature) Every record a few words match — journal entries and transcripts (confirmed), observations (observed) — newest first, with chips to narrow by tier, kind, year and person (each facet counts what the other filters leave). Leaves the nav while search is unchecked. |
+| **Places** | (`places` feature, `#/places`) Home, the countries your located records fall in, and the trips away from home — town names from the local GeoNames file ([places.md](places.md)). Linked from the Today page of a day that is part of a trip. |
+
+The read-side features add to the existing pages as well, each only while it
+is checked: **Today** gains *On this day* (the same date in earlier years),
+*Worth a word* (the day's moments the journal does not mention yet), a trip
+banner, "near Bled, Slovenia" beside place visits and photos, meeting prep
+under each agenda event and three highlights in the Today card; a **person
+page** gains *Gift ideas*, *Work history from LinkedIn exports*, *Links they
+sent* and a **Conversation** page (`#/person/<id>/conversation`: the one-to-one
+texts, chats, emails and calls across every app, oldest first, *Load older*
+going back).
 
 Confirmed rows (entries, measurements, mentions) and observed rows
 (imported in bulk, never reviewed) are kept visibly apart on every page —
@@ -106,7 +118,7 @@ stable.
 - **Read answers aloud** reads each answer with the browser's own speech
   synthesis, citations removed. Nothing is sent anywhere for that.
 
-## What it reads, and the one thing it writes
+## What it reads, and the two things it writes
 
 - **The live database is never held open.** At start the database is copied
   through SQLite's backup API to `data\web\lifecrm.db`; every few seconds at
@@ -115,11 +127,21 @@ stable.
   one. So `lifecrm restore`, `migrate` and `/log` work normally while the
   server runs, and the page catches up a few seconds after an apply.
 - **Every request reads the snapshot** through its own read-only connection.
-- **The only write** is the question log: each question asked is recorded in
-  `recall_log`, the same row `lifecrm ask` writes. Both apply one rule for
-  `answered`: a question counts as answered when evidence came back, and a
-  question that asked for numbers only when it got some. `--no-log` (or
-  `[web] log_questions = false`) turns it off.
+- **The database's only write** is the question log: each question asked is
+  recorded in `recall_log`, the same row `lifecrm ask` writes. Both apply one
+  rule for `answered`: a question counts as answered when evidence came
+  back, and a question that asked for numbers only when it got some.
+  `--no-log` (or `[web] log_questions = false`) turns it off.
+- **The feature switches**, and only on a server started with a key: the
+  Sources page's checklist sends `POST /api/features`, which goes through
+  the same `features.save` as `lifecrm features check|uncheck` — it rewrites
+  only `[features]` in `config.toml` and refuses unless everything else in
+  the file reads back the same. The request must carry the key and come from
+  the page itself as JSON (another site, another port on this machine and a
+  form post are all refused). A feature only reads, so a change deletes
+  nothing. The server reads `[features]` again whenever `config.toml`
+  changes, so a change made in the terminal shows on the next request too;
+  every other setting stays what the server started with.
 
 `data\web\` is inside `data\`, so it is private and gitignored like the rest.
 
@@ -138,6 +160,8 @@ stable.
   the API, and so are requests naming a Host that is not this machine (DNS
   rebinding). Reaching it through another name? Add it to `[web]
   allowed_hosts`.
+- The one change the page can make, the feature checklist, needs the key: on
+  a server without one it is read-only.
 
 ## Settings
 
@@ -178,6 +202,11 @@ Everything the page shows is plain JSON, for scripts or another front end. Error
 | `GET /api/health?days=14[&end=YYYY-MM-DD]` | daily series per metric (the ones `ask` cites) and the journal's own; `workouts` (sessions and minutes per week, or null when none were imported); `nutrition` (the nutrient report's low / borderline / high with its `disclaimer`, or null when nothing was logged in the window) |
 | `GET /api/status` | today, counts, demo or not, example questions, snapshot time, model and voice state, `dashboards` (`running` at this page's host name, `local_only` when only this computer can open them) |
 | `GET /api/nudges` | what matters today (`lifecrm nudges --json`'s shape: `nudges`, `agenda`, `hidden`, `index`, `pack_id`) on the clock's date, like `/api/loops`; read-only — snooze and dismiss are CLI writes ([assistant.md](assistant.md)) |
+| `GET /api/search?q=...[&tier=][&stream=][&person=][&year=][&offset=][&limit=]` | `lifecrm search --json`'s shape: `results` (newest first), `facets` (`tier`, `stream`, `year`, `person`), `total`; `enabled: false` while search is unchecked |
+| `GET /api/trips` | home, `trips` (newest first, each with its `line`), `countries`; `ok: false` and `error` without a gazetteer |
+| `GET /api/conversation/<id>[?before=<started_at>][&limit=60]` | one person's thread across apps, oldest first; `older` is the cursor for the page before |
+| `GET /api/features` | the checklist (`lifecrm features --json`'s shape) and `writable` (true only on a server with a key) |
+| `POST /api/features` | body `{"changes": {"places": false}}` or `{"all": true}`, as `application/json`, from the page's own origin, with the key → the new checklist plus `changed` and `saved` (the file); 403 on a server without a key or from another origin, 400 for an unknown feature or a value that is not true/false |
 | `GET /reminders.ics` | the published reminders calendar, byte for byte as `lifecrm reminders publish` last wrote it (`text/calendar`); 404 before the first publication; what an iPhone subscribes to, key included (`?k=`) |
 | `POST /api/transcribe` | body = recorded audio → `{"text", "language", "duration_sec", "model"}` |
 

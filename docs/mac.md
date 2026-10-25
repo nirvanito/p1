@@ -218,16 +218,18 @@ Mac does.
 /bin/bash scripts/install-tasks.sh
 ```
 
-Writes five LaunchAgents to `~/Library/LaunchAgents/` and loads them (as you,
+Writes seven LaunchAgents to `~/Library/LaunchAgents/` and loads them (as you,
 no sudo):
 
 | job | when | runs |
 |---|---|---|
+| `local.lifecrm.collect` | daily 06:30 | `scripts/collect.sh` — every source on this Mac, found by itself (Messages, calls, contacts, notes, photos, the browser, the newest health export): routine changes applied, a new source or anything unusual a yes/no question in /morning (`collect setup` is the checklist; [collect.md](collect.md)); needs the same Full Disk Access as the imports themselves |
 | `local.lifecrm.intake` | daily 07:00 **and at login** | `scripts/transcribe-inbox.sh` — both inboxes; transcripts ready before you sit down |
 | `local.lifecrm.doctor` | daily 08:00 | `scripts/doctor.sh` — invariants on the live database |
 | `local.lifecrm.backup` | daily 21:30 | `scripts/backup.sh` — snapshot, local + iCloud Drive, tiered retention |
 | `local.lifecrm.verify-restore` | Sunday 12:00 | `scripts/verify-restore.sh` — `lifecrm verify-backup`: restores the newest snapshot into a scratch folder and checks it |
 | `local.lifecrm.review` | Monday 07:30 | `scripts/review.sh` — the review pack for the week that just ended, waiting in `data/staging/` for `/review-week` |
+| `local.lifecrm.reminders` | daily 07:15 | `scripts/reminders.sh` — republishes the reminders calendar ([assistant.md](assistant.md)) |
 
 When a run fails, it says so — exactly as on Windows:
 

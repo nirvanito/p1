@@ -194,6 +194,17 @@ max_loops = 10                     # open tasks/plans listed
 # path = "~/Downloads/Uber Data.zip"   # Uber's export zip, its folder, or trips_data.csv
 # currency = "usd"                  # Uber Eats' file names none: default is the trips' own
 
+# ---------------------------------------------------------------- collect
+# Optional — you need none of it. The daily job (`lifecrm collect`,
+# scripts/collect.*, 06:30) finds every source on this computer by itself,
+# each where its connector looks with no path given (the [connectors.*]
+# settings above still apply); routine changes are applied, and a new source,
+# a large removal or records the reader cannot validate wait for your yes in
+# /morning (docs/collect.md). `collect decline <source>` is a no for good.
+# [collect]
+# sources = ["android_sms", "health"]   # only these, and nothing else is looked at
+# health_dir = "D:/Exports/Health Connect"   # one more folder for the phone's health export
+
 # ---------------------------------------------------------------- nutrition
 # Optional. Whose reference intakes `lifecrm nutrients` compares against
 # (docs/nutrition.md). Unset, each value is the higher of the female and male
@@ -254,3 +265,25 @@ max_loops = 10                     # open tasks/plans listed
 # reminders_dir = "~/OneDrive/LifeCRM reminders"  # a synced folder the phone's calendar reads; unset = no calendar
 # reminder_hour = 9                 # local hour a due item's calendar alarm fires
 # auto_publish = true               # republish the calendar after every command that changes the database
+
+# [features]                        # the read-side features, checked or unchecked by `lifecrm features` (docs/features.md); a key not listed is on
+# on_this_day = true                # earlier years' entries and records on today's date
+# meeting_prep = true               # before a meeting: last contact, open loops, recent messages, birthday
+# places = true                     # town names from a local GeoNames file, trips, countries (needs `lifecrm places fetch`)
+# journal_prompts = true            # a day's moments worth a word in the journal (a prompt, never an entry)
+# subscriptions = true              # recurring charges, new ones, price rises
+# experiments = true                # plans with data.experiment, measured before and during
+# search = true                     # every match across the journal and the imports, with facets
+# job_changes = true                # a linked person's LinkedIn position changed between two exports
+# year_review = true                # `lifecrm review --year YYYY` (the year lens)
+# link_memory = true                # where a link or a site turned up, and who sent it
+# gift_ideas = true                 # gift ideas beside a birthday; anniversaries as nudges
+# conversations = true              # one thread per person across texts, chats and email
+# weekday_profile = true            # each series averaged by day of the week
+# highlights = true                 # a few book highlights a day, in a fixed rotation
+
+# [places]                          # the places feature (docs/places.md)
+# gazetteer = "data/geo/places.tsv" # what `lifecrm places fetch` writes; or any GeoNames cities*.txt
+# home = "30.27, -97.74"            # a fixed home instead of "where most days are"
+# trip_km = 100                     # a day with a record farther than this from home is away
+# max_km = 50                       # a position farther than this from every town gets no name

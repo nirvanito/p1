@@ -161,6 +161,34 @@ def _birthday_components(conn: sqlite3.Connection, cfg: Config, today: date,
     return out
 
 
+def _anniversary_components(conn: sqlite3.Connection, today: date, states: dict,
+                            owners: frozenset) -> list[dict]:
+    """Anniversaries you recorded (data.anniversary, lifecrm/gifts.py) as
+    dated occurrences this year and next, like birthdays; the nudge's key,
+    so a snooze or a dismissal moves or omits it here too. Confirmed."""
+    from . import gifts
+    out = []
+    for a in gifts.recorded(conn, owners):
+        _year, month, day_ = a["parsed"]
+        first = nudges.next_occurrence(month, day_, today)
+        for occ in (first, nudges.next_occurrence(month, day_, first + timedelta(days=1))):
+            key = f"anniversary:{a['uuid']}:{occ.year}"
+            st = states.get(key)
+            if st is not None and st["state"] == "dismissed":
+                continue
+            day = occ
+            note = None
+            if st is not None and st["state"] == "snoozed" and st["until"] > today.isoformat():
+                day, note = date.fromisoformat(st["until"]), f"snoozed until {st['until']}"
+            summary = gifts.label(a, occ)
+            desc = (f"{summary}, from your entry of {a['date']}" + (f"; {note}" if note else "")
+                    + f"\nlifecrm {key}")
+            out.append({"uid": f"lifecrm-anniv-{a['uuid']}-{occ.year}@lifecrm", "key": key,
+                        "kind": "anniversary", "summary": summary, "description": desc,
+                        "day": day, "all_day": True})
+    return out
+
+
 def components(conn: sqlite3.Connection, cfg: Config, *, today: date,
                s: dict | None = None) -> list[dict]:
     """Every component the calendar holds on `today`, each with the lines of
@@ -177,6 +205,9 @@ def components(conn: sqlite3.Connection, cfg: Config, *, today: date,
         owners = frozenset()
     comps = _due_components(conn, today, states)
     comps += _birthday_components(conn, cfg, today, states, owners)
+    from . import features
+    if features.enabled(cfg, "gift_ideas"):
+        comps += _anniversary_components(conn, today, states, owners)
     tz = ZoneInfo(cfg.timezone)
     for c in comps:
         c["body"] = _body_lines(c, s["reminder_hour"], tz)

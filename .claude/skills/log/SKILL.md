@@ -43,6 +43,15 @@ Read each source's transcript (`data\transcripts\YYYY\` or
 Mid-day quick notes are often terse fragments; the evening note may revisit
 the same event — expect overlap and prefer one entry per real-world event.
 
+Optional, when the user wants it (the `journal_prompts` feature,
+docs/features.md): `python -m lifecrm prompts --date <day> --json` lists the
+day's moments in their imports that the journal does not mention yet — a
+first visit, a meeting, a long call, photos, a workout, a spending day. Offer
+them as questions ("anything to add about the visit to Barton Springs?").
+They are prompts, never sources: nothing from them goes into the draft unless
+the user then says it, in a new note or in chat, which becomes a source like
+any other.
+
 ## Step 3 — draft one contract document
 
 Build a v2 draft (`docs/contract.md`): `sources: [{"source_id": ...}, ...]`

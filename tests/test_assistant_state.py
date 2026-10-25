@@ -39,8 +39,8 @@ def test_a_v5_database_migrates_to_v6_and_gains_both_tables(cfg, tmp_path):
         shutil.copy(f, mig / f.name)
     assert db_mod.migrate(conn, migrations_dir=mig) == [2, 3, 4, 5]
     try:
-        assert db_mod.migrate(conn) == [6, 7]
-        assert db_mod.schema_version(conn) == SCHEMA_VERSION == 7
+        assert db_mod.migrate(conn) == [6, 7, 8]
+        assert db_mod.schema_version(conn) == SCHEMA_VERSION == 8
         for t in ("nudge_states", "reminder_revisions"):
             conn.execute(f"SELECT * FROM {t} LIMIT 0")
         assert run_checks(conn)["failures"] == 0

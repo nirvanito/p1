@@ -129,6 +129,7 @@ code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
   color: var(--text-2); font-weight: 550; text-decoration: none;
 }
 .nav a svg { width: 20px; height: 20px; flex: none; }
+.nav a[hidden] { display: none; }
 .nav a:hover { background: var(--surface-2); color: var(--text); }
 .nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .nav-foot { margin-top: auto; padding: 12px 10px 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
@@ -408,6 +409,7 @@ details.all-ev[open] summary::before { transform: rotate(90deg); }
       Life CRM
     </div>
     <a href="#/ask" data-route="ask"><svg data-icon="ask"></svg><span>Ask</span></a>
+    <a href="#/search" data-route="search" data-feature="search"><svg data-icon="search"></svg><span>Search</span></a>
     <a href="#/today" data-route="today"><svg data-icon="today"></svg><span>Today</span></a>
     <a href="#/people" data-route="people"><svg data-icon="people"></svg><span>People</span></a>
     <a href="#/loops" data-route="loops"><svg data-icon="loops"></svg><span>Loops</span></a>
@@ -510,7 +512,22 @@ const ICONS = {
   eye: ["M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z", "M12 14.8a2.8 2.8 0 1 0 0-5.6 2.8 2.8 0 0 0 0 5.6z"],
   lock: ["M6.5 10.5h11a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19v-7a1.5 1.5 0 0 1 1.5-1.5z", "M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"],
   spark: ["M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1-5.1-1.9 5.1-1.9z"],
+  search: ["M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13z", "M15.5 15.5L20 20"],
+  pin: ["M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z", "M12 12.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4z"],
+  gift: ["M4 11h16v9H4z", "M3 7.5h18V11H3z", "M12 7.5V20", "M12 7.5C10.5 4.5 7 4 7 6s5 1.5 5 1.5", "M12 7.5c1.5-3 5-3.5 5-1.5s-5 1.5-5 1.5"],
+  history: ["M4 12a8 8 0 1 0 2.4-5.7", "M4 4.5v3.5h3.5", "M12 8v4.5l3 2"],
 };
+
+// The read-side features (lifecrm/features.py): checked unless STATUS says
+// otherwise. The page only reads the switches — `lifecrm features check |
+// uncheck` in the terminal changes them.
+function feat(key) {
+  const list = STATUS && STATUS.features && STATUS.features.features;
+  if (!list) return true;
+  const x = list.find(f => f.key === key);
+  return x ? x.on : true;
+}
+const CITE_TAIL = /\s*\[(?:[A-Z]\d+)(?:,\s*[A-Z]\d+)*\]$/;
 
 function icon(name) {
   const el = s("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.8,
@@ -679,7 +696,7 @@ function obsRow(o, opts) {
   return h("a", { class: "obs-row" + (o.current ? " current" : ""), href: "#/obs/" + o.uuid },
     h("span", { class: "time" }, time),
     h("div", { class: "row-main" },
-      h("div", { class: "row-meta", style: "margin-top:0" }, h("b", { style: "color:var(--text-2)" }, title), thread ? " · " + thread : "", optsx.showStream ? " · " + streamLabel(o.stream) : ""),
+      h("div", { class: "row-meta", style: "margin-top:0" }, h("b", { style: "color:var(--text-2)" }, title), thread ? " · " + thread : "", optsx.showStream ? " · " + streamLabel(o.stream) : "", optsx.near ? " · near " + optsx.near : ""),
       o.text ? h("div", { class: "row-title" }, o.text) : null,
       o.value !== null && o.value !== undefined && !o.text ? h("div", { class: "row-title" }, fmtValue(o.value, o.unit || "")) : null,
       h("div", { class: "cite-line" }, "observed · " + ((o.import && o.import.connector) || "import") + " " + String((o.import && o.import.uuid) || "").slice(0, 8))));
@@ -1049,6 +1066,14 @@ function answerCard(r) {
 function evidenceDetail(id, found, bundle) {
   if (!found) return h("div", { class: "ev" }, "Not in the evidence.");
   const { type, item } = found;
+  if (type === "M" && item.line) {
+    // A read-side feature's metric (places, subscriptions, weekdays, links)
+    // carries its evidence as one line, every number in it.
+    return h("div", { class: "ev" },
+      h("div", { class: "ev-head" }, h("span", { class: "id" }, id), h("span", { class: "badge obs" }, item.origin)),
+      h("div", { class: "ev-title" }, item.label.charAt(0).toUpperCase() + item.label.slice(1)),
+      h("div", { class: "ev-body" }, item.line.replace(/\s*\[[A-Z]\d+\]/g, "")));
+  }
   if (type === "M") {
     const w = bundle.window || {};
     return h("div", { class: "ev" },
@@ -1152,6 +1177,29 @@ async function viewDay(dateArg) {
       pills.length ? h("div", { class: "pills" }, pills) : null,
       (d.sources || []).length ? h("div", { class: "muted small", style: "margin-top:10px" }, "From " + d.sources.map(src => (SOURCE_TYPES[src.type] || src.type) + (src.recorded_at ? " " + tsTime(src.recorded_at) : "")).join(", ")) : null));
   }
+  if (d.trip) {
+    parts.push(h("a", { class: "card", href: "#/places", style: "display:block;color:inherit;text-decoration:none;margin-bottom:12px" },
+      h("div", { class: "row" }, icon("pin"), h("b", null, "Day " + d.trip.day + " of " + d.trip.days + " away from home"), observedBadge()),
+      h("div", { class: "small", style: "margin-top:6px" }, d.trip.line),
+      h("div", { class: "muted small", style: "margin-top:4px" }, "From located records and the nearest GeoNames town — a derived reading, not a record.")));
+  }
+  const otd = d.on_this_day && d.on_this_day.years || [];
+  if (otd.length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "On this day", h("span", { class: "count" }, "· " + plural(otd.length, "earlier year"))),
+      otd.map(y => h("div", { style: "margin-bottom:10px" },
+        h("div", { class: "stream-head" }, h("a", { href: "#/today/" + y.date }, fmtDay(y.date, { year: "numeric" })), h("span", { class: "muted small" }, plural(y.years_ago, "year") + " ago")),
+        y.summary ? h("div", { class: "small", style: "margin:4px 0" }, y.summary) : null,
+        h("div", { class: "list" },
+          y.entries.map(e => h("a", { class: "link-row", href: "#/entry/" + e.uuid }, h("div", { class: "row-main" }, h("div", { class: "row-title" }, kindBadge(e.kind), " ", e.title)))),
+          y.records.map(r => h("a", { class: "link-row", href: "#/obs/" + (r.uuid || r.first_uuid) }, h("div", { class: "row-main" }, h("div", { class: "row-title" }, observedBadge(), " ", r.text)))))))));
+  }
+  const prompts = d.prompts && d.prompts.prompts || [];
+  if (prompts.length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Worth a word", h("span", { class: "count" }, "· " + prompts.length)),
+      h("div", { class: "tier-note" }, "Moments in this day's imports the journal doesn't mention yet — a prompt for tonight's note, never an entry."),
+      h("div", { class: "list observed" }, prompts.map(p => h("a", { class: "link-row", href: "#/obs/" + (p.record.uuid || p.record.first_uuid) },
+        h("div", { class: "row-main" }, h("div", { class: "row-title" }, p.text), h("div", { class: "row-meta" }, p.kind.replace(/_/g, " "))))))));
+  }
   if ((d.health || []).length) {
     parts.push(section("Health", null, h("div", { class: "tiles" }, d.health.map(m => h("div", { class: "tile", title: "sensor import · " + plural(m.records, "record") + (m.source_files.length ? " · " + m.source_files.join(", ") : "") },
       h("div", { class: "label" }, m.label), h("div", { class: "value" }, fmtValue(m.value, "").replace(/ $/, ""), h("span", { class: "unit" }, m.unit)), h("div", { class: "note" }, "sensor · " + plural(m.records, "record")))))));
@@ -1170,7 +1218,7 @@ async function viewDay(dateArg) {
       h("div", { class: "tier-note" }, "Imported in bulk and never reviewed — each row cites its import."),
       d.observed.map(g => h("div", null,
         h("div", { class: "stream-head" }, observedBadge(), streamLabel(g.stream), h("span", { class: "muted small" }, g.count + (g.truncated ? " (first " + g.items.length + " shown)" : ""))),
-        h("div", { class: "list observed" }, g.items.map(o => obsRow(o)))))));
+        h("div", { class: "list observed" }, g.items.map(o => obsRow(o, { near: (d.near || {})[o.uuid] })))))));
   }
   if (!parts.length) {
     parts.push(emptyState("today", "Nothing recorded on this day.",
@@ -1187,7 +1235,7 @@ async function viewDay(dateArg) {
 // the key each row shows. Every row links to the record it rests on.
 function nudgesCard(n) {
   const nudges = (n && n.nudges) || [], agenda = (n && n.agenda) || [], index = (n && n.index) || {};
-  if (!nudges.length && !agenda.length) return null;
+  if (!nudges.length && !agenda.length && !((n && n.highlights && n.highlights.items) || []).length) return null;
   const target = x => { const it = index[(x.ids || [])[0]] || {}; return it.type === "entry" && it.uuid ? "#/entry/" + it.uuid : it.uuid ? "#/obs/" + it.uuid : null; };
   const rows = nudges.slice(0, 12).map(x => {
     const href = target(x);
@@ -1202,7 +1250,19 @@ function nudgesCard(n) {
     const main = h("div", { class: "row-main" },
       h("div", { class: "row-title" }, observedBadge(), a.title, a.cancelled ? " (cancelled)" : ""),
       h("div", { class: "row-meta" }, a.date + " " + (a.time || "all day") + ((a.with || []).length ? " · with " + a.with.join(", ") : "")));
-    return it.uuid ? h("a", { class: "link-row", href: "#/obs/" + it.uuid }, main) : h("div", { class: "link-row" }, main);
+    const row = it.uuid ? h("a", { class: "link-row", href: "#/obs/" + it.uuid }, main) : h("div", { class: "link-row" }, main);
+    // Meeting prep (lifecrm/prep.py): what the records hold about each person on it.
+    const prep = (a.prep || []).map(pid => index[pid]).filter(Boolean);
+    if (!prep.length) return row;
+    return h("div", null, row, prep.map(p => h("div", { class: "card", style: "margin:4px 0 10px 18px;padding:10px 12px;box-shadow:none" },
+      h("div", { class: "small" }, h("b", null, "Before you meet " + p.name), p.entity_id ? h("a", { href: "#/person/" + p.entity_id, style: "margin-left:8px" }, "person page") : null),
+      (p.lines || []).length ? h("ul", { class: "small", style: "margin:6px 0 0 18px;padding:0" }, p.lines.map(l => h("li", null, l.replace(CITE_TAIL, "")))) : h("div", { class: "muted small" }, "Nothing on record yet."))));
+  });
+  const hl = (n && n.highlights && n.highlights.items) || [];
+  const hlRows = hl.map(x => {
+    const it = index[x.id] || {};
+    return h("a", { class: "link-row", href: it.uuid ? "#/obs/" + it.uuid : "#/today" },
+      h("div", { class: "row-main" }, h("div", { class: "row-title" }, "“" + x.text + "”"), h("div", { class: "row-meta" }, (x.title || "a book") + " · highlighted " + fmtDay(x.date))));
   });
   return section("Today", plural(nudges.length, "nudge"),
     h("div", { class: "tier-note" }, "What the records say matters today, as of " + n.today + ". Snooze or dismiss in the terminal: lifecrm nudges snooze <key>."),
@@ -1210,6 +1270,8 @@ function nudgesCard(n) {
     nudges.length > 12 ? h("div", { class: "muted small" }, (nudges.length - 12) + " more: lifecrm nudges") : null,
     agendaRows.length ? h("div", { class: "stream-head", style: "margin-top:10px" }, "Agenda", h("span", { class: "muted small" }, agendaRows.length)) : null,
     agendaRows.length ? h("div", { class: "list observed" }, agendaRows) : null,
+    hlRows.length ? h("div", { class: "stream-head", style: "margin-top:10px" }, "From your highlights", h("span", { class: "muted small" }, hlRows.length + " of " + n.highlights.total)) : null,
+    hlRows.length ? h("div", { class: "list observed" }, hlRows) : null,
     ((n && n.hidden) || []).length ? h("div", { class: "muted small", style: "margin-top:8px" }, plural(n.hidden.length, "nudge") + " snoozed or dismissed") : null);
 }
 
@@ -1328,7 +1390,27 @@ async function viewPerson(id) {
   if (lc && lc.entry) lastTiles.push(h("a", { class: "tile", href: "#/entry/" + lc.entry.uuid, style: "color:inherit;text-decoration:none" }, h("div", { class: "label" }, "Last journal mention"), h("div", { class: "value" }, relDay(lc.entry.date)), h("div", { class: "note" }, lc.entry.title)));
   lastTiles.push(h("div", { class: "tile" }, h("div", { class: "label" }, "In your journal"), h("div", { class: "value" }, String(p.mention_count)), h("div", { class: "note" }, "entries")));
   parts.push(h("div", { class: "tiles" }, lastTiles));
-  if (!p.is_owner) parts.push(h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "chip", href: "#/ask?q=" + encodeURIComponent("when did I last talk to " + first) }, icon("ask"), "Ask: when did I last talk to " + first + "?")));
+  if (!p.is_owner) parts.push(h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "chip", href: "#/ask?q=" + encodeURIComponent("when did I last talk to " + first) }, icon("ask"), "Ask: when did I last talk to " + first + "?"),
+    p.conversation ? h("a", { class: "chip", href: "#/person/" + p.id + "/conversation" }, icon("history"), "Conversation across apps") : null,
+    feat("search") ? h("a", { class: "chip", href: "#/search?q=" + encodeURIComponent(p.name) }, icon("search"), "Search for " + first) : null));
+  if ((p.gift_ideas || []).length) {
+    parts.push(section("Gift ideas", p.gift_ideas.length, h("div", { class: "tier-note" }, "Entries you confirmed that carry data.gift, or ideas that say gift or present."),
+      h("div", { class: "list" }, p.gift_ideas.map(g => h("a", { class: "link-row", href: "#/entry/" + g.uuid },
+        h("div", { class: "row-main" }, h("div", { class: "row-title" }, icon("gift"), " ", g.title), h("div", { class: "row-meta" }, (g.gift_status === "given" ? "given" : "idea") + " · " + fmtDay(g.date))))))));
+  }
+  if ((p.job_changes || []).length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Work history from LinkedIn exports"),
+      h("div", { class: "tier-note" }, "A position or company that changed between two of your exports — imported, not reviewed."),
+      h("div", { class: "list observed" }, p.job_changes.map(c => h("a", { class: "link-row", href: "#/obs/" + c.row.uuid },
+        h("div", { class: "row-main" }, h("div", { class: "row-title" }, [c.to.position, c.to.company].filter(Boolean).join(" at ")),
+          h("div", { class: "row-meta" }, "in the export imported " + fmtDay(c.seen_on) + " · before: " + ([c.from.position, c.from.company].filter(Boolean).join(" at ") || "?"))))))));
+  }
+  if ((p.links || []).length) {
+    parts.push(h("section", { class: "section" }, h("h3", null, "Links " + first + " sent", h("span", { class: "count" }, "· " + p.links.length)),
+      h("div", { class: "tier-note" }, "Links in texts, chats and email from " + first + " — imported, not reviewed."),
+      h("div", { class: "list observed" }, p.links.map(l => h("a", { class: "link-row", href: "#/obs/" + l.uuid },
+        h("div", { class: "row-main" }, h("div", { class: "row-title mono small" }, l.link), h("div", { class: "row-meta" }, l.site + " · " + streamLabel(l.stream) + " · " + fmtDay(l.date))))))));
+  }
 
   for (const card of p.contact_cards || []) {
     parts.push(section("Contact card", null, h("div", { class: "card", style: "background:var(--observed-soft);border:1px dashed var(--observed-border);box-shadow:none" },
@@ -1357,6 +1439,112 @@ async function viewPerson(id) {
     parts.push(h("section", { class: "section" }, h("h3", null, "Recent observed records"), h("div", { class: "tier-note" }, "Texts, emails, calls and payments that name one of " + first + "'s handles — imported, not reviewed."),
       h("div", { class: "list observed" }, p.observations.map(o => obsRow(o, { showDate: true, showStream: true })))));
   }
+  setView(parts);
+}
+
+// One thread with a person across every app (api.conversation): texts,
+// chats, email and calls that passed between the two of you, oldest first.
+async function viewConversation(id) {
+  setView(skeleton(4));
+  let c;
+  try { c = await api("/api/conversation/" + id); }
+  catch (e) { setView(errorCard(e)); return; }
+  if (!c.enabled) { setView(emptyState("history", "Conversations are unchecked: python -m lifecrm features check conversations")); return; }
+  const list = h("div", { class: "list observed" }, c.items.map(o => obsRow(o, { showDate: true, showStream: true })));
+  const more = h("div", { style: "margin-top:12px" });
+  let older = c.older;
+  const loadOlder = async () => {
+    if (!older) return;
+    const btn = more.querySelector("button");
+    if (btn) btn.disabled = true;
+    try {
+      const next = await api("/api/conversation/" + id + "?before=" + encodeURIComponent(older));
+      list.prepend(...next.items.map(o => obsRow(o, { showDate: true, showStream: true })));
+      older = next.older;
+      renderMore();
+    } catch (e) { fill(more, errorCard(e)); }
+  };
+  const renderMore = () => fill(more, older ? h("button", { class: "btn", type: "button", onclick: loadOlder }, "Load older") : h("div", { class: "muted small" }, "That is the start of what was imported."));
+  renderMore();
+  setView(pageHead("Conversation with " + c.name, (c.streams || []).map(streamLabel).join(" · ") || "nothing imported between you yet",
+      h("a", { class: "btn", href: "#/person/" + id }, icon("left"), "Person")),
+    h("div", { class: "tier-note" }, "Every text, chat, email and call that passed between you and " + c.name + " — group threads and copies left out. Imported, never reviewed."),
+    more, c.items.length ? list : emptyState("history", "No one-to-one messages or calls imported yet."));
+}
+
+// Search (api.search, lifecrm/search.py): every match across the journal and
+// the imports, newest first, with facets to narrow by.
+async function viewSearch(qs) {
+  const params = new URLSearchParams(qs || "");
+  const q = params.get("q") || "";
+  const input = h("input", { class: "search", type: "search", placeholder: "Search your journal and imports", "aria-label": "Search", value: q, autocomplete: "off" });
+  const form = h("form", { role: "search", style: "margin-bottom:14px" }, input);
+  const go = next => { const p = new URLSearchParams(next); for (const [k, v] of [...p]) if (!v) p.delete(k); location.hash = "#/search?" + p.toString(); };
+  form.addEventListener("submit", ev => { ev.preventDefault(); go({ q: input.value.trim() }); });
+  const body = h("div");
+  setView(pageHead("Search", "Every record a few words match — journal (confirmed) and imports (observed), newest first."), form, body);
+  input.focus();
+  if (!q) { fill(body, emptyState("search", "Type a few words: a name, a place, a phrase you remember.")); return; }
+  fill(body, skeleton(4));
+  const filters = {};
+  for (const k of ["tier", "stream", "year", "person"]) if (params.get(k)) filters[k] = params.get(k);
+  const offset = Number(params.get("offset") || 0);
+  let r;
+  try { r = await api("/api/search?" + new URLSearchParams({ q, ...filters, offset: String(offset) }).toString()); }
+  catch (e) { fill(body, errorCard(e)); return; }
+  if (!r.enabled) { fill(body, emptyState("search", "Search is unchecked: python -m lifecrm features check search")); return; }
+  const chip = (key, value, label, count) => {
+    const on = String(filters[key] || "") === String(value);
+    const next = { q, ...filters };
+    if (on) delete next[key]; else next[key] = value;
+    return h("button", { type: "button", class: "chip", "aria-pressed": String(on), onclick: () => go(next) }, label + " " + count);
+  };
+  const f = r.facets || {};
+  const facetRow = (title, entries) => entries.length ? h("div", { class: "row", style: "flex-wrap:wrap;gap:6px;margin-bottom:6px" }, h("span", { class: "muted small", style: "min-width:60px" }, title), entries) : null;
+  const rows = r.results.map(x => {
+    const href = x.type === "entry" ? "#/entry/" + x.uuid : x.type === "observation" ? "#/obs/" + x.uuid : "#/today/" + x.date;
+    return h("a", { class: "link-row", href },
+      h("div", { class: "row-main" },
+        h("div", { class: "row-title" }, x.tier === "observed" ? observedBadge() : kindBadge(x.kind), " ", x.title || streamLabel(x.stream)),
+        x.snippet ? h("div", { class: "row-meta" }, marked(x.snippet)) : null,
+        (x.people || []).length ? h("div", { class: "row-meta" }, x.people.join(", ")) : null),
+      h("div", { class: "row-side" }, fmtDay(x.date), x.tier === "observed" ? h("div", null, streamLabel(x.stream)) : null));
+  });
+  const pager = h("div", { class: "row", style: "margin-top:12px;gap:8px" },
+    offset > 0 ? h("button", { class: "btn", type: "button", onclick: () => go({ q, ...filters, offset: String(Math.max(0, offset - r.limit)) }) }, icon("left"), "Newer") : null,
+    offset + r.results.length < r.total ? h("button", { class: "btn", type: "button", onclick: () => go({ q, ...filters, offset: String(offset + r.limit) }) }, "Older", icon("right")) : null);
+  fill(body,
+    h("div", { class: "muted small", style: "margin-bottom:8px" }, plural(r.total, "match", "matches") + (r.truncated ? " — more than the search reads at once; add a word to narrow it" : "")),
+    facetRow("Tier", Object.entries(f.tier || {}).map(([k, v]) => chip("tier", k, k, v))),
+    facetRow("Kind", Object.entries(f.stream || {}).map(([k, v]) => chip("stream", k, k === "entry" ? "journal entry" : k === "passage" ? "transcript" : streamLabel(k), v))),
+    facetRow("Year", Object.entries(f.year || {}).sort((a, b) => b[0].localeCompare(a[0])).map(([k, v]) => chip("year", k, k, v))),
+    facetRow("Person", (f.person || []).map(p => chip("person", String(p.id), p.name, p.count))),
+    rows.length ? h("div", { class: "list" }, rows) : emptyState("search", "Nothing matches all of those words."),
+    pager);
+}
+
+// Places (api.trips, lifecrm/places.py): trips and countries from located
+// records and the local GeoNames file.
+async function viewPlaces() {
+  setView(pageHead("Places", "Trips away from home and the countries your located records fall in."), skeleton(3));
+  let d;
+  try { d = await api("/api/trips"); }
+  catch (e) { setView(pageHead("Places"), errorCard(e)); return; }
+  if (!d.ok) {
+    setView(pageHead("Places"), emptyState("pin", d.enabled ? d.error : "Places is unchecked: python -m lifecrm features check places",
+      d.enabled ? h("p", { class: "muted small", style: "margin-top:8px" }, "Town names come from GeoNames, kept on this machine: ", h("code", null, "python -m lifecrm places fetch")) : null));
+    return;
+  }
+  const homes = (d.home && d.home.homes) || [];
+  const parts = [pageHead("Places", plural(d.trips.length, "trip") + " · " + plural(d.countries.length, "country", "countries"))];
+  if (homes.length) parts.push(h("div", { class: "tier-note" }, "Home: " + homes.map(x => x.label + " (" + fmtDay(x.first_date) + " – " + fmtDay(x.last_date) + ")").join("; ") + " — " + d.home.how + ". A trip is days with a record more than " + d.trip_km + " km from it."));
+  parts.push(section("Countries", d.countries.length, h("div", { class: "list observed" }, d.countries.map(c => h("a", { class: "link-row", href: "#/today/" + c.first_date },
+    h("div", { class: "row-main" }, h("div", { class: "row-title" }, c.name), h("div", { class: "row-meta" }, (c.towns || []).slice(0, 6).join(", "))),
+    h("div", { class: "row-side" }, plural(c.days, "day"), h("div", null, fmtDay(c.first_date) + (c.last_date !== c.first_date ? " – " + fmtDay(c.last_date) : ""))))))));
+  parts.push(section("Trips", d.trips.length, d.trips.length ? h("div", { class: "list observed" }, d.trips.map(t => h("a", { class: "link-row", href: "#/today/" + t.start },
+    h("div", { class: "row-main" }, h("div", { class: "row-title" }, (t.towns || []).slice(0, 4).map(x => x.name).join(", ") || "unnamed places"), h("div", { class: "row-meta" }, t.line)),
+    h("div", { class: "row-side" }, plural(t.days, "day"), h("div", null, (t.countries || []).map(x => x.name).join(", ")))))) : h("div", { class: "muted small" }, "No day away from home yet.")));
+  parts.push(h("p", { class: "muted small", style: "margin-top:16px" }, "Town and country names: " + d.attribution + ", the nearest town to each recorded position — a derived reading of observed records, never stored."));
   setView(parts);
 }
 
@@ -1443,10 +1631,58 @@ async function viewSources() {
       h("div", { class: "row-main" }, h("div", { class: "row-title" }, SOURCE_TYPES[js.type] || js.type), h("div", { class: "row-meta" }, "latest " + fmtDay(js.last_date))),
       h("div", { class: "row-side" }, js.count.toLocaleString()))))));
   }
+  const fl = STATUS && STATUS.features;
+  if (fl && (fl.features || []).length) parts.push(featuresCard(fl));
   if (STATUS && STATUS.snapshot) {
     parts.push(h("p", { class: "muted small", style: "margin-top:20px" }, icon("lock"), " Read-only snapshot taken " + tsStamp(STATUS.snapshot.taken_at) + " · refreshed automatically when the database changes" + (STATUS.snapshot.error ? " · last refresh problem: " + STATUS.snapshot.error : "")));
   }
   setView(parts);
+}
+
+// The read-side features' checklist (lifecrm/features.py). On a server
+// started with a key (--token) a box checks or unchecks its feature —
+// POST /api/features, which rewrites only [features] in config.toml through
+// features.save; without a key it is read-only and says how to change it.
+// A feature only reads, so a change deletes nothing.
+function featuresCard(initial) {
+  const box = h("section", { class: "section" });
+  const writable = !!(STATUS && STATUS.feature_writes);
+  const render = data => {
+    STATUS.features = data;
+    navFoot();
+    let busy = false;
+    const send = async (body, said) => {
+      if (busy) return;
+      busy = true;
+      box.querySelectorAll("input, button").forEach(el => { el.disabled = true; });
+      try {
+        const next = await api("/api/features", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        render(next);
+        toast((next.changed || []).length ? said : "Nothing to change");
+      } catch (e) {
+        render(STATUS.features);
+        toast(e.message);
+      }
+    };
+    const rows = data.features.map(x => {
+      const input = h("input", { type: "checkbox", checked: x.on, disabled: !writable, "aria-label": (x.on ? "Uncheck " : "Check ") + x.title, style: "margin-right:10px" });
+      input.addEventListener("change", () => send({ changes: { [x.key]: input.checked } }, (input.checked ? "Checked " : "Unchecked ") + x.title.toLowerCase()));
+      return h("label", { class: "link-row", style: writable ? "cursor:pointer" : "cursor:default" }, input,
+        h("div", { class: "row-main" }, h("div", { class: "row-title" }, x.n + ". " + x.title), h("div", { class: "row-meta" }, x.summary + " — " + x.shows_in.join(", "))),
+        h("div", { class: "row-side mono small" }, x.key));
+    });
+    const all = writable ? h("div", { class: "row", style: "gap:8px;margin:0 0 10px" },
+      h("button", { class: "btn", type: "button", onclick: () => send({ all: true }, "Checked every feature") }, icon("check"), "Check all"),
+      h("button", { class: "btn", type: "button", onclick: () => send({ all: false }, "Unchecked every feature") }, "Uncheck all")) : null;
+    const how = writable
+      ? h("p", { class: "muted small" }, "Saved in [features] of " + data.config + " — nothing else in the file changes, and a feature only reads, so unchecking one deletes nothing. The vault and the reminders calendar follow on their next refresh.")
+      : h("p", { class: "muted small" }, "Read-only on a server without a key. To check and uncheck here, start it with ", h("code", null, "python -m lifecrm serve --token random"), "; or in the terminal: ", h("code", null, "python -m lifecrm features check <key>"), " · ", h("code", null, "features uncheck <key>"), " · ", h("code", null, "features pick"), ".");
+    fill(box, h("h3", null, "Features", h("span", { class: "count" }, "· " + data.on + " of " + data.total + " checked")),
+      data.error ? h("div", { class: "card error" }, data.error) : null,
+      all, h("div", { class: "list" }, rows), how);
+  };
+  render(initial);
+  return box;
 }
 
 function tile(label, value, note) {
@@ -1647,8 +1883,11 @@ const ROUTES = [
   [/^#?\/?$/, () => viewAsk(), "ask"],
   [/^#\/ask(?:\?q=(.*))?$/, q => viewAsk(q ? decodeURIComponent(q) : null), "ask"],
   [/^#\/today(?:\/(\d{4}-\d{2}-\d{2}))?$/, d => viewDay(d), "today"],
+  [/^#\/search(?:\?(.*))?$/, qs => viewSearch(qs), "search"],
+  [/^#\/places$/, () => viewPlaces(), "today"],
   [/^#\/people$/, () => viewPeople(), "people"],
   [/^#\/person\/(\d+)$/, id => viewPerson(id), "people"],
+  [/^#\/person\/(\d+)\/conversation$/, id => viewConversation(id), "people"],
   [/^#\/loops$/, () => viewLoops(), "loops"],
   [/^#\/sources$/, () => viewSources(), "sources"],
   [/^#\/health(?:\/(\d+))?$/, n => viewHealth(n), "health"],
@@ -1672,6 +1911,8 @@ function route() {
 function navFoot() {
   const foot = document.getElementById("nav-foot");
   if (!STATUS) return;
+  // An unchecked feature's page leaves the nav (lifecrm features uncheck <key>).
+  document.querySelectorAll(".nav a[data-feature]").forEach(a => { a.hidden = !feat(a.dataset.feature); });
   const c = STATUS.counts || {};
   const taken = STATUS.snapshot && STATUS.snapshot.taken_at ? new Date(STATUS.snapshot.taken_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "";
   fill(foot, 

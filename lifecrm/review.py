@@ -49,11 +49,21 @@ from .recall import (AI_STREAMS, CALL_STREAMS, EMAIL_STREAMS, HEALTH_METRICS,
 
 PACK_VERSION = 2
 
-LENSES = ("week", "health", "career", "relationships", "finance", "all")
+LENSES = ("week", "health", "career", "relationships", "finance", "all", "year")
 
 SECTIONS = ("days", "entries", "loops", "journal_metrics", "health",
             "observations", "titles", "relationships", "career", "finance",
-            "goals", "patterns")
+            "goals", "experiments", "trips", "subscriptions", "weekdays", "job_changes",
+            "year", "patterns")
+# A section that belongs to a read-side feature (lifecrm/features.py) is
+# left out of every lens while that feature is unchecked.
+SECTION_FEATURES = {"experiments": "experiments", "trips": "places",
+                    "subscriptions": "subscriptions", "weekdays": "weekday_profile",
+                    "job_changes": "job_changes", "year": "year_review"}
+# A weekday profile needs several of each weekday: a shorter period is read
+# over this many days ending on its last day.
+WEEKDAY_MIN_DAYS = 84
+YEAR_TOP = 10
 
 # What each lens is about. The week is the overview; an advisor lens trades
 # breadth for its own section and the entries that bear on it. Goals (a plan
@@ -62,13 +72,21 @@ SECTIONS = ("days", "entries", "loops", "journal_metrics", "health",
 # `[assistant] patterns = "on"` (experimental, docs/patterns.md).
 LENS_SECTIONS: dict[str, tuple[str, ...]] = {
     "week": ("days", "entries", "loops", "journal_metrics", "health",
-             "observations", "titles", "goals", "patterns"),
-    "health": ("days", "entries", "loops", "journal_metrics", "health", "goals", "patterns"),
-    "career": ("entries", "loops", "career", "titles", "goals", "patterns"),
+             "observations", "titles", "goals", "experiments", "trips", "patterns"),
+    "health": ("days", "entries", "loops", "journal_metrics", "health", "goals",
+               "experiments", "weekdays", "patterns"),
+    "career": ("entries", "loops", "career", "titles", "job_changes", "goals", "experiments",
+               "patterns"),
     "relationships": ("entries", "loops", "relationships", "observations", "goals",
-                      "patterns"),
-    "finance": ("entries", "loops", "finance", "goals", "patterns"),
+                      "experiments", "patterns"),
+    "finance": ("entries", "loops", "finance", "subscriptions", "goals", "experiments",
+                "patterns"),
     "all": SECTIONS,
+    # The year in review: the overview sections over a whole year, plus what
+    # only a year shows — new people, places, books, listening, mood by month.
+    "year": ("journal_metrics", "health", "observations", "relationships", "career",
+             "finance", "goals", "experiments", "year", "trips", "subscriptions",
+             "weekdays", "job_changes", "patterns"),
 }
 
 # A focused lens keeps the entries with any of these categories (primary or
@@ -161,21 +179,33 @@ def _parse_day(value: str, flag: str) -> date:
 
 def resolve_period(cfg: Config, *, week: str | None = None,
                    start: str | None = None, end: str | None = None,
-                   days: int | None = None, today: date | None = None) -> dict:
+                   days: int | None = None, today: date | None = None,
+                   year: int | str | None = None) -> dict:
     """The period a pack covers, and the equally long period before it.
 
     Default: the last FULL week, Monday to Sunday, in the configured timezone
     (with the rollover hour) — on a Wednesday that is the week that ended
     three days ago, never the half-week in progress. `--days N` is the N days
-    ending today; `--start` alone runs through today.
+    ending today; `--start` alone runs through today; `--year YYYY` is that
+    calendar year (through today, for the year in progress).
     """
     today = today or local_today(cfg)
     chosen = [flag for flag, v in (("--week", week), ("--start/--end", start or end),
-                                   ("--days", days)) if v not in (None, "")]
+                                   ("--days", days), ("--year", year)) if v not in (None, "")]
     if len(chosen) > 1:
-        raise DomainError(f"give one of --week, --start/--end or --days, "
+        raise DomainError(f"give one of --week, --start/--end, --days or --year, "
                           f"not {' and '.join(chosen)}")
     label = None
+    if year not in (None, ""):
+        try:
+            y = int(str(year).strip())
+            first = date(y, 1, 1)
+        except ValueError:
+            raise DomainError(f"--year '{year}' is not a year (expected YYYY)") from None
+        if first > today:
+            raise DomainError(f"--year {y} has not started yet")
+        start, end = first.isoformat(), min(date(y, 12, 31), today).isoformat()
+        label = f"the year {y}" + (" so far" if date(y, 12, 31) > today else "")
     if week:
         m = _WEEK_RE.match(week.strip())
         if not m:
@@ -194,7 +224,7 @@ def resolve_period(cfg: Config, *, week: str | None = None,
         e = _parse_day(end, "--end") if end else today
         if e < s:
             raise DomainError(f"--end {e} is before --start {s}")
-        kind = "range"
+        kind = "year" if label else "range"
     elif days is not None:
         if not 1 <= days <= MAX_PERIOD_DAYS:
             raise DomainError(f"--days must be 1-{MAX_PERIOD_DAYS}, got {days}")
@@ -211,6 +241,8 @@ def resolve_period(cfg: Config, *, week: str | None = None,
         y, w, _ = s.isocalendar()
         slug = f"{y}-W{w:02d}"
         label = f"week {slug}"
+    elif kind == "year":
+        slug = f"{s.year}"
     else:
         slug = f"{s.isoformat()}_{e.isoformat()}"
         label = label or f"{s.isoformat()} to {e.isoformat()}"
@@ -1448,10 +1480,16 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
         (cfg.extra.get("review") or {}).get("quiet_weeks", DEFAULT_QUIET_WEEKS))
     if weeks < 1:
         raise DomainError(f"quiet weeks must be at least 1, got {weeks}")
+    from . import features
+    feat = features.settings(cfg)
+    if lens == "year" and not feat["year_review"]:
+        raise DomainError("the year review is unchecked in [features] — run: python -m "
+                          "lifecrm features check year_review")
     ctx = _Ctx(conn=conn, cfg=cfg, period=period, lens=lens, ids=_Ids(),
                observed=db_mod.schema_version(conn) >= 4, quiet_weeks=weeks)
     _load_people(ctx)
-    sections = LENS_SECTIONS[lens]
+    sections = tuple(s for s in LENS_SECTIONS[lens]
+                     if s not in SECTION_FEATURES or feat[SECTION_FEATURES[s]])
 
     all_entries = _period_entries(ctx)
     entries = [e for e in all_entries if _lens_keeps(lens, e)]
@@ -1488,6 +1526,12 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
         "career": lambda: _section_career(ctx, all_entries),
         "finance": lambda: _section_finance(ctx, all_entries),
         "goals": lambda: _section_goals(ctx),
+        "experiments": lambda: _section_experiments(ctx),
+        "trips": lambda: _section_trips(ctx) if ctx.observed else None,
+        "subscriptions": lambda: _section_subscriptions(ctx) if ctx.observed else None,
+        "weekdays": lambda: _section_weekdays(ctx),
+        "job_changes": lambda: _section_job_changes(ctx) if ctx.observed else None,
+        "year": lambda: _section_year(ctx, people()),
         "patterns": lambda: _section_patterns(ctx),
     }
     for name in sections:
@@ -1561,6 +1605,292 @@ def _section_patterns(ctx: _Ctx) -> dict:
                                         ids=ctx.ids, s=s, lens=ctx.lens)
     except (DomainError, sqlite3.OperationalError) as e:
         return {"enabled": True, "items": [], "notes": [f"patterns: {e}"]}
+
+
+# ---------------------------------------------------------------- read-side features
+
+def _section_experiments(ctx: _Ctx) -> dict:
+    """Plans with data.experiment whose change overlaps the period
+    (lifecrm/experiments.py), measured as of the day after it: the plan as
+    E#, the rows behind each side cited. Never None."""
+    from . import experiments as exp_mod
+    from .nudges import _cite_rows
+    p = ctx.period
+    items = []
+    for e in exp_mod.overlapping(ctx.conn, ctx.cfg, p["start"], p["end"]):
+        cid = ctx.ids.cite("E", e["uuid"], {
+            "type": "entry", "tier": "confirmed", "uuid": e["uuid"], "date": e["date"],
+            "kind": "plan", "title": e["title"]})
+        rows = []
+        if not e.get("error"):
+            for side in ("baseline", "during"):
+                part = e[side]
+                if part["refs"]:
+                    rows += _cite_rows(ctx.ids, ("experiment", e["uuid"], side), part["refs"],
+                                       part["days"], f"{e['label']}, {side} of {e['title']}")
+        items.append({"id": cid, "rows": rows, "line": exp_mod.describe(e),
+                      **{k: e.get(k) for k in ("title", "status", "start", "end", "delta",
+                                               "delta_pct", "went", "enough", "error")}})
+    return {"items": items,
+            "rule": ("each side is the outcome's mean over the days it knows (a count or sum "
+                     "per known day); co-occurrence over two windows, never cause")}
+
+
+def _section_trips(ctx: _Ctx) -> dict:
+    """Trips that overlap the period and the countries its located records
+    fall in (lifecrm/places.py, from the local GeoNames file), each cited to
+    its records. Without the file: enabled False and why."""
+    from . import places as pl
+    tl = pl.timeline(ctx.conn, ctx.cfg)
+    if not tl["ok"]:
+        return {"enabled": False, "note": tl["error"], "items": [], "countries": []}
+    p = ctx.period
+    items = []
+    for t in pl.trips_between(tl, p["start"], p["end"]):
+        cid = ctx.ids.cite("O", ("trip", t["start"], t["end"]), {
+            "type": "observation_count", "tier": "observed",
+            "what": f"located records of the trip {t['start']} to {t['end']}",
+            "count": t["records"], "first_date": t["start"], "last_date": t["end"],
+            "first_uuid": t["first_uuid"], "last_uuid": t["last_uuid"],
+            "uuids": t["uuids"], "imports": t["imports"]})
+        items.append({"id": cid, "line": pl.describe_trip(t),
+                      **{k: v for k, v in pl.json_safe_trip(t).items()
+                         if k not in ("uuids", "imports", "first_uuid", "last_uuid")}})
+    first_seen = {c["cc"]: c["first_date"] for c in tl["countries"]}
+    by: dict[str, dict] = {}
+    for d in sorted(tl["days"]):
+        if not p["start"] <= d <= p["end"]:
+            continue
+        for pt in tl["days"][d]["points"]:
+            if pt.town is None:
+                continue
+            c = by.setdefault(pt.town.cc, {"cc": pt.town.cc, "name": pt.town.country,
+                                           "days": set(), "towns": [], "rows": []})
+            c["days"].add(d)
+            if pt.town.name not in c["towns"]:
+                c["towns"].append(pt.town.name)
+            c["rows"].append(pt)
+    countries = []
+    for cc, c in sorted(by.items(), key=lambda kv: (-len(kv[1]["days"]), kv[0])):
+        rows = c["rows"]
+        cid = ctx.ids.cite("O", ("country", cc, p["start"], p["end"]), {
+            "type": "observation_count", "tier": "observed",
+            "what": f"located records in {c['name']}", "count": len(rows),
+            "first_date": rows[0].date, "last_date": rows[-1].date,
+            "first_uuid": rows[0].uuid, "last_uuid": rows[-1].uuid,
+            "uuids": [r.uuid for r in rows][:20],
+            "imports": sorted({r.import_uuid for r in rows})})
+        countries.append({"id": cid, "cc": cc, "name": c["name"], "days": len(c["days"]),
+                          "towns": c["towns"][:12],
+                          "first_on_record": p["start"] <= first_seen.get(cc, "") <= p["end"]})
+    return {"enabled": True, "items": items, "countries": countries,
+            "trip_km": tl["trip_km"], "attribution": pl.ATTRIBUTION,
+            "rule": (f"a trip is consecutive days with a located record more than "
+                     f"{tl['trip_km']:g} km from that day's home; towns are the nearest "
+                     f"GeoNames town to each recorded position")}
+
+
+def _section_subscriptions(ctx: _Ctx) -> dict:
+    """Recurring charges with a charge in the period, as of its last day
+    (lifecrm/subscriptions.py); price rises flagged. Never None."""
+    from . import subscriptions as subs
+    p = ctx.period
+    data = subs.detect(ctx.conn, ctx.cfg, date.fromisoformat(p["end"]))
+    items = []
+    for x in data["items"]:
+        if x["last_date"] < p["start"]:
+            continue
+        cid = ctx.ids.cite("O", ("recurring", x["key"], x["currency"]), subs.count_item(x))
+        items.append({"id": cid, "line": subs.describe(x),
+                      **{k: x[k] for k in ("merchant", "currency", "cadence", "amount",
+                                           "previous_amount", "count", "first_date",
+                                           "last_date", "next_due", "status", "price_rise",
+                                           "new", "per_month")}})
+    monthly: dict[str, float] = {}
+    for x in items:
+        if x["status"] == "active":
+            monthly[x["currency"] or ""] = round(monthly.get(x["currency"] or "", 0.0)
+                                                 + x["per_month"], 2)
+    return {"items": items, "monthly": monthly, "rule": data["rule"]}
+
+
+def _section_weekdays(ctx: _Ctx) -> dict:
+    """Each series averaged by weekday (lifecrm/weekday.py) over the period —
+    or the WEEKDAY_MIN_DAYS ending on its last day when the period is
+    shorter — each profile's rows cited."""
+    from . import weekday as wk
+    from .nudges import _cite_rows
+    p = ctx.period
+    days = max(p["days"], WEEKDAY_MIN_DAYS)
+    start = (date.fromisoformat(p["end"]) - timedelta(days=days - 1)).isoformat()
+    items = []
+    for prof in wk.profiles(ctx.conn, ctx.cfg, start, p["end"]):
+        rows = _cite_rows(ctx.ids, ("weekday", prof["key"], start, p["end"]), prof["refs"],
+                          [prof["first_date"], prof["last_date"]],
+                          f"{prof['label']} by weekday")
+        items.append({"ids": rows, "key": prof["key"], "label": prof["label"],
+                      "line": wk.describe(prof), "low": prof["low"], "high": prof["high"],
+                      "weekdays": prof["weekdays"]})
+    return {"window": {"start": start, "end": p["end"], "days": days}, "items": items,
+            "rule": (f"a weekday is compared only with at least {wk.MIN_PER_WEEKDAY} known "
+                     f"days; an unknown day is never a zero")}
+
+
+def _section_job_changes(ctx: _Ctx) -> dict:
+    """Linked people whose LinkedIn position or company changed in an export
+    imported during the period (lifecrm/jobchanges.py). Never None."""
+    from . import jobchanges
+    p = ctx.period
+    items = []
+    for c in jobchanges.changes(ctx.conn, ctx.cfg, start=p["start"], end=p["end"],
+                                owners=frozenset(ctx.owner_entities)):
+        cid = ctx.ids.cite("O", ("obs", c["row"]["uuid"]), c["row"])
+        items.append({"id": cid, "line": jobchanges.describe(c), "name": c["name"],
+                      "entity_id": c["entity_id"], "from": c["from"], "to": c["to"],
+                      "seen_on": c["seen_on"]})
+    return {"items": items}
+
+
+def _first_contacts(ctx: _Ctx) -> dict[int, tuple[str, tuple]]:
+    """Each person's first contact on record, either tier: (date, ('entry',
+    uuid) or ('obs', uuid)). The owner is never a contact."""
+    first: dict[int, tuple[str, tuple]] = {}
+
+    def offer(eid: int, d: str, ref: tuple) -> None:
+        if eid in ctx.owner_entities or ctx.entity_types.get(eid) != "person":
+            return
+        if eid not in first or (d, ref) < first[eid]:
+            first[eid] = (d, ref)
+
+    for r in ctx.conn.execute(
+            "SELECT m.entity_id, e.journal_date, e.uuid FROM mentions m "
+            "JOIN entries e ON e.id = m.entry_id WHERE e.status = 'active' "
+            f"AND m.role = 'participant' AND {NOT_DERIVED.replace('data', 'e.data')} "
+            "ORDER BY e.journal_date, e.id"):
+        offer(_final_entity(ctx, r["entity_id"]), r["journal_date"], ("entry", r["uuid"]))
+    if ctx.observed:
+        streams = [s for _, group in CONTACT_CHANNELS for s in group]
+        marks = ",".join("?" * len(streams))
+        between, between_args = _between_you_sql()
+        for r in ctx.conn.execute(
+                "SELECT h.kind, h.value, h.entity_id, MIN(o.journal_date) AS d "
+                "FROM entity_handles h JOIN observation_participants p "
+                "ON p.handle_kind = h.kind AND p.handle_value = h.value "
+                "JOIN observations o ON o.id = p.observation_id "
+                f"WHERE h.entity_id IS NOT NULL AND h.ignored = 0 AND o.status = 'active' "
+                f"AND o.stream IN ({marks}) AND {between} "
+                "GROUP BY h.kind, h.value, h.entity_id", (*streams, *between_args)):
+            if (r["kind"], r["value"].lower()) in ctx.owner_handles or \
+                    r["kind"] in NON_PERSON_KINDS:
+                continue
+            row = ctx.conn.execute(
+                "SELECT o.uuid FROM observations o JOIN observation_participants p "
+                "ON p.observation_id = o.id WHERE p.handle_kind = ? AND p.handle_value = ? "
+                f"AND o.status = 'active' AND o.stream IN ({marks}) AND o.journal_date = ? "
+                "ORDER BY o.started_at, o.id LIMIT 1",
+                (r["kind"], r["value"], *streams, r["d"])).fetchone()
+            if row:
+                offer(_final_entity(ctx, r["entity_id"]), r["d"], ("obs", row["uuid"]))
+    return first
+
+
+def _section_year(ctx: _Ctx, people: list[dict]) -> dict:
+    """What only a long period shows: people first in touch in it, the towns
+    and countries first on record, books finished, highlights, the most
+    listened-to artists, mood by month and per day. Every item cited."""
+    from . import series as series_mod
+    from .nudges import _cite_rows
+    p = ctx.period
+    out: dict = {"new_people": [], "books": [], "highlights": None, "listening": [],
+                 "mood_by_month": [], "pixels": {}, "new_countries": [], "top_towns": []}
+    for eid, (d, ref) in sorted(_first_contacts(ctx).items(), key=lambda kv: (kv[1][0], kv[0])):
+        if not p["start"] <= d <= p["end"]:
+            continue
+        if ref[0] == "entry":
+            rows = _load_entries(ctx, "e.uuid = ?", (ref[1],))
+            cid = _cite_entry(ctx, rows[0]) if rows else None
+        else:
+            r = ctx.conn.execute(
+                "SELECT o.uuid, o.stream, o.journal_date, o.started_at, o.direction, o.title, "
+                "i.uuid AS import_uuid FROM observations o JOIN imports i ON i.id = o.import_id "
+                "WHERE o.uuid = ?", (ref[1],)).fetchone()
+            cid = _cite_observation(ctx, r) if r else None
+        out["new_people"].append({"id": cid, "entity_id": eid, "date": d,
+                                  "name": ctx.entity_names.get(eid, f"entity {eid}")})
+    out["new_people"] = out["new_people"][:MAX_PEOPLE]
+    if ctx.observed:
+        books = [r for r in _obs_rows(ctx, STREAM_GROUPS["book"], p["start"], p["end"])
+                 if (_detail(r).get("exclusive_shelf") or "read") == "read"]
+        for r in books[:MAX_TITLES]:
+            d = _detail(r)
+            out["books"].append({"id": _cite_observation(ctx, r), "date": r["journal_date"],
+                                 "title": r["title"], "author": d.get("author"),
+                                 "rating": r["value"]})
+        hl = _obs_rows(ctx, STREAM_GROUPS["highlight"], p["start"], p["end"])
+        if hl:
+            out["highlights"] = {"id": _count_item(ctx, ("highlights", p["start"], p["end"]),
+                                                   "book highlights", hl),
+                                 "count": len(hl),
+                                 "books": len({r["title"] for r in hl})}
+        plays = _obs_rows(ctx, STREAM_GROUPS["listening"], p["start"], p["end"])
+        artists: dict[str, list] = {}
+        for r in plays:
+            name = " ".join((r["body"] or "").split()) or None
+            if name:
+                artists.setdefault(name, []).append(r)
+        ranked = sorted(artists.items(), key=lambda kv: (-_minutes_of(kv[1]), kv[0].lower()))
+        for name, rows in ranked[:YEAR_TOP]:
+            out["listening"].append({
+                "id": _count_item(ctx, ("artist", name, p["start"]), f"listening: {name}",
+                                  rows, minutes=_minutes_of(rows)),
+                "artist": name, "minutes": _minutes_of(rows), "days": len(
+                    {r["journal_date"] for r in rows})})
+    mood = series_mod.daily(ctx.conn, ctx.cfg, "mood", p["start"], p["end"])
+    months: dict[str, list[str]] = {}
+    for d in sorted(mood.known):
+        months.setdefault(d[:7], []).append(d)
+        out["pixels"][d] = mood.values.get(d)
+    for m, days in sorted(months.items()):
+        vals = [mood.values[d] for d in days]
+        refs = [r for d in days for r in mood.refs.get(d, [])]
+        ids = _cite_rows(ctx.ids, ("mood month", m), refs, days, f"mood in {m}") if refs else []
+        out["mood_by_month"].append({"month": m, "mean": round(sum(vals) / len(vals), 2),
+                                     "known": len(days), "ids": ids})
+    from . import features
+    if ctx.observed and features.enabled(ctx.cfg, "places"):
+        trips = _section_trips(ctx)
+        if trips.get("enabled"):
+            out["new_countries"] = [c for c in trips["countries"] if c["first_on_record"]]
+            out["top_towns"] = _top_towns(ctx)
+    return out
+
+
+def _top_towns(ctx: _Ctx) -> list[dict]:
+    """The towns with the most located days in the period."""
+    from . import places as pl
+    p = ctx.period
+    tl = pl.timeline(ctx.conn, ctx.cfg)
+    if not tl["ok"]:
+        return []
+    by: dict[str, dict] = {}
+    for d in sorted(tl["days"]):
+        if not p["start"] <= d <= p["end"]:
+            continue
+        for t in tl["days"][d]["towns"]:
+            slot = by.setdefault(t.key, {"label": t.label, "days": set(), "rows": []})
+            slot["days"].add(d)
+            slot["rows"] += [x for x in tl["days"][d]["points"] if x.town and x.town.key == t.key]
+    out = []
+    for key, slot in sorted(by.items(), key=lambda kv: (-len(kv[1]["days"]), kv[1]["label"]))[:YEAR_TOP]:
+        rows = slot["rows"]
+        cid = ctx.ids.cite("O", ("town", key, p["start"], p["end"]), {
+            "type": "observation_count", "tier": "observed",
+            "what": f"located records near {slot['label']}", "count": len(rows),
+            "first_date": rows[0].date, "last_date": rows[-1].date,
+            "first_uuid": rows[0].uuid, "last_uuid": rows[-1].uuid,
+            "uuids": [r.uuid for r in rows][:20], "imports": sorted({r.import_uuid for r in rows})})
+        out.append({"id": cid, "town": slot["label"], "days": len(slot["days"])})
+    return out
 
 
 def _brief_item(ctx: _Ctx, e: dict) -> dict:
@@ -1868,6 +2198,107 @@ def _payment_lines(s: dict) -> list[str]:
     return out
 
 
+def _feature_lines(pack: dict) -> list[str]:
+    """The read-side features' sections (lifecrm/features.py), in markdown."""
+    out: list[str] = []
+    if pack.get("experiments") is not None and "experiments" in pack["sections"]:
+        s = pack["experiments"]
+        out += ["## Experiments (a plan's change against the days before; co-occurrence, "
+                "not cause)", ""]
+        out += [f"- [{e['id']}] {e['line']}"
+                + (" " + "".join(f"[{r}]" for r in e["rows"]) if e["rows"] else "")
+                for e in s["items"]] or ["- (no experiment overlaps this period)"]
+        out.append("")
+    if "trips" in pack["sections"] and pack.get("trips") is not None:
+        s = pack["trips"]
+        out += ["## Trips and countries (nearest GeoNames town to each recorded position; "
+                "observed)", ""]
+        if not s.get("enabled"):
+            out.append(f"- {s.get('note')}")
+        else:
+            out += [f"- [{t['id']}] {t['line']}" for t in s["items"]] or ["- (no trip away "
+                                                                         "from home)"]
+            if s["countries"]:
+                out.append("Countries with located records: " + "; ".join(
+                    f"[{c['id']}] {c['name']} {c['days']} day(s)"
+                    + (" (first time on record)" if c["first_on_record"] else "")
+                    for c in s["countries"]))
+            out.append(f"Rule: {s['rule']}. Place names: {s['attribution']}.")
+        out.append("")
+    if "subscriptions" in pack["sections"] and pack.get("subscriptions") is not None:
+        s = pack["subscriptions"]
+        out += ["## Recurring charges (the bank's own descriptions; observed)", ""]
+        out += [f"- [{x['id']}] {x['line']}" + (" (new)" if x["new"] else "")
+                for x in s["items"]] or ["- (no recurring charge in this period)"]
+        for cur, total in sorted(s["monthly"].items()):
+            out.append(f"About {total:,.2f}{' ' + cur if cur else ''} a month in active ones.")
+        out += [f"Rule: {s['rule']}.", ""]
+    if "weekdays" in pack["sections"] and pack.get("weekdays") is not None:
+        s = pack["weekdays"]
+        w = s["window"]
+        out += [f"## Weekday averages ({w['start']} to {w['end']}, {w['days']} days)", ""]
+        out += [f"- {x['line']} " + "".join(f"[{i}]" for i in x["ids"]) for x in s["items"]] \
+            or ["- (no series knows enough days on two weekdays)"]
+        out += [f"Rule: {s['rule']}.", ""]
+    if "job_changes" in pack["sections"] and pack.get("job_changes") is not None:
+        s = pack["job_changes"]
+        out += ["## LinkedIn job changes (between two of your exports; observed)", ""]
+        out += [f"- [{c['id']}] {c['line']}" for c in s["items"]] or ["- (none)"]
+        out.append("")
+    if "year" in pack["sections"] and pack.get("year") is not None:
+        s = pack["year"]
+        out += ["## The year", ""]
+        out.append("New people (first contact on record in this period): "
+                   + ("; ".join(f"{x['name']} {x['date']}" + (f" [{x['id']}]" if x["id"] else "")
+                                for x in s["new_people"]) or "none"))
+        if s.get("top_towns"):
+            out.append("Most days near: " + "; ".join(f"[{t['id']}] {t['town']} {t['days']} "
+                                                       f"day(s)" for t in s["top_towns"]))
+        if s.get("new_countries"):
+            out.append("Countries first on record: " + "; ".join(
+                f"[{c['id']}] {c['name']}" for c in s["new_countries"]))
+        if s["books"]:
+            out.append("Books read: " + "; ".join(
+                f"[{b['id']}] {b['title']}" + (f" by {b['author']}" if b.get("author") else "")
+                + (f", {b['rating']:g} stars" if isinstance(b.get("rating"), (int, float)) else "")
+                for b in s["books"]))
+        if s["highlights"]:
+            h = s["highlights"]
+            out.append(f"Highlights: {h['count']} in {h['books']} book(s) [{h['id']}]")
+        if s["listening"]:
+            out.append("Most listened to: " + "; ".join(
+                f"[{x['id']}] {x['artist']} {_num(x['minutes'], 'min')}" for x in s["listening"]))
+        if s["mood_by_month"]:
+            out.append("Mood by month (journal): " + "; ".join(
+                f"{m['month']} {m['mean']:g}/10 over {m['known']} day(s)"
+                + "".join(f" [{i}]" for i in m["ids"]) for m in s["mood_by_month"]))
+            out.append("Mood pixels: " + _pixels(s["pixels"]))
+        out.append("")
+    return out
+
+
+_PIXELS = "▁▂▃▄▅▆▇█"
+
+
+def _pixels(days: dict[str, float]) -> str:
+    """A line per month of the day-by-day mood, one block per known day
+    (1-10 low to high), a dot for a day nobody said."""
+    if not days:
+        return "(no mood said)"
+    by: dict[str, dict[int, float]] = {}
+    for d, v in days.items():
+        by.setdefault(d[:7], {})[int(d[8:10])] = v
+    rows = []
+    for m in sorted(by):
+        y, mo = int(m[:4]), int(m[5:7])
+        last = (date(y + (mo == 12), mo % 12 + 1, 1) - timedelta(days=1)).day
+        cells = "".join(_PIXELS[min(7, max(0, int((by[m][d] - 1) / 9 * 7.999)))]
+                        if d in by[m] and by[m][d] is not None else "·"
+                        for d in range(1, last + 1))
+        rows.append(f"{m} {cells}")
+    return " | ".join(rows)
+
+
 def render_markdown(pack: dict) -> str:
     p, prior = pack["period"], pack["prior"]
     out = [f"# Review pack — {p['label']} ({p['start']} to {p['end']})", "",
@@ -2006,6 +2437,7 @@ def render_markdown(pack: dict) -> str:
         out += [f"## Goals (plans with a target; decided as of {s['decided_as_of']})", ""]
         out += [f"- [{g['id']}] {g['line']}" for g in s["items"]] or ["- (no open goals)"]
         out.append("")
+    out += _feature_lines(pack)
     if "patterns" in pack:
         s = pack["patterns"]
         out += ["## Patterns (co-occurrence, not cause; EXPERIMENTAL)", ""]

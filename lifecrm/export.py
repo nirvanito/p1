@@ -261,6 +261,14 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
          "end_date": r["end_date"], "basis": r["basis"]}
         for r in q("SELECT c.* FROM import_coverage c JOIN imports i ON i.id=c.import_id "
                    "ORDER BY i.uuid, c.stream, c.start_date, c.end_date")]
+    # v8: the daily collection's outcomes (lifecrm/domain/collect.py).
+    tables["collect_runs"] = [
+        {"seq": r["id"], "run_uuid": r["run_uuid"], "source": r["source"],
+         "outcome": r["outcome"], "hold": r["hold"], "reason": r["reason"],
+         "target": r["target"], "import_uuid": r["import_uuid"],
+         "counts": _parse(r["counts_json"]), "started_at": r["started_at"],
+         "finished_at": r["finished_at"]}
+        for r in q("SELECT * FROM collect_runs ORDER BY id")]
 
     for name, rows in tables.items():
         (out_dir / f"{name}.jsonl").write_text(_jl(rows), encoding="utf-8",
@@ -893,8 +901,8 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
     conn, tz = ctx["conn"], ctx["tz"]
     rows = conn.execute(
         "SELECT id, uuid, stream, started_at, utc_offset_sec, direction, title, "
-        "body, value, unit FROM observations WHERE journal_date=? AND status='active' "
-        "ORDER BY started_at, uuid", (jd,)).fetchall()
+        "body, value, unit, value_json FROM observations WHERE journal_date=? "
+        "AND status='active' ORDER BY started_at, uuid", (jd,)).fetchall()
     if not rows:
         return []
     who: dict[int, list[int]] = {}
@@ -977,8 +985,15 @@ def _observed_digest(ctx: dict, jd: str) -> list[str]:
             items.append(((0, r["started_at"], r["uuid"]),
                           f"- {_hm(r, tz)} {what(r)}{with_}{cite(r)}"))
         elif r["stream"] == "place_visit":
+            near = ""
+            if ctx.get("places_cfg") is not None:
+                from . import places
+                d = _parse(r["value_json"]) or {}
+                label = places.label_for(ctx["places_cfg"], d.get("lat"), d.get("lon")) \
+                    if isinstance(d, dict) else None
+                near = f" (near {_md_text(label)})" if label else ""
             items.append(((0, r["started_at"], r["uuid"]),
-                          f"- {_hm(r, tz)} at {what(r)}{cite(r)}"))
+                          f"- {_hm(r, tz)} at {what(r)}{near}{cite(r)}"))
         elif r["stream"] == "note":
             items.append(((3, r["started_at"], r["uuid"]),
                           f"- note: {what(r)}{cite(r)}"))
@@ -1087,6 +1102,11 @@ def _day_note(ctx: dict, jd: str, prev: str | None, nxt: str | None) -> str:
     nav = [f"← {_wikilink(prev)}" if prev else None, _wikilink("Index"),
            f"{_wikilink(nxt)} →" if nxt else None]
     lines += [" · ".join(n for n in nav if n), ""]
+    if ctx.get("same_day"):
+        from .memories import same_day_other_years
+        others = same_day_other_years(jd, ctx["days"])
+        if others:
+            lines += ["On this day: " + " · ".join(_wikilink(o) for o in others[:12]), ""]
     if summary:
         lines += [summary, ""]
     if measured:
@@ -1359,6 +1379,14 @@ def _index_note(ctx: dict, days: list[str], facts: dict[int, dict],
     return _render(lines)
 
 
+def _feature(cfg, key: str) -> bool:
+    """A read-side feature for the vault: off without a configuration."""
+    if cfg is None:
+        return False
+    from . import features
+    return features.enabled(cfg, key)
+
+
 def build_vault(conn: sqlite3.Connection, *, tz_name: str = "UTC",
                 notable: int = 10, cfg=None) -> dict[str, str]:
     """Every generated note as {vault-relative posix path: text}. Reads only:
@@ -1385,7 +1413,13 @@ def build_vault(conn: sqlite3.Connection, *, tz_name: str = "UTC",
         "JOIN imports i ON h.value = i.account WHERE h.entity_id IS NOT NULL")}
     ctx = {"conn": conn, "tz": ZoneInfo(tz_name), "notable": notable,
            "ents": ents, "stems": stems, "owners": owners,
-           "hubs": HUB_STEMS if cfg is not None else ()}
+           "hubs": HUB_STEMS if cfg is not None else (), "days": days,
+           # The read-side features (lifecrm/features.py) that reach the
+           # day notes: links to the same date in other years, and the town
+           # a place visit was near. Both pure functions of the database
+           # (and the gazetteer file), so the vault stays reproducible.
+           "same_day": _feature(cfg, "on_this_day"),
+           "places_cfg": cfg if _feature(cfg, "places") else None}
     notes: dict[str, str] = {}
     for i, jd in enumerate(days):
         notes[f"Journal/{jd[:4]}/{jd}.md"] = _day_note(

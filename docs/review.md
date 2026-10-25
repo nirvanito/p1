@@ -143,12 +143,29 @@ it, marked unresolved — never guessed onto an entity.
 
 | lens | sections | entries and loops kept |
 |---|---|---|
-| `week` (default) | days, entries, loops, journal_metrics, health, observations, titles, goals | all |
-| `health` | days, entries, loops, journal_metrics, health, goals | health, exercise, sleep, food |
-| `career` | entries, loops, career, titles, goals | work, learning |
-| `relationships` | entries, loops, relationships, observations, goals | social, or naming a person |
-| `finance` | entries, loops, finance, goals | purchase, or carrying an amount |
+| `week` (default) | days, entries, loops, journal_metrics, health, observations, titles, goals, experiments, trips | all |
+| `health` | days, entries, loops, journal_metrics, health, goals, experiments, weekdays | health, exercise, sleep, food |
+| `career` | entries, loops, career, titles, job_changes, goals, experiments | work, learning |
+| `relationships` | entries, loops, relationships, observations, goals, experiments | social, or naming a person |
+| `finance` | entries, loops, finance, subscriptions, goals, experiments | purchase, or carrying an amount |
 | `all` | every section | all |
+| `year` (`--year YYYY`) | journal_metrics, health, observations, relationships, career, finance, goals, experiments, year, trips, subscriptions, weekdays, job_changes | all |
+
+`--year 2025` is that calendar year (through today for the year in
+progress) and picks the `year` lens on its own. The read-side features
+([features.md](features.md)) add five sections, each left out of every lens
+while its feature is unchecked: `experiments` (plans with `data.experiment`
+whose change overlaps the period, measured as of the day after it, the rows
+of each side cited), `trips` (trips and countries from the places feature,
+[places.md](places.md)), `subscriptions` (recurring charges with a charge in
+the period), `weekdays` (each series by day of the week, over at least the 84
+days ending on the period's last day), `job_changes` (LinkedIn positions that
+changed in an export imported during the period). `year` holds what only a
+long period shows: people first in touch in it (their first contact on
+record, either tier), the towns with the most days and the countries first
+on record, books read, highlights, the most listened-to artists, and mood by
+month with a line of day-by-day "pixels". The `year` lens refuses while
+`year_review` is unchecked.
 
 A section a lens does not include is absent from the pack. `patterns`
 (the experimental pattern finder, [patterns.md](patterns.md)) is in every

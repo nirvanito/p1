@@ -621,7 +621,9 @@ def day(conn: sqlite3.Connection, cfg: Config, journal_date: str) -> dict:
     sources = [dict(r) for r in conn.execute(
         "SELECT id, uuid, type, recorded_at FROM sources WHERE journal_date=? "
         "ORDER BY COALESCE(recorded_at, created_at), id", (journal_date,))]
+    extras = _day_extras(conn, cfg, journal_date, observed)
     return {
+        **extras,
         "date": journal_date,
         "weekday": date.fromisoformat(journal_date).strftime("%A"),
         "today": today(cfg),
@@ -929,6 +931,7 @@ def person(conn: sqlite3.Connection, cfg: Config, entity_id: int) -> dict:
                     f"ORDER BY {_RECENT_FIRST} LIMIT 1",
                     (*their_args, *contact_args, direction)).fetchall()
                 out[f"last_{direction}"] = _obs_items(conn, cfg, hit)[0] if hit else None
+    out.update(_person_extras(conn, cfg, entity_id, ids))
     if is_owner:
         latest_entry = None
     if latest_entry or latest_obs:
@@ -1306,7 +1309,155 @@ def status(conn: sqlite3.Connection, cfg: Config) -> dict:
             "AND ignored=0 AND observation_count > 0")
     span = conn.execute("SELECT MIN(journal_date) AS lo, MAX(journal_date) AS hi "
                         "FROM entries WHERE status='active'").fetchone()
+    from .. import features
     return {"today": today(cfg), "timezone": cfg.timezone,
             "schema_version": db_mod.schema_version(conn),
             "counts": counts, "first_entry": span["lo"], "last_entry": span["hi"],
-            "demo": demo, "examples": examples(conn, cfg, demo)}
+            "demo": demo, "examples": examples(conn, cfg, demo),
+            "features": features.listing(cfg)}
+
+
+# ---------------------------------------------------------------- read-side features
+# (lifecrm/features.py) — each read is empty or absent while its feature is
+# unchecked, and none of them writes.
+
+def _feature(cfg: Config, key: str) -> bool:
+    from .. import features
+    try:
+        return features.enabled(cfg, key)
+    except DomainError:
+        return False
+
+
+def _day_extras(conn: sqlite3.Connection, cfg: Config, journal_date: str,
+                observed: list[dict]) -> dict:
+    """What the day view adds when the features are checked: earlier years
+    on this date, the day's prompts, the trip it belongs to, and the town
+    each located record is near."""
+    out: dict = {"on_this_day": None, "prompts": None, "trip": None, "near": {}}
+    d = date.fromisoformat(journal_date)
+    if _feature(cfg, "on_this_day"):
+        from .. import memories
+        out["on_this_day"] = memories.on_this_day(conn, cfg, d)
+    if _feature(cfg, "journal_prompts") and journal_date <= today(cfg) and _observed(conn):
+        from .. import prompts
+        out["prompts"] = prompts.moments(conn, cfg, journal_date)
+    if _feature(cfg, "places") and _observed(conn):
+        from .. import places
+        for group in observed:
+            if group["stream"] not in places.LOCATED_STREAMS:
+                continue
+            for item in group["items"]:
+                row = conn.execute("SELECT value_json FROM observations WHERE uuid=?",
+                                   (item["uuid"],)).fetchone()
+                det = _loads(row["value_json"]) if row else {}
+                label = places.label_for(cfg, det.get("lat"), det.get("lon"))
+                if label:
+                    out["near"][item["uuid"]] = label
+        tl = places.timeline(conn, cfg)
+        if tl["ok"]:
+            trip = next((t for t in tl["trips"] if t["start"] <= journal_date <= t["end"]),
+                        None)
+            if trip:
+                out["trip"] = {"line": places.describe_trip(trip),
+                               "start": trip["start"], "end": trip["end"],
+                               "day": (d - date.fromisoformat(trip["start"])).days + 1,
+                               "days": trip["days"], "first_uuid": trip["first_uuid"]}
+    return out
+
+
+def trips(conn: sqlite3.Connection, cfg: Config) -> dict:
+    """The Places page: home, trips (newest first), countries — from the
+    local GeoNames file (lifecrm/places.py)."""
+    from .. import places
+    if not _feature(cfg, "places"):
+        return {"enabled": False, "ok": False, "error": "unchecked in [features]",
+                "trips": [], "countries": [], "home": None}
+    if not _observed(conn):
+        return {"enabled": True, "ok": False, "error": "no observed tier in this database",
+                "trips": [], "countries": [], "home": None}
+    tl = places.timeline(conn, cfg)
+    if not tl["ok"]:
+        return {"enabled": True, "ok": False, "error": tl["error"], "trips": [],
+                "countries": [], "home": None}
+    return {"enabled": True, "ok": True, "error": None, "home": tl["home"],
+            "trip_km": tl["trip_km"], "attribution": places.ATTRIBUTION,
+            "trips": [{**places.json_safe_trip(t), "line": places.describe_trip(t)}
+                      for t in reversed(tl["trips"])],
+            "countries": tl["countries"]}
+
+
+def search(conn: sqlite3.Connection, cfg: Config, q: str, **filters) -> dict:
+    """lifecrm/search.py for the Search page."""
+    from .. import search as search_mod
+    if not _feature(cfg, "search"):
+        return {"enabled": False, "query": q, "total": 0, "results": [],
+                "facets": {"tier": {}, "stream": {}, "year": {}, "person": []}}
+    return {"enabled": True, **search_mod.search(conn, cfg, q, **filters)}
+
+
+_CONVERSATION_STREAMS = recall.TEXT_STREAMS + recall.EMAIL_STREAMS + recall.CALL_STREAMS
+
+
+def conversation(conn: sqlite3.Connection, cfg: Config, entity_id: int, *,
+                 before: str | None = None, limit: int = 60) -> dict:
+    """One thread with a person across every app (Timelinize's view): the
+    messages and emails that passed between you and them, and the calls —
+    a group thread is not a conversation with each member — oldest first,
+    `limit` at a time going back from `before` (a started_at)."""
+    if not _feature(cfg, "conversations"):
+        return {"enabled": False, "items": [], "older": None}
+    row = conn.execute("SELECT id, name FROM entities WHERE id=?", (entity_id,)).fetchone()
+    if row is None:
+        raise NotFound(f"entity id={entity_id} does not exist")
+    out = {"enabled": True, "entity_id": entity_id, "name": row["name"], "items": [],
+           "older": None, "streams": []}
+    if not _observed(conn):
+        return out
+    roots = _merged_into_map(conn)
+    ids = [entity_id] + [e for e, root in roots.items() if root == entity_id]
+    owners = frozenset(_owner_entities(conn, cfg, roots))
+    from .. import owner as owner_mod
+    owner_handles = owner_mod.identity(conn, cfg).handles
+    rows = conn.execute(
+        _OBS_SELECT + f"WHERE o.status='active' AND o.stream IN ({_marks(_CONVERSATION_STREAMS)}) "
+        "AND o.id IN (SELECT p.observation_id FROM observation_participants p "
+        "JOIN entity_handles h ON h.kind=p.handle_kind AND h.value=p.handle_value "
+        f"WHERE h.entity_id IN ({_marks(ids)}) AND h.ignored=0) "
+        + ("AND o.started_at < ? " if before else "")
+        + "ORDER BY o.started_at DESC, o.id DESC LIMIT ?",
+        (*_CONVERSATION_STREAMS, *ids, *([before] if before else []), limit * 3 + 1)).fetchall()
+    parts = _participants(conn, [r["id"] for r in rows])
+    kept = []
+    for r in rows:
+        others = {(p["kind"], (p["value"] or "").lower()) for p in parts.get(r["id"], [])
+                  if p["entity_id"] not in owners and p["entity_id"] not in ids
+                  and (p["kind"], (p["value"] or "").lower()) not in owner_handles
+                  and not (p["display_name"] or "").lower().startswith("you (")}
+        if others:
+            continue                     # a group thread or a Cc: not between the two of you
+        kept.append(r)
+        if len(kept) > limit:
+            break
+    more = len(kept) > limit
+    kept = kept[:limit]
+    out["items"] = list(reversed(_obs_items(conn, cfg, kept)))
+    out["older"] = kept[-1]["started_at"] if more and kept else None
+    out["streams"] = sorted({r["stream"] for r in kept})
+    return out
+
+
+def _person_extras(conn: sqlite3.Connection, cfg: Config, entity_id: int,
+                   family: list[int]) -> dict:
+    out: dict = {"gift_ideas": [], "job_changes": [], "links": [],
+                 "conversation": _feature(cfg, "conversations")}
+    if _feature(cfg, "gift_ideas"):
+        from .. import gifts
+        out["gift_ideas"] = gifts.ideas_for(conn, family, include_given=True)
+    if _observed(conn) and _feature(cfg, "job_changes"):
+        from .. import jobchanges
+        out["job_changes"] = jobchanges.for_person(conn, cfg, entity_id)
+    if _observed(conn) and _feature(cfg, "link_memory"):
+        from .. import links
+        out["links"] = links.from_person(conn, cfg, entity_id, limit=12)
+    return out
