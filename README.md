@@ -337,6 +337,27 @@ which every claim cites a pack id. The pack itself holds no interpretation.
 A brief you keep becomes a `reflection` entry through the normal import →
 ingest → review → apply gate ([docs/review.md](docs/review.md)).
 
+**Features you can check and uncheck**
+
+```
+lifecrm features                             # the checklist of 14 read-side features: [x] on, [ ] off
+lifecrm features uncheck subscriptions 2     # by key or number; check ... / --all / features pick
+lifecrm onthisday                            # the same date in earlier years: entries, photos, places, people
+lifecrm prompts                              # yesterday's moments worth a word in the journal (a prompt, never an entry)
+lifecrm places fetch                         # once: GeoNames town names into data/geo/ (the only network call)
+lifecrm places trips                         # trips away from home; `places countries`, `places where <date>`
+lifecrm subscriptions                        # recurring charges, new ones, price rises
+lifecrm experiments                          # plans with data.experiment: before vs during, co-occurrence not cause
+lifecrm search lake bled                     # every match across journal and imports, with facets
+lifecrm links nytimes.com                    # where a link or site turned up, and who sent it
+lifecrm conversation Jake                    # one thread with a person across texts, chats, email, calls
+lifecrm weekdays                             # each series by day of the week; `review --year 2025` for the year
+```
+
+Each one only reads and cites its rows; unchecking it hides it everywhere
+(nudges and /morning, the review pack, `ask`, the web UI, the vault) and
+deletes nothing ([docs/features.md](docs/features.md)).
+
 **The assistant: what matters today**
 
 ```
@@ -475,8 +496,10 @@ old file is kept under `data/`. Every setting is in
   `entities link add`, never inferred, and `ask` cites them through the
   entry that stated them.
 - **Read-only front ends.** `serve` and `dashboard` read snapshots, and
-  serve's only write is the question log. `ask` retrieves over a read-only
-  connection and then logs the question unless you pass `--no-log`.
+  serve writes nothing to the database but the question log; started with
+  a key, its Sources page also writes the feature switches in config.toml.
+  `ask` retrieves over a read-only connection and then logs the question
+  unless you pass `--no-log`.
   `review` never writes the database. `voice` drafts notes into the
   inbox and never applies them. The only path into the confirmed tier is
   `/log` → ingest → review → apply.

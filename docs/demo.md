@@ -241,6 +241,15 @@ note in the demo, with `--root demo/android` on every lifecrm command". It
 goes through the same intake, draft, ingest, review and apply loop as real
 data.
 
+**The read-side features** ([features.md](features.md)): the demo writes a
+small gazetteer of the six real towns its persona was in
+(`data/geo/places.tsv`, in place of `places fetch`), so places work offline:
+`python -m lifecrm --root <demo> places trips` finds the 2022 trip to
+Ljubljana and Bled, `ask "when was I in Slovenia"` answers from it, and the
+web UI's Places page and the vault's `Trips.md` show it. `features`,
+`onthisday`, `highlights`, `search bled`, `conversation Jake`, `weekdays` and
+`review --year 2022` all run against the demo too.
+
 ## What the demo plays itself
 
 Three jobs belong to a person in real use. The demo does them itself and

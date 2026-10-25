@@ -59,6 +59,16 @@ a closed task renumbers the next run.
   is defensible, "you forgot to reply" is not. Keep that register.
 - `notes` says what could not be computed (no `[nutrition]` profile, a bad
   `[owner]` table). A thin pack gets a short brief that says it is thin.
+- The read-side features (docs/features.md; each `{"enabled": false}` while
+  the user unchecked it) add more to read. Under an `agenda` event, `prep`
+  lists `A#` ids, one per person on it: `index[A#].lines` is what the records
+  hold about them (last message each way, open loops, LinkedIn position, a
+  birthday, gift ideas), each line ending in the ids it rests on.
+  `on_this_day.years` is the same date in earlier years (`D#` that journal
+  day, `E#` its entries, `O#` its records, `years_ago`). `prompts` is
+  yesterday's moments worth a word in the journal, `highlights` today's three
+  book highlights. Newer nudge kinds — `experiment`, `anniversary`,
+  `price_change`, `new_recurring`, `job_change` — read like the others.
 
 ## Step 3 — write the brief
 
@@ -78,6 +88,15 @@ Rules (non-negotiable):
   advice. A nutrient below reference is at most a question for a clinician;
   the pack's own disclaimer line says so and you keep its spirit.
 - Observed items are what the records show, not what happened.
+
+**From the read-side features (optional, each only when the pack holds
+it).** A meeting today with prep: one sentence for the person most worth
+preparing for, citing `[A#]`. An earlier year on this date: one sentence,
+"N years ago today ..." citing its `[D#]`/`[E#]`/`[O#]` (the years count is
+the pack's, so it checks). Prompts: at most two, as questions for tonight's
+note ("anything to say about the visit to Barton Springs? [O7]") — a prompt
+is never a fact about the day. One highlight may close the brief, quoted
+exactly, citing its `[O#]`. Keep the whole brief under 250 words.
 
 **Questions (collect, optional).** For each `first_import` or
 `mass_removal` collect nudge, at most three, end the brief with one short
@@ -108,7 +127,7 @@ lists each sentence whose numbers or dates are not in the lines it cites —
 fix the brief (remove the claim or cite the right id) and re-run until it
 passes. The check verifies ids and numbers; whether a sentence's claim
 follows from them is your responsibility. Then show the user the brief with
-a **Sources** list: each cited `N#` with the `E#`/`O#`/`C#` ids it rests on.
+a **Sources** list: each cited `N#` (and `A#`) with the `E#`/`O#`/`C#` ids it rests on.
 
 When the user answers a collect question:
 

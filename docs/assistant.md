@@ -80,10 +80,31 @@ through `lifecrm/domain/` like every other write.
 | `collect` | a source whose newest daily run held it — a source new on this computer (the title is the question: "New on this computer: browser history. Import it?"), a large removal, records the reader cannot validate — or that failed (or, when you named it, found nothing); never one you declined; gone once a run is routine (docs/collect.md) | `C#` that run's outcome | `collect:<source>:<why>` (`first_import`, `mass_removal`, `invalid`, `missing`, `error`) |
 | `stale` | a connector's newest record is older than its own `stale_after_days` (the rule `doctor` and the Sources page share) | `O#` the newest row | `stale:<connector>` |
 | `lapsed` | a person with at least 6 contact days in `lapsed_days` (180) whose days since the last one exceed twice their own median gap (and a week); skipped when they already have a follow-up | `O#`/`E#` the last contact | `lapsed:<entity id>` |
+| `experiment` | an open plan with `data.experiment` that has started: its outcome during the change against the days before, over known days ([features.md](features.md)) | `E#` the plan, plus the rows of each side | `experiment:<entry uuid>` |
+| `anniversary` | an entry with `data.anniversary` whose next occurrence is within `birthday_days` | `E#` the entry | `anniversary:<entry uuid>:<year>` |
+| `price_change` | a recurring charge's latest is more than max(1.99, 5 %) above the one before, within 45 days | `O#` both charges | `price:<merchant>:<date>` |
+| `new_recurring` | a recurring charge became visible recently (its newest within 45 days) | `O#` its charges | `recurring:<merchant>` |
+| `job_change` | a linked person's LinkedIn position or company changed in an export imported within 30 days | `O#` the connection row | `job:<entity id>:<audit id>` |
+
+The last five come from the read-side features and leave the list while
+their feature is unchecked (`lifecrm features`, [features.md](features.md));
+so does the gift-idea line a birthday nudge gains (`gift_ideas`).
 
 The **agenda** is a separate list, not a nudge: the calendar events of today
 and tomorrow (local time, who is on them, cancelled ones marked), each an
-`O#`. A multi-day event is listed on the day it starts.
+`O#`. A multi-day event is listed on the day it starts. Under each event that
+is not cancelled, **meeting prep** (`meeting_prep`) gives one `A#` per linked
+person on it, never you: the last message from them and from you, open tasks
+and plans naming them, the newest journal entry you were in together,
+relationships you confirmed, their LinkedIn position, a birthday within 30
+days and gift ideas — each line ending in the ids it rests on, so a brief
+citing the `A#` can state any of it.
+
+Three more sections ride the pack, none of them a nudge: `on_this_day` (the
+same date in earlier years: `D#` the journal day, `E#` its entries, `O#` its
+records), `prompts` (yesterday's moments worth a word in the journal — a
+prompt, never an entry) and `highlights` (three book highlights in a fixed
+rotation). Each is `{"enabled": false}` while its feature is unchecked.
 
 ## Coverage: what a missing row means
 
@@ -219,7 +240,9 @@ event at `reminder_hour` (default 09:00) local on its due day with an alarm
 — an overdue one sits on **today**, so the phone nags each morning until it
 is closed, snoozed or dismissed; and every birthday from a linked contact
 card, as an all-day event with a morning alarm, one dated occurrence for this
-year and one for next. Never a yearly rule: a snooze moves one occurrence and
+year and one for next — and, while `gift_ideas` is checked, every anniversary
+you recorded (`data.anniversary`, [features.md](features.md)) the same way,
+under the anniversary nudge's key. Never a yearly rule: a snooze moves one occurrence and
 a dismissal drops one. A snoozed item sits on its snooze day; a dismissed
 one is left out. The nudge keys and the event UIDs line up one to one
 (`lifecrm-due-<uuid>@lifecrm`, `lifecrm-bday-<entity id>-<year>@lifecrm`).
@@ -336,5 +359,6 @@ Coverage declarations exist only for the sources whose formats carry a
 guarantee (the table above); the others stay unknown. The pattern finder's
 full-strength validation gate has been run and recorded in
 [patterns.md](patterns.md) (2026-10-25, every suite passing); patterns stay
-off by default until you turn them on. Anniversaries have no source field
-yet, and a birthday without a contact card has no home in the schema.
+off by default until you turn them on. An anniversary now has a home — an
+entry's `data.anniversary` ([features.md](features.md)) — but a birthday
+without a contact card still has none in the schema.

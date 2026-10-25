@@ -22,10 +22,13 @@ def register(app: typer.Typer) -> None:
 
 def review(
     lens: str = typer.Option(
-        "week", "--lens",
-        help="week | health | career | relationships | finance | all"),
+        None, "--lens",
+        help="week | health | career | relationships | finance | all | year "
+             "(default week; year with --year)"),
     week: str = typer.Option(None, "--week", metavar="YYYY-Www",
                              help="An ISO week, e.g. 2026-W42"),
+    year: int = typer.Option(None, "--year", metavar="YYYY",
+                             help="A calendar year (the year in review: --lens year)"),
     start: str = typer.Option(None, "--start", metavar="YYYY-MM-DD",
                               help="First day of a custom period"),
     end: str = typer.Option(None, "--end", metavar="YYYY-MM-DD",
@@ -60,6 +63,8 @@ def review(
     from ..cli import _cfg, _conn, _echo_json, _fail
     from ..domain.util import DomainError
 
+    if lens is None:
+        lens = "year" if year is not None else "week"
     if write_only and as_json:
         _fail("--write-only writes files and --json prints the pack — pick one")
     if out and not check:
@@ -80,7 +85,7 @@ def review(
     cfg = _cfg()
     try:
         period = review_mod.resolve_period(cfg, week=week, start=start, end=end,
-                                           days=days)
+                                           days=days, year=year)
     except DomainError as e:
         _fail(str(e))
     conn = _conn(cfg, readonly=True)

@@ -121,7 +121,19 @@ Nothing reaches the database except through `lifecrm apply` on that diff.
   needs before a period is decided). The domain layer validates the shape on
   create and edit, a goal needs kind `plan`, and `lifecrm ingest` reports a
   bad one as `entries[i].data.goal...`. Contract version stays 2: the field
-  was already an optional object.
+  was already an optional object. Three more shapes are read by the
+  read-side features ([features.md](features.md)) and checked the same way,
+  on every write path, whether or not the feature is shown: an
+  **experiment** is a `plan` whose `data.experiment` names a change and the
+  series it should move — `{"change": "no caffeine after 2pm", "outcome":
+  "sleep", "days": 14}` with optional `start`, `baseline_days` (7-90),
+  `hope` (`up` | `down`) and `min_known`; a **gift idea** is any entry with
+  `data.gift` (`true`, or `{"status": "idea" | "given" | "dropped",
+  "occasion": ..., "note": ...}`) that mentions the person it is for; an
+  **anniversary** is any entry with `data.anniversary` (`{"date":
+  "1988-10-24" or "--10-24", "what": "wedding"}`) that mentions its people.
+  `/log` proposes them when you say them; a bad one is
+  `entries[i].data.experiment...` (`.gift`, `.anniversary`).
 - **entities[]** — `{"ref": "existing", "id": N, "role": R}` or
   `{"ref": "new", "type": T, "name": "...", "aliases": [...], "role": R}`.
   A `new` entity whose name exactly matches an existing active entity (or

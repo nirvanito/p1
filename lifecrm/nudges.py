@@ -14,6 +14,14 @@ durable key (`due:<entry uuid>`, `birthday:<entity id>:<year>`, ...), never to
 the `N#` of one run, because an import or a closed task between two runs
 renumbers everything.
 
+Beside the nudges, the read-side features (lifecrm/features.py, each one
+checked or unchecked in [features]) add what is not a nudge: `on_this_day`
+(earlier years on today's date), `prompts` (yesterday's moments worth a word
+in the journal), `highlights` (a few book highlights in a fixed rotation),
+and a `prep` brief under each agenda event for the people on it (A#, one per
+person). Their nudge kinds — `experiment`, `anniversary`, `price_change`,
+`new_recurring`, `job_change` — sort among the others by KIND_ORDER.
+
 A run can be saved (`--out FILE`); its `pack_id` hashes the pack's whole
 content, so a changed title, date, value or state means a different pack. A
 brief written from a saved pack is checked against that file (`check`),
@@ -54,8 +62,12 @@ _DAY_KEYS = ("due_days", "birthday_days", "nutrient_days", "follow_up_days",
              "follow_up_window", "lapsed_days", "drift_recent", "drift_baseline")
 _FLAG_WORDS = {"true": True, "yes": True, "on": True, "1": True,
                "false": False, "no": False, "off": False, "0": False}
-KIND_ORDER = ("reminder", "follow_up", "goal", "drift", "birthday", "nutrient", "collect",
-              "stale", "lapsed")
+KIND_ORDER = ("reminder", "follow_up", "goal", "experiment", "drift", "birthday",
+              "anniversary", "nutrient", "price_change", "new_recurring", "job_change",
+              "collect", "stale", "lapsed")
+# How long a price rise, a new subscription or a job change stays news.
+RECENT_DAYS = 45
+JOB_CHANGE_DAYS = 30
 # Drift: what counts as a change between the last `drift_recent` days and the
 # `drift_baseline` days before them. A level compares means and needs 3
 # recent and 8 baseline known days; a weekly rate needs 80 % of both windows
@@ -289,17 +301,140 @@ def _birthdays(conn: sqlite3.Connection, cfg: Config, s: dict, today: date,
         if current is None or (current[0] is None and year is not None):
             best[r["entity_id"]] = (year, occ, r)
     out = []
+    from . import features
+    gift_ideas = features.enabled(cfg, "gift_ideas")
     for entity_id, (year, occ, r) in best.items():
         delta = (occ - today).days
         when = ("is today" if delta == 0 else "is tomorrow" if delta == 1
                 else f"is in {_days(delta)} ({occ.isoformat()})")
         age = f", turning {occ.year - year}" if year else ""
         oid = ids.cite("O", ("obs", r["uuid"]), _obs_item(r))
+        detail = f"from a contact card dated {r['journal_date']} {TIER_NOTE}"
+        cites = [oid]
+        if gift_ideas:
+            from . import gifts
+            from .recall import _entity_family
+            ideas = gifts.ideas_for(conn, _entity_family(conn, entity_id))
+            if ideas:
+                cites += [ids.cite("E", g["uuid"], g) for g in ideas]
+                detail += "; gift ideas you noted: " + "; ".join(
+                    f"{g['title']} ({g['date']})" for g in ideas)
         out.append({"kind": "birthday", "key": f"birthday:{entity_id}:{occ.year}",
                     "title": f"{r['name']}'s birthday {when}{age}",
-                    "detail": f"from a contact card dated {r['journal_date']} {TIER_NOTE}",
-                    "date": occ.isoformat(), "ids": [oid], "tier": "observed",
-                    "entity_id": entity_id, "_sort": (occ.isoformat(), r["name"])})
+                    "detail": detail, "date": occ.isoformat(), "ids": cites,
+                    "tier": "observed", "entity_id": entity_id,
+                    "_sort": (occ.isoformat(), r["name"])})
+    return out
+
+
+def _anniversaries(conn: sqlite3.Connection, s: dict, today: date, ids: _Ids,
+                   owners: frozenset) -> list[dict]:
+    """Entries with data.anniversary whose next occurrence is within
+    birthday_days (lifecrm/gifts.py). Confirmed: you said them."""
+    from . import gifts
+    out = []
+    for a in gifts.anniversaries(conn, today, s["birthday_days"], owners):
+        eid = ids.cite("E", a["uuid"], {"type": "entry", "tier": "confirmed",
+                                        "uuid": a["uuid"], "date": a["date"],
+                                        "kind": a["kind"], "title": a["title"]})
+        delta = a["in_days"]
+        when = ("is today" if delta == 0 else "is tomorrow" if delta == 1
+                else f"is in {_days(delta)} ({a['occurs']})")
+        what = f"{a['what'].capitalize()} anniversary" if a["what"] else "Anniversary"
+        who = f" with {', '.join(a['people'])}" if a["people"] else ""
+        years = f", {a['years']} year{'' if a['years'] == 1 else 's'}" if a["years"] else ""
+        out.append({"kind": "anniversary", "key": f"anniversary:{a['uuid']}:{a['occurs'][:4]}",
+                    "title": f"{what}{who} {when}{years}",
+                    "detail": f"from your entry of {a['date']}, dated {a['on']}",
+                    "date": a["occurs"], "ids": [eid], "tier": "confirmed",
+                    "_sort": (a["occurs"], a["title"])})
+    return out
+
+
+def _subscription_nudges(conn: sqlite3.Connection, cfg: Config, today: date,
+                         ids: _Ids) -> list[dict]:
+    """A recurring charge that rose in price, or a new one, within the last
+    RECENT_DAYS days (lifecrm/subscriptions.py). Observed."""
+    from . import subscriptions as subs
+    out = []
+    try:
+        data = subs.detect(conn, cfg, today)
+    except sqlite3.OperationalError:
+        return []
+    cutoff = (today - timedelta(days=RECENT_DAYS)).isoformat()
+    for x in data["items"]:
+        if x["last_date"] < cutoff:
+            continue
+        cur = x["currency"]
+        if x["price_rise"]:
+            latest = ids.cite("O", ("obs", x["latest"]["uuid"]), x["latest"])
+            prev = ids.cite("O", ("obs", x["previous"]["uuid"]), x["previous"])
+            out.append({"kind": "price_change", "key": f"price:{x['slug']}:{x['last_date']}",
+                        "title": f"{x['merchant']}: {subs.money(x['amount'], cur)} charged "
+                                 f"{x['last_date']}, up from {subs.money(x['previous_amount'], cur)} "
+                                 f"on {x['previous_date']}",
+                        "detail": f"a {x['cadence']} charge, {x['count']} charges since "
+                                  f"{x['first_date']}; the bank's own description {TIER_NOTE}",
+                        "date": x["last_date"], "ids": [latest, prev], "tier": "observed",
+                        "_sort": (x["last_date"], x["merchant"])})
+        if x["new"]:
+            oid = ids.cite("O", ("recurring", x["key"], cur), subs.count_item(x))
+            out.append({"kind": "new_recurring", "key": f"recurring:{x['slug']}",
+                        "title": f"{x['merchant']}: a new {x['cadence']} charge of "
+                                 f"{subs.money(x['amount'], cur)}, {x['count']} so far since "
+                                 f"{x['first_date']}",
+                        "detail": f"next about {x['next_due']}; the bank's own description "
+                                  f"{TIER_NOTE}",
+                        "date": x["first_date"], "ids": [oid], "tier": "observed",
+                        "_sort": (x["first_date"], x["merchant"])})
+    return out
+
+
+def _experiment_nudges(conn: sqlite3.Connection, cfg: Config, today: date,
+                       ids: _Ids) -> list[dict]:
+    """Every open plan with data.experiment that has started (lifecrm/
+    experiments.py): how its outcome stands against the days before. The
+    plan is confirmed; the rows behind each side come along."""
+    from . import experiments as exp_mod
+    out = []
+    for e in exp_mod.current(conn, cfg, today):
+        if not e.get("error") and e["status"] == "planned":
+            continue
+        eid = ids.cite("E", e["uuid"], {"type": "entry", "tier": "confirmed",
+                                        "uuid": e["uuid"], "date": e["date"],
+                                        "kind": "plan", "title": e["title"]})
+        cites = [eid]
+        detail = "a plan you set, measured from the records; co-occurrence, not cause"
+        if not e.get("error"):
+            for side, label in (("baseline", "before"), ("during", "during")):
+                part = e[side]
+                if part["refs"]:
+                    cites += _cite_rows(ids, ("experiment", e["uuid"], side), part["refs"],
+                                        part["days"], f"{e['label']} {label} {e['title']}")
+            if e["tier"] == "observed":
+                detail += f" {TIER_NOTE}"
+        out.append({"kind": "experiment", "key": f"experiment:{e['uuid']}",
+                    "title": exp_mod.describe(e), "detail": detail,
+                    "date": today.isoformat(), "ids": cites, "tier": "confirmed",
+                    "_sort": (e.get("status") != "running", e["title"])})
+    return out
+
+
+def _job_change_nudges(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids,
+                       owners: frozenset) -> list[dict]:
+    """A linked person's LinkedIn position or company changed in an export
+    imported within JOB_CHANGE_DAYS (lifecrm/jobchanges.py). Observed."""
+    from . import jobchanges
+    start = (today - timedelta(days=JOB_CHANGE_DAYS)).isoformat()
+    out = []
+    for c in jobchanges.changes(conn, cfg, start=start, end=today.isoformat(), owners=owners):
+        oid = ids.cite("O", ("obs", c["row"]["uuid"]), c["row"])
+        out.append({"kind": "job_change", "key": f"job:{c['entity_id']}:{c['audit_id']}",
+                    "title": jobchanges.describe(c),
+                    "detail": f"from two of your LinkedIn exports (audit row {c['audit_id']}) "
+                              f"{TIER_NOTE}",
+                    "date": c["seen_on"], "ids": [oid], "tier": "observed",
+                    "entity_id": c["entity_id"], "_sort": (c["seen_on"], c["name"])})
     return out
 
 
@@ -458,6 +593,8 @@ def _agenda(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids,
     except sqlite3.OperationalError:
         return []
     parts = api._participants(conn, [r["id"] for r in rows]) if rows else {}
+    from . import prep as prep_mod
+    people = prep_mod.agenda_people(conn, [r["id"] for r in rows], owners, owner_handles)
     out = []
     for r in rows:
         d = _detail(r["value_json"])
@@ -476,8 +613,43 @@ def _agenda(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids,
                     "all_day": all_day, "title": r["title"] or "(untitled)",
                     "with": who, "location": d.get("location"),
                     "calendar": d.get("calendar"),
-                    "cancelled": (d.get("status") or "").lower() == "cancelled"})
+                    "cancelled": (d.get("status") or "").lower() == "cancelled",
+                    "_people": people.get(r["id"], [])})
     return out
+
+
+def prep_line(item: dict) -> str:
+    """One durable line for an A#: who, and everything the brief says."""
+    return f"prep for {item['name']} · " + " · ".join(item["lines"]) if item["lines"] \
+        else f"prep for {item['name']} · nothing on record"
+
+
+def _prep(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids, agenda: list,
+          owners: frozenset, owner_handles: frozenset) -> None:
+    """Under each agenda event that is not cancelled, one A# per linked
+    person on it (lifecrm/prep.py), shared by every event they are on."""
+    from . import prep as prep_mod
+    done: dict[int, str] = {}
+    for a in agenda:
+        a["prep"] = []
+        if a["cancelled"]:
+            continue
+        for eid in a["_people"]:
+            if eid not in done:
+                p = prep_mod.person_prep(conn, cfg, eid, today, owners, owner_handles)
+
+                def cite(item: dict) -> str:
+                    prefix = "E" if item["type"] == "entry" else "O"
+                    key = item["uuid"] if prefix == "E" else ("obs", item["uuid"])
+                    return ids.cite(prefix, key, item)
+
+                lines_ = prep_mod.lines(p, cite)
+                done[eid] = ids.cite("A", ("prep", eid), {
+                    "type": "prep", "tier": "mixed", "entity_id": eid, "name": p["name"],
+                    "lines": [f"{x['text']}" + (f" [{', '.join(x['ids'])}]" if x["ids"] else "")
+                              for x in lines_],
+                    "rests_on": sorted({i for x in lines_ for i in x["ids"]})})
+            a["prep"].append(done[eid])
 
 
 def _cite_rows(ids: _Ids, key: tuple, refs: list[tuple[str, str]], days: list[str],
@@ -830,6 +1002,8 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
         today = date.fromisoformat(today)
     now = now or datetime.now(timezone.utc)
     s = settings(cfg)
+    from . import features
+    feat = features.settings(cfg)
     ids = _Ids()
     notes: list[str] = []
     want_patterns = (s["patterns"] == "on") if patterns is None else patterns
@@ -850,9 +1024,17 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
         follow_ups, followed = [], set()
     found += follow_ups
     found += _goals(conn, cfg, today, ids)
+    if feat["experiments"]:
+        found += _experiment_nudges(conn, cfg, today, ids)
     found += _drift(conn, cfg, s, today, ids, notes)
     found += _birthdays(conn, cfg, s, today, ids, owners)
+    if feat["gift_ideas"]:
+        found += _anniversaries(conn, s, today, ids, owners)
     found += _nutrients(conn, cfg, s, today, ids, notes)
+    if feat["subscriptions"]:
+        found += _subscription_nudges(conn, cfg, today, ids)
+    if feat["job_changes"]:
+        found += _job_change_nudges(conn, cfg, today, ids, owners)
     found += _collect(conn, cfg, ids, notes)
     found += _stale(conn, now, ids)
     try:
@@ -860,6 +1042,11 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
     except sqlite3.OperationalError:
         pass
     agenda = _agenda(conn, cfg, today, ids, owners, owner_handles)
+    if feat["meeting_prep"]:
+        _prep(conn, cfg, today, ids, agenda, owners, owner_handles)
+    for a in agenda:
+        a.pop("_people", None)
+    extras = _extras(conn, cfg, today, ids, feat)
 
     try:
         states = nudge_state.state_for(conn)
@@ -904,9 +1091,66 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
     pack = {"pack_version": PACK_VERSION, "today": today.isoformat(),
             "as_of": as_of_date(conn, cfg), "settings": s,
             "nudges": nudges_out, "agenda": agenda, "hidden": hidden_out,
-            "patterns": patterns_block, "notes": notes, "index": ids.index}
+            "patterns": patterns_block, **extras, "features": feat,
+            "notes": notes, "index": ids.index}
     pack["pack_id"] = pack_id(pack)
     return pack
+
+
+def _extras(conn: sqlite3.Connection, cfg: Config, today: date, ids: _Ids,
+            feat: dict) -> dict:
+    """The read-side sections that are not nudges: on this day, yesterday's
+    journal prompts, today's highlights. An unchecked one is {'enabled':
+    False}; each item cites its rows."""
+    out = {}
+    if feat["on_this_day"]:
+        from . import memories
+        otd = memories.on_this_day(conn, cfg, today)
+        years = []
+        for y in otd["years"]:
+            items = []
+            if y["summary"]:
+                did = ids.cite("D", ("day", y["date"]), {"type": "day", "date": y["date"]})
+                items.append({"id": did, "text": y["summary"], "tier": "confirmed"})
+            for e in y["entries"]:
+                items.append({"id": ids.cite("E", e["uuid"], e),
+                              "text": f"{e['kind']}: {e['title']}", "tier": "confirmed"})
+            for r in y["records"]:
+                key = ("obs", r["uuid"]) if r["type"] == "observation" else \
+                    ("otd", y["date"], r.get("stream"))
+                item = {k: v for k, v in r.items() if k != "text"}
+                items.append({"id": ids.cite("O", key, item), "text": r["text"],
+                              "tier": "observed"})
+            years.append({"year": y["year"], "date": y["date"], "years_ago": y["years_ago"],
+                          "items": items})
+        out["on_this_day"] = {"enabled": True, "date": today.isoformat(), "years": years}
+    else:
+        out["on_this_day"] = {"enabled": False}
+    if feat["journal_prompts"]:
+        from . import prompts as prompts_mod
+        day = (today - timedelta(days=1)).isoformat()
+        data = prompts_mod.moments(conn, cfg, day)
+        items = []
+        for p in data["prompts"]:
+            rec = p["record"]
+            key = ("obs", rec["uuid"]) if rec["type"] == "observation" else \
+                ("prompt", day, p["kind"])
+            items.append({"id": ids.cite("O", key, rec), "kind": p["kind"], "text": p["text"]})
+        out["prompts"] = {"enabled": True, "date": day, "items": items,
+                          "covered": data["covered"]}
+    else:
+        out["prompts"] = {"enabled": False}
+    if feat["highlights"]:
+        from . import highlights as hl
+        data = hl.for_day(conn, today)
+        out["highlights"] = {"enabled": True, "date": today.isoformat(), "total": data["total"],
+                             "items": [{"id": ids.cite("O", ("obs", h["uuid"]),
+                                                        {k: v for k, v in h.items() if k != "text"}),
+                                        "text": h["text"], "title": h["title"],
+                                        "date": h["date"]} for h in data["items"]]}
+    else:
+        out["highlights"] = {"enabled": False}
+    return out
 
 
 def pack_id(pack: dict) -> str:
@@ -943,7 +1187,8 @@ def lines(pack: dict) -> dict[str, str]:
         kind = item.get("type")
         out[cid] = (nudge_line(item) if kind == "nudge" else
                     pattern_line(item) if kind == "pattern" else
-                    collect_line(item) if kind == "collect" else index_line(item))
+                    collect_line(item) if kind == "collect" else
+                    prep_line(item) if kind == "prep" else index_line(item))
     return out
 
 
@@ -954,6 +1199,10 @@ def check(text: str, pack: dict) -> dict:
     context = [f"TODAY: {pack['today']}"]
     if any(n["kind"] == "nutrient" for n in pack["nudges"] + pack.get("hidden", [])):
         context.append(f"NUTRITION: {nutrients.DISCLAIMER}")
+    for y in (pack.get("on_this_day") or {}).get("years") or ():
+        # 'Three years ago today': the count of years is the pack's, not a record's.
+        context.append(f"ON THIS DAY: {y['date']} was {y['years_ago']} year(s) before "
+                       f"{pack['today']}")
     return check_text(text, lines(pack), context)
 
 
@@ -975,6 +1224,29 @@ def render_lines(pack: dict, *, show_hidden: bool = False) -> list[str]:
             who = f" with {', '.join(a['with'])}" if a["with"] else ""
             out.append(f"  [{a['id']}] {when}  {a['title']}{who}"
                        + (" (cancelled)" if a["cancelled"] else ""))
+            for pid in a.get("prep") or ():
+                p = pack["index"][pid]
+                out.append(f"       [{pid}] before you meet {p['name']}:")
+                out += [f"         - {line}" for line in p["lines"]] or \
+                    ["         - nothing on record"]
+    otd = pack.get("on_this_day") or {}
+    if otd.get("years"):
+        out.append(f"On this day ({otd['date'][5:]} in earlier years):")
+        for y in otd["years"]:
+            out.append(f"  {y['date']} ({y['years_ago']} year{'' if y['years_ago'] == 1 else 's'}"
+                       f" ago):")
+            out += [f"    [{it['id']}] {it['text']}" for it in y["items"]]
+    pr = pack.get("prompts") or {}
+    if pr.get("items"):
+        out.append(f"Worth a word in the journal for {pr['date']} (imports, observed — a "
+                   f"prompt, never an entry):")
+        out += [f"  [{it['id']}] {it['text']}" for it in pr["items"]]
+    hl = pack.get("highlights") or {}
+    if hl.get("items"):
+        out.append(f"From your highlights ({len(hl['items'])} of {hl['total']}, a fixed "
+                   f"rotation):")
+        out += [f"  [{it['id']}] \"{it['text']}\" — {it['title'] or 'a book'}"
+                for it in hl["items"]]
     if show_hidden and pack["hidden"]:
         out.append("Hidden:")
         for n in pack["hidden"]:
@@ -996,6 +1268,6 @@ def render_lines(pack: dict, *, show_hidden: bool = False) -> list[str]:
         out.append(f"note: {note}")
     out.append("Sources:")
     for cid, line in lines(pack).items():
-        if not cid.startswith("N"):
+        if not cid.startswith(("N", "A")):
             out.append(f"  {cid}: {line}")
     return out

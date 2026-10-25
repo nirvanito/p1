@@ -100,17 +100,19 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   dashboard (Datasette over a snapshot — never the live db),
   ask (cited answers; deterministic retrieval; `--check FILE` verifies a
   written answer's citations; optional local model, off by default),
-  serve (read-only web UI over a snapshot; --host 0.0.0.0 for the phone,
-  --token random; writes only recall_log, --no-log),
+  serve (web UI over a snapshot, read-only for the database; --host
+  0.0.0.0 for the phone, --token random; writes recall_log (--no-log),
+  and — only with --token — [features] in config.toml from the Sources
+  page's checklist, POST /api/features through features.save),
   open (the main GUI: `[gui] main` = web | obsidian, --gui for once),
   obsidian (refresh [--dry-run] | open [--no-refresh]; the vault named by
   `[obsidian] vault`, which every command that changes the db refreshes —
   `auto_refresh = false` / LIFECRM_NO_VAULT_REFRESH=1 to skip),
   voice (--text/--file/--once/--wake/--no-speak/--no-llm/--json; never
   writes the db, never applies),
-  review (evidence pack: --lens week|health|career|relationships|finance|all,
-  --week/--start/--end/--days, --json | --write-only | --check BRIEF
-  [--out FILE]; read-only, no model),
+  review (evidence pack: --lens week|health|career|relationships|finance|all|year,
+  --week/--start/--end/--days/--year YYYY (picks the year lens), --json |
+  --write-only | --check BRIEF [--out FILE]; read-only, no model),
   nutrients (the food diary's daily averages vs adult reference intakes for
   [nutrition] sex/age: low/borderline/high, the foods behind each, every
   number cited; --days/--start/--end, --sex/--age, --json; read-only, no
@@ -137,6 +139,16 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   patterns (EXPERIMENTAL: co-occurrence between daily series, --days,
   --today, --keys, --all, --json; off in nudges/review//morning unless
   `[assistant] patterns = "on"` or `nudges --patterns`; docs/patterns.md),
+  features (the read-side features' checklist: list [--json] | check KEY|N...
+  [--all] | uncheck ... [--all] | pick; `[features]` in config.toml, a key
+  not listed is on; docs/features.md),
+  places (fetch [--dataset] [--dry-run] — the one network call, GeoNames into
+  data/geo/places.tsv | status | trips [--year] | countries | where DATE;
+  docs/places.md), onthisday [--date], prompts [--date] (default yesterday),
+  highlights [--date], subscriptions [--today], experiments [--today] [--all],
+  search WORDS... [--tier --stream --person --year], links URL|SITE | --from
+  PERSON, conversation PERSON, weekdays [--days] — all read-only, each
+  refusing while its feature is unchecked,
   demo (--combo android|iphone|windows-iphone|both|all — both = android +
   iphone; --dir, --anchor, --force, --with-audio, --no-ask, --json),
   observe/connectors/imports/handles (observed tier — bulk imports that never
@@ -338,14 +350,35 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   a test result. A false pair in the gate is one involving an independent
   series (a planted pair's next-day echo is a true, dependent association).
   Wording: co-occurrence, never cause.
+- `lifecrm/features.py` + `lifecrm/commands/features.py` — the read-side
+  features (docs/features.md), fourteen readings recomputed from the records,
+  none storing anything, each checked or unchecked in `[features]`
+  (`features.save` rewrites only that table and refuses unless the rest of
+  config.toml parses identically): `memories.py` (on this day), `prep.py`
+  (meeting prep, `A#` per person under the agenda), `places.py` (GeoNames
+  gazetteer on a CELL grid, home = most days within 90 either side, trips,
+  countries; docs/places.md), `prompts.py` (journal prompts — a prompt, never
+  an entry), `subscriptions.py` (cadence over txn, price rise over
+  max(1.99, 5 %), "stopped" only with declared coverage), `experiments.py` +
+  `domain/experiments.py` (data.experiment), `search.py` (faceted FTS, AND,
+  newest first), `jobchanges.py` (audit-log updates on linkedin_connection),
+  review's `year` lens, `links.py`, `gifts.py` + `domain/gifts.py`
+  (data.gift, data.anniversary), `web/api.conversation`, `weekday.py`,
+  `highlights.py` (hash rotation, no state). `ask_extra.py` answers their
+  question shapes as metrics carrying their own line and sentences
+  (recall `_EXTRA_KINDS`); nudges adds kinds experiment, anniversary,
+  price_change, new_recurring, job_change and sections on_this_day, prompts,
+  highlights; review adds experiments, trips, subscriptions, weekdays,
+  job_changes, year (`SECTION_FEATURES`). The data shapes are validated on
+  every write path whether or not their feature is checked.
 - `lifecrm/reminders.py` + `lifecrm/commands/reminders.py` +
   `lifecrm/domain/reminders.py` + `lifecrm/ics.py` — the reminders calendar.
   ONE publisher (`publish`: BEGIN IMMEDIATE, components, revisions, atomic
   file, commit, copies); revisions in `reminder_revisions` (fingerprint,
   sequence, tombstones) through the domain module, whose audit rows the
   as-of stamp ignores (`domain.reminders.CONTENT_CHANGE`). Due items are
-  timed events (overdue -> today), birthdays dated occurrences this year and
-  next, never RRULEs; snoozed moves, dismissed omits. Runs from the CLI, the
+  timed events (overdue -> today), birthdays (and, with gift_ideas checked,
+  anniversaries) dated occurrences this year and next, never RRULEs; snoozed moves, dismissed omits. Runs from the CLI, the
   after-write hook (`cli._arm_vault_refresh`, with the vault refresh) and the
   07:15 job; `serve` returns the published bytes at /reminders.ics.
   `ics.py` is the shared RFC 5545 writer (the demo's calendar uses it too).
@@ -382,7 +415,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   over a backup-API snapshot in data/web/lifecrm.db, re-copied when the live
   db or its -wal changes; one read-only connection per request; `api.py`
   reads, `index.html` is the single offline page (CSP forbids external
-  fetches). The only write is recall_log. No capture UI. `docs/web.md`.
+  fetches). Two writes: recall_log, and — only on a server with a key,
+  same-origin JSON — [features] via `features.save` (POST /api/features;
+  the server re-reads [features] whenever config.toml changes). Never
+  the database otherwise. No capture UI. `docs/web.md`.
 - `lifecrm/voice.py` + `lifecrm/commands/voice.py` — the voice loop: a front
   end over recall.answer() and the quick-note inbox, never a write path; not
   logged to recall_log; TTS through a constant OS-engine script with the text
@@ -392,8 +428,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/platforms.py` — where things live on Windows vs macOS (cloud
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
-  cli.py: calls, collect, configure, demo, entity_links, filedate, gui (open),
-  nudges, nutrients, obsidian, reminders, review, verify (verify-backup),
+  cli.py: calls, collect, configure, demo, entity_links, features, filedate,
+  gui (open), memory (onthisday, prompts, highlights), money (subscriptions,
+  experiments), nudges, nutrients, obsidian, places, reminders, review,
+  search (search, links, conversation, weekdays), verify (verify-backup),
   voice, web (serve), where.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export
   generator per source in `demo/sources/`, run through the real CLI into a

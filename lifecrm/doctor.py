@@ -175,6 +175,22 @@ def _snapshot_age_days(folder: Path | None) -> float | None:
     return (time.time() - max(times)) / 86400 if times else None
 
 
+def _feature_checks(cfg: Config, _add) -> None:
+    """[features] and [places] (lifecrm/features.py, lifecrm/places.py): a
+    table the read-side features cannot use stops every command that reads
+    it, so doctor names it first."""
+    from . import features, places
+    from .domain.util import DomainError
+    for name, check in (("features_config", features.settings),
+                        ("places_config", places.settings)):
+        try:
+            check(cfg)
+        except DomainError as e:
+            _add("warn", name, str(e))
+        else:
+            _add("ok", name)
+
+
 def _backup_checks(cfg: Config, _add) -> None:
     """Local and cloud snapshot age, checked separately. Taking the newest
     across both folders let a dead cloud copy hide behind a fresh local one —
@@ -338,6 +354,7 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
             _add("ok", "staging_drafts")
 
         _capture_checks(cfg, _add)
+        _feature_checks(cfg, _add)
 
     stuck = [r["uuid"][:8] for r in conn.execute(
         "SELECT uuid FROM extraction_runs WHERE status='draft' "

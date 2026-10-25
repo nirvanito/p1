@@ -23,7 +23,11 @@ macOS: `.venv/bin/python -m lifecrm ...`.
 That is the last full week, Monday to Sunday. `$ARGUMENTS` may name another
 period — pass it through as `--week 2026-W42`, `--start 2026-10-01 --end
 2026-10-14`, or `--days 14` — and use the **same flags in every later
-command**, so the ids stay the same.
+command**, so the ids stay the same. "My year", "2025 in review": `--year
+2025` (the `year` lens, picked by the flag; its `year` section adds people
+first in touch, towns and countries first on record, books, listening and
+mood by month — cite only ids as always; while the user has `year_review`
+unchecked the command refuses with the line to check it, which you pass on).
 
 The weekly scheduled job may already have written
 `data\staging\review-all-<week>.md`; reading it is fine, but cite from the
