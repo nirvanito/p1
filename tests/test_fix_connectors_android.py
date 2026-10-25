@@ -60,11 +60,15 @@ def test_a_call_the_phone_aged_out_of_its_log_stays_archived(cfg, conn, tmp_path
 
 def test_texts_still_mirror_beside_remembered_calls(cfg, conn, tmp_path):
     cfg.connectors = {"android_sms": {"account": ME}}
-    first = [sms(JAKE, "2026-09-01T18:00:00Z", 1, "see you at 6"),
+    # the deleted text sits inside the span the phone still holds: one older
+    # than the phone's oldest would read as aged out, and stay (texts.md)
+    first = [sms(JAKE, "2026-09-01T17:55:00Z", 1, "running late"),
+             sms(JAKE, "2026-09-01T18:00:00Z", 1, "see you at 6"),
              sms(JAKE, "2026-09-01T18:05:00Z", 2, "on my way")]
     _apply(conn, an.scan(_backup(tmp_path / "a", "20261022020003", _calls(1, 3), first),
                          cfg))
-    later = an.scan(_backup(tmp_path / "b", "20261029020003", _calls(2, 3), first[1:]), cfg)
+    later = an.scan(_backup(tmp_path / "b", "20261029020003", _calls(2, 3),
+                            [first[0], first[2]]), cfg)
     assert later["mirror_streams"] == ["android_mms", "android_sms"]
     plan, _ = _apply(conn, later)
     assert [r["body"] for r in plan["removed"]] == ["see you at 6"]

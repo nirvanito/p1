@@ -195,9 +195,10 @@ What needs it:
 | iCloud Drive, `~/Downloads` | a one-time "would like to access" prompt instead — allow it |
 
 **Scheduled jobs (launchd) cannot show that prompt.** If a scheduled run's
-log (`data/transcribe.log`, `data/launchd-intake.log`) says
-`Operation not permitted` while the same command works in Terminal, the job
-itself needs the permission: add `/bin/bash` to Full Disk Access (in the
+log (`data/transcribe.log`, `data/collect.log`, `data/launchd-intake.log`)
+says `Operation not permitted` or *Full Disk Access* while the same command
+works in Terminal — or /morning says "macOS is blocking … source(s)" — the
+job itself needs the permission: add `/bin/bash` to Full Disk Access (in the
 file picker press ⌘⇧G and type `/bin/bash`), and the venv's real Python
 binary, which this prints:
 
@@ -407,5 +408,22 @@ and a Mac:
 4. **Whisper wall-clock** for a ~3 minute note on your chip.
 5. **Keep Downloaded**'s exact menu name and macOS version.
 6. Intel Mac wheel availability.
+7. **Photos: shared photos and bursts.** The library reader leaves out
+   trashed and hidden assets, but reads no iCloud Shared Library, shared-album
+   or burst-selection column: a family member's Shared Library photos (with
+   their places) and every frame of a burst may come in as your `photo` rows,
+   feeding places, trips and "on this day". Check the dry run's count against
+   Photos' own *Library* view (not *Shared Library*) before saying yes.
+8. Whether the **06:30 job may list `~/Downloads` and iCloud Drive** without
+   Full Disk Access — if not, `collect` says so itself ("macOS is keeping the
+   daily import out of the Downloads folder"), and the fix is section 5.
+9. Whether a **locked Photos or Notes database** (an Apple daemon mid-write)
+   ever makes the snapshot copy wait: the copy now gives up after about
+   30 seconds with one line, and the next morning tries again.
+
+`tests/test_mac_e2e.py` runs the whole Mac + iPhone flow — every source in
+the place a Mac keeps it, found, asked about, approved, collected, and the
+launchd job's script — on CI's macOS runner, with the demo's generated
+files standing in for real ones.
 
 Report what you find — it replaces the guesses here.

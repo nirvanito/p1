@@ -533,6 +533,13 @@ def _mirror_plan(conn: sqlite3.Connection, scan: dict) -> dict:
     messages, and keyed on what the source *holds*, not on what the connector
     chose to emit — a message the connector cannot read today is still on
     the phone, and must not vanish from the archive because of it.
+
+    A store that ages its oldest records out by itself (a phone set to keep
+    messages for 30 days or a year) declares `mirror_ages_out`: then only
+    what is missing from inside the span the source still holds is a
+    deletion. A row older than the source's oldest record aged out of it;
+    it stays (`aged_out` counts them), and so do the days its import
+    declared complete.
     """
     present = scan.get("present_ids")
     if present is None:
@@ -554,8 +561,19 @@ def _mirror_plan(conn: sqlite3.Connection, scan: dict) -> dict:
         f"AND i.connector = ? AND i.account IS ? "
         f"ORDER BY o.stream, o.started_at, o.external_id",
         (*mirror_streams, scan["connector"], scan.get("account"))).fetchall()
-    return {"removed": [r for r in rows if r["external_id"] not in present],
-            "mirror_scope": len(rows)}
+    gone = [r for r in rows if r["external_id"] not in present]
+    aged_out = 0
+    if scan.get("mirror_ages_out"):
+        held = [rec["started_at"] for rec in scan.get("records", ())
+                if rec.get("stream") in mirror_streams and rec.get("started_at")]
+        oldest = min(held) if held else None
+        if oldest is not None:
+            aged_out = sum(1 for r in gone if r["started_at"] < oldest)
+            gone = [r for r in gone if r["started_at"] >= oldest]
+    out = {"removed": gone, "mirror_scope": len(rows)}
+    if aged_out:
+        out["aged_out"] = aged_out
+    return out
 
 
 def mass_removal(plan: dict) -> str | None:

@@ -112,7 +112,12 @@ def texts(variant="after") -> list[str]:
 
     'after':   everything below.
     'deleted': as 'after', with Jake's first text deleted on the phone.
-    'few':     only the two newest messages left (an incomplete-looking file).
+    'few':     only the two newest messages left (an incomplete-looking file —
+               or one aged out by a keep-messages limit, which is how the
+               archive now reads it: nothing older than its oldest is removed).
+    'gutted':  only the oldest and the newest text left (and the sent MMS that
+               says whose phone it is), everything between gone at once: an
+               incomplete file, and what the mass-removal guard refuses.
     """
     rows = {
         "S1": sms(JAKE, "2026-09-01T18:00:00.250Z", 1, "see you at 6", "Jake Reilly"),
@@ -139,6 +144,8 @@ def texts(variant="after") -> list[str]:
         rows.pop("S1")
     if variant == "few":
         rows = {k: rows[k] for k in ("S6", "M2")}
+    if variant == "gutted":
+        rows = {k: rows[k] for k in ("S3", "M2", "S6")}
     return list(rows.values())
 
 
@@ -680,10 +687,10 @@ def test_a_text_a_journal_entry_cites_is_hidden_not_deleted(cfg, conn, tmp_path)
 def test_removing_most_of_the_archive_at_once_is_refused(cfg, conn, tmp_path, monkeypatch):
     monkeypatch.setattr(obs, "MASS_REMOVAL_MIN", 2)
     _apply(conn, an.scan(make_backup(tmp_path / "a"), cfg))
-    scan = an.scan(make_backup(tmp_path / "b", variant="few", with_calls=False), cfg)
+    scan = an.scan(make_backup(tmp_path / "b", variant="gutted", with_calls=False), cfg)
     plan = obs.build_plan(conn, scan)
-    assert len(plan["removed"]) == 6
-    with pytest.raises(DomainError, match="remove 6 of 8.*--allow-mass-removal"):
+    assert len(plan["removed"]) == 5
+    with pytest.raises(DomainError, match="remove 5 of 8.*--allow-mass-removal"):
         obs.apply_plan(conn, scan, plan)
     conn.rollback()
     assert conn.execute("SELECT COUNT(*) c FROM observations").fetchone()["c"] == 12

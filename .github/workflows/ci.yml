@@ -41,4 +41,13 @@ jobs:
 
       - name: pytest
         shell: bash
-        run: '"$PY" -m pytest tests -q'
+        # -rs: every skipped test says why, so a Mac-only test that ran (or
+        # did not) is visible in each runner's log.
+        run: '"$PY" -m pytest tests -q -rs'
+
+      # The Mac + iPhone flow again, by name, on the one runner where it is
+      # the real operating system — the line to look for when checking it.
+      - name: Mac + iPhone end to end
+        if: runner.os == 'macOS'
+        shell: bash
+        run: '"$PY" -m pytest tests/test_mac_e2e.py -v -p no:cacheprovider'

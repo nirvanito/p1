@@ -222,7 +222,7 @@ def test_a_mass_removal_is_held_and_removes_nothing(conn, cfg, tmp_path):
     active = conn.execute("SELECT COUNT(*) FROM observations WHERE status='active'"
                           ).fetchone()[0]
     shutil.rmtree(folder)
-    make_backup(folder, variant="few", stamp="20260921020003")
+    make_backup(folder, variant="gutted", stamp="20260921020003")
     r = _only(collect.run(conn, cfg))
     assert (r["outcome"], r["hold"]) == ("held", "mass_removal")
     assert "would remove" in r["reason"]
@@ -367,7 +367,7 @@ def test_a_held_source_is_a_cited_nudge_until_a_run_is_routine(conn, cfg, tmp_pa
     _sms_source(cfg, folder)
     _owner_imports(conn, cfg, folder)
     shutil.rmtree(folder)
-    make_backup(folder, variant="few", stamp="20260921020003")
+    make_backup(folder, variant="gutted", stamp="20260921020003")
     collect.run(conn, cfg)
 
     pack = nudges.build(conn, cfg, today="2026-09-21")
@@ -576,7 +576,7 @@ def test_yes_to_a_held_removal_imports_it_with_a_snapshot(conn, cfg, home):
     folder = _phone_backup(home)
     collect.approve(conn, cfg, "android_sms", apply=True)
     shutil.rmtree(folder)
-    _phone_backup(home, variant="few", stamp="20260921020003")
+    _phone_backup(home, variant="gutted", stamp="20260921020003")
     by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
     assert by["android_sms"]["hold"] == "mass_removal"
     preview = collect.approve(conn, cfg, "android_sms")
@@ -636,6 +636,73 @@ def test_health_one_folder_down_in_onedrive_is_found(conn, cfg, home):
     r = _only(collect.run(conn, cfg, ["health"]))
     assert (r["outcome"], r["hold"]) == ("held", "first_import")
     assert r["target"].endswith("Health Connect.zip")
+
+
+# ---------------------------------------------------------------- macOS privacy (Full Disk Access)
+
+def _refused(path):
+    """What a Mac connector raises when TCC refuses the read: its own one-line
+    Full Disk Access error, caused by the PermissionError (ios_messages.privacy_guard)."""
+    from lifecrm.connectors import ios_messages
+    try:
+        raise PermissionError(1, "Operation not permitted", str(path))
+    except PermissionError as e:
+        return ios_messages.access_denied(path, e.strerror)
+
+
+def test_a_source_macos_refuses_is_said_never_skipped(conn, cfg, home, monkeypatch):
+    from lifecrm.connectors import mac_messages, notes
+    chat = home / "Library" / "Messages" / "chat.db"
+
+    def no_access(cfg_):
+        raise _refused(chat) from PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(mac_messages, "default_target", no_access)
+    monkeypatch.setattr(notes, "default_target", no_access)
+    by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
+    for name in ("mac_messages", "notes"):
+        assert by[name]["outcome"] == "error" and by[name]["blocked"], by[name]
+        assert "Full Disk Access" in by[name]["reason"]
+    assert by["browser"]["outcome"] == "skipped"            # really absent: still quiet
+    assert collect_dom.latest(conn)["mac_messages"]["outcome"] == "error"
+
+    pack = nudges.build(conn, cfg, today="2026-09-21")
+    found = [x for x in pack["nudges"] if x["kind"] == "collect"]
+    assert [x["key"] for x in found] == ["collect:macos:blocked"]   # one thing to do
+    (n,) = found
+    assert n["title"] == ("macOS is keeping the daily import out of Messages on this "
+                          "Mac, notes. Give Full Disk Access?")
+    assert "/bin/bash" in n["detail"] and len(n["ids"]) == 2
+
+    items = {it["source"]: it for it in
+             collect.setup_checklist(conn, cfg, "iphone-mac")["items"]}
+    assert items["mac_messages"]["state"] == "blocked"
+    assert any("Full Disk Access" in s for s in items["mac_messages"]["steps"])
+    with pytest.raises(DomainError, match="Full Disk Access"):
+        collect.approve(conn, cfg, "mac_messages")
+
+
+def test_a_refusal_while_reading_a_new_source_is_said_too(conn, cfg, home, monkeypatch):
+    _phone_backup(home)
+
+    def no_access(target, cfg_):
+        raise PermissionError(1, "Operation not permitted", str(target))
+    monkeypatch.setattr(an, "scan", no_access)
+    by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
+    assert by["android_sms"]["outcome"] == "error" and by["android_sms"]["blocked"]
+
+
+def test_cli_exits_1_while_macos_blocks_a_source(tmp_path, monkeypatch, home):
+    from lifecrm.connectors import mac_messages
+    chat = home / "Library" / "Messages" / "chat.db"
+
+    def no_access(cfg_):
+        raise _refused(chat) from PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(mac_messages, "default_target", no_access)
+    _project(tmp_path, monkeypatch)
+    r = runner.invoke(app, ["collect"])
+    assert r.exit_code == 1 and "mac_messages    error" in r.output
+    r = runner.invoke(app, ["collect", "setup", "--phone", "iphone-mac"])
+    assert r.exit_code == 0 and "[  !  ] Messages" in r.output and "/bin/bash" in r.output
 
 
 # ---------------------------------------------------------------- the phone's side

@@ -23,6 +23,13 @@ A connector returns a `Scan`:
 `records` carry an optional `participants` list of {kind, value, role} naming
 handles. Connectors emit **handles, never names** — a phone number or account
 id, not "Jake". Resolution is a user decision made once per handle.
+
+A scan that is its source's whole state may add `present_ids` and
+`mirror_streams` (mirroring: what the source no longer holds is removed),
+and `mirror_ages_out` when the source empties its oldest end by itself (a
+keep-messages limit): then only what is missing from inside the span it
+still holds counts as deleted. `coverage` declares days complete. A lookup
+that finds several candidates and will not guess raises `Ambiguous`.
 """
 
 from __future__ import annotations
@@ -42,6 +49,38 @@ from ..domain.util import DomainError
 
 class Scan(dict):
     """Plain dict with a fixed shape; see the module docstring."""
+
+
+class Ambiguous(DomainError):
+    """`default_target` found more than one candidate (two phones' backups,
+    two camera folders) and never guesses between them: the owner names one."""
+
+
+class SourceLocked(DomainError):
+    """Another program holds the source database locked and SQLite's backup
+    could not get a consistent copy: try again later."""
+
+
+_SQLITE_BUSY, _SQLITE_LOCKED = 5, 6
+LOCKED_TRIES = 6       # each try already waits out the connection's busy timeout
+
+
+def sqlite_backup(source, dest, what) -> None:
+    """`source.backup(dest)` that gives up instead of hanging. CPython retries
+    a busy or locked source forever, sleeping between tries — with an Apple
+    daemon holding the database that is a daily job that never ends. After
+    LOCKED_TRIES busy steps this raises SourceLocked naming `what`."""
+    busy = 0
+
+    def progress(status: int, remaining: int, total: int) -> None:
+        nonlocal busy
+        if status in (_SQLITE_BUSY, _SQLITE_LOCKED):
+            busy += 1
+            if busy >= LOCKED_TRIES:
+                raise SourceLocked(f"{what} stayed locked by another program — no "
+                                   f"consistent copy could be made now; try again later "
+                                   f"(the daily job does, tomorrow)")
+    source.backup(dest, progress=progress)
 
 
 @runtime_checkable
@@ -159,6 +198,10 @@ def removal_lines(plan: dict, why: str, label) -> list[str]:
     lines = []
     if plan.get("mirror_note"):
         lines.append(f"  not mirroring deletions: {plan['mirror_note']}")
+    if plan.get("aged_out"):
+        lines.append(f"  kept: {plan['aged_out']} older than the oldest message the "
+                     f"source still holds — aged out of it (a keep-messages limit), "
+                     f"not deleted")
     removed = plan.get("removed") or []
     if not removed:
         return lines
