@@ -71,6 +71,15 @@ def test_check_text_rejects_an_invented_id_and_an_unsupported_number():
     assert recall.check_text("Nothing cited here.", LINES)["uncited"] is True
 
 
+def test_check_text_never_takes_a_number_from_a_uuid():
+    # the line's uuid contains "-4a…": its digits are an address, not a fact
+    lines = {"N1": "nudge due · due:7e975b84-2ccc-4a66-aec6-9b55a2ee9aaf · Overdue by 3 "
+                   "days: Renew passport · import 2bb06f1fa76b4fc9afebaf2bf0b041d7"}
+    r = recall.check_text("The passport is 4 days overdue [N1].", lines)
+    assert r["unsupported"] == ["The passport is 4 days overdue [N1]."]
+    assert not recall.check_text("The passport is 3 days overdue [N1].", lines)["unsupported"]
+
+
 def test_check_text_context_lends_its_facts_only_to_the_id_it_names():
     ctx = ["TODAY: 2026-10-21", "N2 card last updated 2026-09-30"]
     ok = recall.check_text("Today is 2026-10-21 and Sam's card dates from "

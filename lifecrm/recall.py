@@ -5177,6 +5177,18 @@ def check_citations(answer: str, bundle: dict) -> dict:
     return check_text(answer, {i: by_id[i] for i in known if i in by_id}, context)
 
 
+# A uuid or a hex digest in an evidence line (an entry's uuid, an import's)
+# is an address, not a fact: its digits must never vouch for a number in a
+# sentence. "4 days overdue" was once accepted because the cited line's uuid
+# happened to contain "-4a…".
+_HEX_ID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+                        r"|\b[0-9a-f]{12,64}\b", re.IGNORECASE)
+
+
+def _without_ids(line: str) -> str:
+    return _HEX_ID_RE.sub(" ", line)
+
+
 def check_text(text: str, lines: dict[str, str], context=()) -> dict:
     """check_citations over any evidence index. `lines` maps each citable id
     to the line that states it (an ask bundle's evidence, a review or nudges
@@ -5196,7 +5208,7 @@ def check_text(text: str, lines: dict[str, str], context=()) -> dict:
         for r in refs:
             attached.setdefault(r, []).append(line)
         if not refs:
-            shared.append(line)
+            shared.append(_without_ids(line))
     base = _facts("\n".join(shared), evidence=True)
     per_id: dict[str, dict] = {}
     unsupported = []
@@ -5207,7 +5219,8 @@ def check_text(text: str, lines: dict[str, str], context=()) -> dict:
             continue
         for i in ids:
             if i not in per_id:
-                per_id[i] = _facts("\n".join([lines[i], *attached.get(i, [])]),
+                per_id[i] = _facts("\n".join(_without_ids(x) for x in
+                                             [lines[i], *attached.get(i, [])]),
                                    evidence=True)
         pool = _merge([base, *(per_id[i] for i in ids)])
         if not _supported(f, pool):
