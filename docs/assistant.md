@@ -331,7 +331,8 @@ paragraph. `nudges --patterns` turns it on for one run.
 ## Not yet
 
 Coverage declarations exist only for the sources whose formats carry a
-guarantee (the table above); the others stay unknown. Patterns stay off by
-default until the full-strength validation gate has been run and recorded
-in [patterns.md](patterns.md). Anniversaries have no source field yet, and
-a birthday without a contact card has no home in the schema.
+guarantee (the table above); the others stay unknown. The pattern finder's
+full-strength validation gate has been run and recorded in
+[patterns.md](patterns.md) (2026-10-25, every suite passing); patterns stay
+off by default until you turn them on. Anniversaries have no source field
+yet, and a birthday without a contact card has no home in the schema.
