@@ -45,8 +45,9 @@ every line resting on ids you can check, and the only thing you tell it is
    every run; the same database and the same date give the same pack, byte
    for byte. Building a pack writes nothing.
 2. **Cited.** `N#` is a nudge; it rests on `E#` (a confirmed entry) or `O#`
-   (an observed row, or a count over observed rows). `index[id]` holds the
-   uuids, dates and import ids behind each one.
+   (an observed row, or a count over observed rows) — or, for an import the
+   daily job held, `C#` (that run's outcome, docs/collect.md). `index[id]`
+   holds the uuids, dates and import ids behind each one.
 3. **State attaches to a key, never to a number.** `N1` is this run's first
    line; `due:<entry uuid>` is the task. An import or a closed task between
    two runs renumbers everything, so snooze and dismiss take the key, and
@@ -76,6 +77,7 @@ through `lifecrm/domain/` like every other write.
 | `drift` | the last `drift_recent` (7) days differ from the `drift_baseline` (30) days before by more than the threshold: sleep 0.5 h, mood and energy 1.0, steps 1,500 a day, workouts 1 a week, spending 25 % and at least 50. A level needs 3 recent and 8 baseline known days; a weekly rate needs 80 % of both windows known. Below that it is a note, not a nudge | `M#`/`H#`/`O#` the rows of each window | `drift:<series>` |
 | `birthday` | a contact card linked to a person carries a birthday within `birthday_days` (default 14); one nudge per person, the card that knows the year preferred; never your own | `O#` the card | `birthday:<entity id>:<year>` |
 | `nutrient` | the food diary's average over `nutrient_days` (default 14) is below 70 % of the reference for a nutrient (`lifecrm nutrients`); one nudge per nutrient, the disclaimer first | `O#` the rows averaged | `nutrient:<key>` |
+| `collect` | a source in `[collect] sources` whose newest daily run held it (its first import, a large removal, records the reader cannot validate), found nothing to read, or failed; gone once a run is routine (docs/collect.md) | `C#` that run's outcome | `collect:<source>:<why>` (`first_import`, `mass_removal`, `invalid`, `missing`, `error`) |
 | `stale` | a connector's newest record is older than its own `stale_after_days` (the rule `doctor` and the Sources page share) | `O#` the newest row | `stale:<connector>` |
 | `lapsed` | a person with at least 6 contact days in `lapsed_days` (180) whose days since the last one exceed twice their own median gap (and a week); skipped when they already have a follow-up | `O#`/`E#` the last contact | `lapsed:<entity id>` |
 

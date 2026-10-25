@@ -113,11 +113,12 @@ No audio handy? Paste text straight into `/log`.
 ## Background jobs
 
 `scripts/install-tasks.ps1` (Task Scheduler, tasks `LifeCRM *`) or
-`scripts/install-tasks.sh` (launchd, `local.lifecrm.*`) registers six jobs
+`scripts/install-tasks.sh` (launchd, `local.lifecrm.*`) registers seven jobs
 for your user, with no admin rights needed:
 
 | job | when | does | log |
 |---|---|---|---|
+| collect | daily 06:30 | `lifecrm collect --if-configured`: the imports `[collect] sources` names, from where each connector looks by itself — routine changes applied, a source's first import, a large removal or unreadable records held for you in /morning and doctor ([docs/collect.md](docs/collect.md)); one line and exit 0 when no sources are listed | `data/collect.log` |
 | intake | daily 07:00 and at logon | both inboxes: text notes, then audio | `data/transcribe.log` |
 | doctor | daily 08:00 | doctor against the live database | `data/doctor.log` (WARN/FAIL lines) |
 | backup | daily 21:30 | snapshot with tiered retention (14 daily, 12 weekly, 24 monthly, yearly kept forever), local and the cloud copy (`cloud_backups_dir`: OneDrive or iCloud Drive) | — |
@@ -344,6 +345,7 @@ lifecrm nudges --json --out pack.json        # save the pack (what /morning writ
 lifecrm nudges --check brief.md --pack pack.json   # verify a brief's ids, numbers and dates against that pack
 lifecrm nudges snooze due:<uuid> --days 7    # "not now", by key; dismiss <key> for "never"; restore <key> undoes
 lifecrm reminders publish                    # the reminders calendar (.ics) for the phone: due items and birthdays
+lifecrm collect --status                     # what the daily imports applied, and what they held for you (docs/collect.md)
 lifecrm patterns                             # EXPERIMENTAL: which daily series go together, same day or next day (docs/patterns.md)
 ```
 

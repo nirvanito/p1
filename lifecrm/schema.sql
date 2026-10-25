@@ -591,3 +591,32 @@ CREATE TABLE import_coverage (
   CHECK (start_date <= end_date)
 );
 CREATE INDEX idx_import_coverage_stream ON import_coverage(stream, start_date);
+
+-- ---------------------------------------------------------------- v8:
+-- the daily collection's outcomes (docs/collect.md). Kept identical to
+-- migrations/0008_collect_runs.sql so a fresh init and a migrated database
+-- produce the same sqlite_master.
+
+-- One row per source per run. `run_uuid` groups the sources of one
+-- invocation; `source` is a connector name or 'health'; `hold` says which
+-- rule held it; `reason` is the one line that says why it was held, found
+-- nothing or failed, and what to run; `import_uuid` names the import an
+-- applied observed-tier run created (health imports have no import row);
+-- `counts_json` what the plan held: added, updated, removed, conflicts.
+CREATE TABLE collect_runs (
+  id          INTEGER PRIMARY KEY,
+  run_uuid    TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  outcome     TEXT NOT NULL
+    CHECK (outcome IN ('applied','unchanged','held','missing','error')),
+  hold        TEXT CHECK (hold IN ('first_import','mass_removal','invalid')),
+  reason      TEXT,
+  target      TEXT,
+  import_uuid TEXT,
+  counts_json TEXT,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  CHECK ((outcome = 'held') = (hold IS NOT NULL)),
+  CHECK ((outcome IN ('applied','unchanged')) = (reason IS NULL))
+);
+CREATE INDEX idx_collect_runs_source ON collect_runs(source, id);

@@ -5,6 +5,7 @@
 #   LifeCRM verify-restore - weekly Sunday 12:00 (an untested backup is not a backup)
 #   LifeCRM review         - weekly Monday 07:30 (the week that just ended, for /review-week)
 #   LifeCRM reminders      - daily 07:15 (republish the reminders calendar; docs/assistant.md)
+#   LifeCRM collect        - daily 06:30 (the [collect] sources' imports; docs/collect.md)
 # Run once, as your own user (no admin needed); re-running replaces them:
 #   powershell -ExecutionPolicy Bypass -File scripts\install-tasks.ps1
 
@@ -60,5 +61,11 @@ Register-LifeCrmTask "LifeCRM review" "review.ps1" @(
 Register-LifeCrmTask "LifeCRM reminders" "reminders.ps1" @(
     (New-ScheduledTaskTrigger -Daily -At 07:15)
 )
+# Before intake, the calendar and doctor, so all three see this morning's
+# imports: what [collect] sources names, routine changes applied, the rest
+# held for /morning. Exits 0 with one log line when [collect] names nothing.
+Register-LifeCrmTask "LifeCRM collect" "collect.ps1" @(
+    (New-ScheduledTaskTrigger -Daily -At 06:30)
+)
 Write-Host "done - inspect with: Get-ScheduledTask -TaskName 'LifeCRM*'"
-Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log, data\review.log, data\reminders.log"
+Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log, data\review.log, data\reminders.log, data\collect.log"

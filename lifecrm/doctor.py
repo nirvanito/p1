@@ -24,6 +24,9 @@ BACKUP_MAX_AGE_DAYS = 7
 STUCK_DRAFT_DAYS = 2
 HEALTH_STALE_DAYS = 14
 INBOX_STUCK_DAYS = 2
+# The collect job runs every morning; two days without a run is a job that
+# stopped (or was never registered), not a laptop that slept through one.
+COLLECT_LATE_DAYS = 2
 # `lifecrm review` writes its evidence packs (review-<lens>-<period>.json and
 # .md) into staging beside the drafts. A pack is something to read, never
 # something to ingest or apply, so an old one is not a stuck draft — and the
@@ -472,6 +475,11 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
     except sqlite3.OperationalError:
         pass   # pre-v7 schema; pending_migrations already failed above
 
+    try:
+        _collect_checks(conn, cfg, _add, _rows)
+    except sqlite3.OperationalError:
+        pass   # pre-v8 schema; pending_migrations already failed above
+
     failures = sum(1 for c in checks if c["status"] == "fail")
     warnings = sum(1 for c in checks if c["status"] == "warn")
     return {"checks": checks, "failures": failures, "warnings": warnings,
@@ -525,6 +533,51 @@ def _coverage_checks(conn: sqlite3.Connection, _add, _rows) -> None:
           "OR end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
           "OR trim(basis) = ''",
           "coverage declaration(s) with a malformed date or no basis")
+
+
+def _collect_checks(conn: sqlite3.Connection, cfg: Config | None, _add, _rows) -> None:
+    """collect_runs (schema v8, lifecrm/collect.py). The schema pairs a hold
+    with its outcome and a reason with every outcome that needs one; what it
+    cannot see is a run naming an import that does not exist. With a config:
+    the sources the daily import left for the owner, and a job that stopped
+    running — a scheduled task nobody registered looks exactly like quiet
+    mornings."""
+    _rows("collect_runs_imports",
+          "SELECT c.id, c.import_uuid FROM collect_runs c WHERE c.import_uuid IS NOT NULL "
+          "AND NOT EXISTS (SELECT 1 FROM imports i WHERE i.uuid = c.import_uuid)",
+          "collect run(s) naming an import that does not exist")
+    if cfg is None:
+        return
+    from . import collect as collect_mod
+    from .domain import collect as collect_dom
+    from .domain.util import DomainError
+    try:
+        configured = collect_mod.settings(cfg)["sources"]
+    except DomainError as e:
+        _add("warn", "collect_config", str(e))
+        return
+    if not configured:
+        return
+    latest = collect_dom.latest(conn)
+    waiting = [f"{s} ({latest[s]['hold'] or latest[s]['outcome']})" for s in configured
+               if s in latest and latest[s]["outcome"] in collect_dom.ATTENTION]
+    if waiting:
+        _add("warn", "collect_waiting",
+             f"{len(waiting)} source(s) the daily import left for you: "
+             f"{', '.join(waiting)} — see: python -m lifecrm collect --status")
+    else:
+        _add("ok", "collect_waiting")
+    last = collect_dom.last_run_at(conn)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=COLLECT_LATE_DAYS)
+              ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if last is None or last < cutoff:
+        _add("warn", "collect_last_run",
+             (f"no collect run since {last[:10]}" if last else "collect has never run")
+             + f", though [collect] names {len(configured)} source(s) — is the "
+               f"'LifeCRM collect' task registered? Run scripts/install-tasks.ps1 "
+               f"(a Mac: scripts/install-tasks.sh)")
+    else:
+        _add("ok", "collect_last_run")
 
 
 def _owner_check(conn: sqlite3.Connection, cfg: Config, _add) -> None:

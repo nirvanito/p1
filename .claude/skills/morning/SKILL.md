@@ -1,6 +1,6 @@
 ---
 name: morning
-description: The morning brief — what matters today, written from the deterministic nudges pack (`lifecrm nudges`: what is due, whose birthday is near, nutrients below reference, stale imports, the agenda) in an advisor's voice, every sentence cited to a nudge id and checked against the saved pack before it is shown; suggestions as questions or small experiments, never a diagnosis. Optionally kept as a reflection entry through the normal review gate. Use when the user asks what matters today, what they should not forget, for a morning brief or a start-of-day check-in, or runs /morning.
+description: The morning brief — what matters today, written from the deterministic nudges pack (`lifecrm nudges`: what is due, whose birthday is near, nutrients below reference, stale imports, imports the daily collect job held for the user, the agenda) in an advisor's voice, every sentence cited to a nudge id and checked against the saved pack before it is shown; suggestions as questions or small experiments, never a diagnosis. Optionally kept as a reflection entry through the normal review gate. Use when the user asks what matters today, what they should not forget, for a morning brief or a start-of-day check-in, or runs /morning.
 ---
 
 # /morning — what matters today
@@ -40,8 +40,13 @@ a closed task renumbers the next run.
 
 - Ids: `N#` a nudge (its `kind`, `key`, `title`, `detail`, and the `ids` it
   rests on), `E#` a confirmed entry, `O#` an observed row or a count over
-  observed rows. `index[id]` has the details behind every id (uuids, dates,
-  import ids).
+  observed rows, `C#` a daily collect run's outcome for one source.
+  `index[id]` has the details behind every id (uuids, dates, import ids).
+- A `collect` nudge (tier `system`) is an import the daily job held for the
+  user, or a source it found nothing in or failed on (docs/collect.md). It is
+  a decision waiting for them, not a fact about their life: name the source,
+  say why in the pack's words, and give the command its `detail` names (the
+  first import of a source is always theirs to run and read).
 - `tier` matters. `confirmed` nudges (a due task or plan) rest on what the
   user reviewed. `observed` nudges (a birthday from a contact card, a
   nutrient from the food diary, a stale import, the agenda) rest on bulk
@@ -94,7 +99,7 @@ lists each sentence whose numbers or dates are not in the lines it cites —
 fix the brief (remove the claim or cite the right id) and re-run until it
 passes. The check verifies ids and numbers; whether a sentence's claim
 follows from them is your responsibility. Then show the user the brief with
-a **Sources** list: each cited `N#` with the `E#`/`O#` ids it rests on.
+a **Sources** list: each cited `N#` with the `E#`/`O#`/`C#` ids it rests on.
 
 If the user waves something off ("not this week", "never again"), do it by
 key, never by number:
@@ -103,8 +108,9 @@ key, never by number:
     python -m lifecrm nudges dismiss <key>
 
 `<key>` is the nudge's `key` field (`due:<uuid>`, `birthday:<id>:<year>`,
-`nutrient:<name>`, `stale:<connector>`). An `N#` works only together with the
-saved pack: `nudges snooze N2 --days 7 --pack <pack file>`.
+`nutrient:<name>`, `stale:<connector>`, `collect:<source>:<why>`). An `N#`
+works only together with the saved pack: `nudges snooze N2 --days 7 --pack
+<pack file>`.
 
 ## Step 5 — keep it? (only if the user says yes)
 

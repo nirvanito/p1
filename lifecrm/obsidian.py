@@ -109,8 +109,9 @@ def auto_refresh(cfg: Config) -> bool:
 # ---------------------------------------------------------------- refresh
 
 # What counts as a change to the database's content: every audited write
-# except a reminders-calendar publication (lifecrm/domain/reminders.py).
-from .domain.reminders import CONTENT_CHANGE  # noqa: E402
+# except a reminders-calendar publication or a collect outcome; what
+# re-renders the vault: every one but a publication (lifecrm/domain/reminders.py).
+from .domain.reminders import CONTENT_CHANGE, REFRESH_CHANGE  # noqa: E402
 
 
 def change_stamp(cfg: Config) -> tuple | None:
@@ -126,7 +127,7 @@ def change_stamp(cfg: Config) -> tuple | None:
         return None
     try:
         row = conn.execute(f"SELECT MAX(id), MAX(ts) FROM audit_log "
-                           f"WHERE {CONTENT_CHANGE}").fetchone()
+                           f"WHERE {REFRESH_CHANGE}").fetchone()
         version = conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'").fetchone()
         return (row[0], row[1], version[0] if version else None)
@@ -390,6 +391,10 @@ def _today_section(ctx: dict, pack: dict) -> list[str]:
         elif n["tier"] == "confirmed":
             # A goal: the plan is the owner's own words, the rest computed.
             lines.append(f"- {n['title']} — {n['detail']} · {key}")
+        elif n["kind"] == "collect":
+            # A source name and a path off this machine: inert, never observed.
+            lines.append(f"- {ex._md_text(n['title'])} *(the daily import)* — "
+                         f"{ex._md_text(n['detail'])} · {key}")
         else:
             lines.append(f"- {ex._md_text(n['title'])} *(observed)* — "
                          f"{ex._md_text(n['detail'])} · {key}")

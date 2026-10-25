@@ -261,6 +261,14 @@ def export_jsonl(conn: sqlite3.Connection, out_dir: Path) -> dict:
          "end_date": r["end_date"], "basis": r["basis"]}
         for r in q("SELECT c.* FROM import_coverage c JOIN imports i ON i.id=c.import_id "
                    "ORDER BY i.uuid, c.stream, c.start_date, c.end_date")]
+    # v8: the daily collection's outcomes (lifecrm/domain/collect.py).
+    tables["collect_runs"] = [
+        {"seq": r["id"], "run_uuid": r["run_uuid"], "source": r["source"],
+         "outcome": r["outcome"], "hold": r["hold"], "reason": r["reason"],
+         "target": r["target"], "import_uuid": r["import_uuid"],
+         "counts": _parse(r["counts_json"]), "started_at": r["started_at"],
+         "finished_at": r["finished_at"]}
+        for r in q("SELECT * FROM collect_runs ORDER BY id")]
 
     for name, rows in tables.items():
         (out_dir / f"{name}.jsonl").write_text(_jl(rows), encoding="utf-8",

@@ -16,7 +16,8 @@ import sqlite3
 from . import audit
 from .util import DomainError, is_iso_date, now_utc
 
-KINDS = ("due", "birthday", "followup", "lapsed", "drift", "nutrient", "stale", "goal")
+KINDS = ("due", "birthday", "followup", "lapsed", "drift", "nutrient", "stale", "goal",
+         "collect")
 STATES = ("snoozed", "dismissed")
 KEY_RE = re.compile(rf"^({'|'.join(KINDS)}):\S+$")
 

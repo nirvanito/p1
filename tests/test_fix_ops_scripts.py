@@ -104,7 +104,8 @@ def test_the_scripts_that_run_lifecrm_all_move_to_the_repo_root_first():
 @needs_powershell
 def test_the_changed_powershell_scripts_parse():
     names = ("demo.ps1", "transcribe-inbox.ps1", "backup.ps1", "restore.ps1",
-             "verify-restore.ps1", "review.ps1", "reminders.ps1", "install-tasks.ps1")
+             "verify-restore.ps1", "review.ps1", "reminders.ps1", "collect.ps1",
+             "install-tasks.ps1")
     check = "; ".join(
         f"$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
         f"'{SCRIPTS / n}', [ref]$null, [ref]$e); if ($e.Count) {{ '{n}: ' + $e[0] }}"
@@ -285,7 +286,7 @@ def test_install_tasks_carries_lifecrm_python_into_every_plist(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     assert "warning" not in done.stderr
     plists = sorted(agents.glob("*.plist"))
-    assert len(plists) == 6
+    assert len(plists) == 7
     for p in plists:
         env = plistlib.loads(p.read_bytes())["EnvironmentVariables"]
         assert env == {"PYTHONUTF8": "1", "LIFECRM_PYTHON": python}, p.name

@@ -15,7 +15,7 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   never edit files under `data\` by hand.
 - Ad-hoc reads: `python -m lifecrm sql "SELECT ..." --json` (read-only
   connection; writes are blocked at the connection level).
-- The extraction contract is `docs/contract.md` (contract v2, schema v7). A
+- The extraction contract is `docs/contract.md` (contract v2, schema v8). A
   day with several sources extracts as ONE draft. Drafts go to
   `data\staging\`, then `lifecrm ingest` -> review -> `lifecrm apply`. A
   draft that will never be applied is ended with `lifecrm admin discard-run`
@@ -28,6 +28,10 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - **An importer may not write entries, measurements, mentions,
   entity_aliases or entity_links.** Relationships come only from a reviewed
   draft's `entity_links` (stated, never inferred) or `entities link add`.
+- **The daily collect job never does a source's first import.** `lifecrm
+  collect` applies a routine plan for each `[collect] sources` entry and
+  HOLDS (writes nothing, records why) a first import from a connector +
+  account, a mass removal, or invalid records; the owner runs those by hand.
 - **A missing row is unknown, never zero.** A connector declares a day
   complete (`scan["coverage"]` -> `import_coverage`, schema v7) only from a
   guarantee in its source format (an OFX statement's DTSTART/DTEND, a full
@@ -68,10 +72,11 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   `/bin/bash scripts/x.sh` (LF, enforced by .gitattributes); `LIFECRM_PYTHON`
   overrides the interpreter the .sh scripts use. Scripts (.ps1 / .sh): setup,
   transcribe-inbox, doctor, backup, verify-restore, restore, review,
-  reminders, demo, install-tasks (+ uninstall-tasks.sh). install-tasks
-  registers intake (07:00 + logon), doctor (08:00), backup (21:30),
-  verify-restore (Sun 12:00), review (Mon 07:30), reminders (07:15) as Task
-  Scheduler `LifeCRM *` / launchd `local.lifecrm.*`; logs in `data\*.log`.
+  reminders, collect, demo, install-tasks (+ uninstall-tasks.sh).
+  install-tasks registers collect (06:30), intake (07:00 + logon), doctor
+  (08:00), backup (21:30), verify-restore (Sun 12:00), review (Mon 07:30),
+  reminders (07:15) as Task Scheduler `LifeCRM *` / launchd
+  `local.lifecrm.*`; logs in `data\*.log`.
 - Tests: `.venv\Scripts\python.exe -m pytest tests -q` (pass
   `--basetemp=<scratch dir>` if the default temp root is blocked). Every
   concurrent pytest run needs its own `--basetemp`: pytest deletes a basetemp
@@ -109,8 +114,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   number cited; --days/--start/--end, --sex/--age, --json; read-only, no
   model, "not medical advice" first),
   nudges (what matters today, cited: reminder | follow_up | goal | drift |
-  birthday | nutrient | stale | lapsed nudges N# resting on E#/M#/H#/O#,
-  plus the agenda; --json, --all, --today,
+  birthday | nutrient | collect | stale | lapsed nudges N# resting on
+  E#/M#/H#/O#/C#, plus the agenda; --json, --all, --today,
   --out FILE saves the pack, --check BRIEF --pack FILE checks against that
   saved pack, never a rebuild; `nudges snooze|dismiss <key>` by durable
   key (an N# only with --pack), `restore <key>`, `states`; the clock's
@@ -119,6 +124,12 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [--if-configured]: the one publisher of the .ics — revisions recorded
   in reminder_revisions, data/reminders/ + `[assistant] reminders_dir`,
   served by `serve` at /reminders.ics),
+  collect ([SOURCE]... [--dry-run] [--status] [--if-configured] [--json]:
+  the observe/health imports `[collect] sources` names, each from where its
+  connector looks with no path; routine plans applied through observe's own
+  write path, a first import / mass removal / invalid records HELD; every
+  outcome a `collect_runs` row; exit 1 only when a source failed;
+  docs/collect.md),
   patterns (EXPERIMENTAL: co-occurrence between daily series, --days,
   --today, --keys, --all, --json; off in nudges/review//morning unless
   `[assistant] patterns = "on"` or `nudges --patterns`; docs/patterns.md),
@@ -286,8 +297,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/nudges.py` + `lifecrm/commands/nudges.py` — the assistant's
   "what matters today" (schema v6). Read-only, deterministic: reminder
   (due within `due_days`), birthday (linked contact cards), nutrient
-  (`nutrients.build_report` lows), stale (connector freshness), the agenda;
-  N# nudges rest on E#/O# through `review._Ids`; `pack_id` hashes the pack;
+  (`nutrients.build_report` lows), collect (a held / missing / failed daily
+  import), stale (connector freshness), the agenda;
+  N# nudges rest on E#/O#/C# through `review._Ids`; `pack_id` hashes the pack;
   `check` = `recall.check_text` against a SAVED pack. State (snooze /
   dismiss / restore) is `lifecrm/domain/nudges.py` -> `nudge_states`, keyed
   by durable key, audited. `docs/assistant.md`.
@@ -333,6 +345,22 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   after-write hook (`cli._arm_vault_refresh`, with the vault refresh) and the
   07:15 job; `serve` returns the published bytes at /reminders.ics.
   `ics.py` is the shared RFC 5545 writer (the demo's calendar uses it too).
+- `lifecrm/collect.py` + `lifecrm/commands/collect.py` +
+  `lifecrm/domain/collect.py` — the daily collection (schema v8,
+  docs/collect.md). Per `[collect] sources` entry (a connector with
+  `default_target`, or "health"; `health_dir` adds a folder): the connector's
+  own target, its scan and `build_plan`, then applied | unchanged | held
+  (first_import per connector + account, mass_removal, invalid) | missing |
+  error; `apply_observed` is the one observed-tier write path, shared with
+  `observe --apply` (refusal, pre-removal snapshot, apply_plan). A new file
+  that only declares coverage applies (a quiet day is a known zero); the
+  same file again is unchanged; a conflict holds nothing. Each source is its
+  own transaction with its `collect_runs` row; one failing never stops the
+  next. Rows are bookkeeping: `CONTENT_CHANGE` (the as-of date) ignores
+  them, `REFRESH_CHANGE` (the after-write hook) does not. Read by `collect
+  --status`, doctor (`collect_waiting`, `collect_last_run`) and the nudges
+  pack (kind `collect`, key `collect:<source>:<why>`, resting on C#). The
+  06:30 job is scripts/collect.* with --if-configured.
 - `lifecrm/web/` + `lifecrm/commands/web.py` — `lifecrm serve`: stdlib HTTP
   over a backup-API snapshot in data/web/lifecrm.db, re-copied when the live
   db or its -wal changes; one read-only connection per request; `api.py`
@@ -347,7 +375,7 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/platforms.py` — where things live on Windows vs macOS (cloud
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
-  cli.py: calls, configure, demo, entity_links, filedate, gui (open),
+  cli.py: calls, collect, configure, demo, entity_links, filedate, gui (open),
   nudges, nutrients, obsidian, reminders, review, verify (verify-backup),
   voice, web (serve), where.
 - `lifecrm/demo/` — `lifecrm demo`: persona + journal drafts + one export

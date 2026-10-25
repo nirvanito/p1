@@ -2,9 +2,11 @@
 
 Reads only. Every nudge is recomputed from the database on each run and
 rests on ids the reader can check: `E#` a confirmed entry, `O#` an observed
-row or a count over observed rows (always "observed, not confirmed"), and the
-nudge itself is `N#`. Nothing here is a model's opinion; the wording is fixed
-per kind and says what the records show, never what the owner did.
+row or a count over observed rows (always "observed, not confirmed"), `C#` a
+daily collect run's outcome for one source (bookkeeping about the imports,
+never a record), and the nudge itself is `N#`. Nothing here is a model's
+opinion; the wording is fixed per kind and says what the records show, never
+what the owner did.
 
 The owner's only input is state: a nudge snoozed until a date or dismissed
 for good (lifecrm/domain/nudges.py) goes to `hidden`. State attaches to a
@@ -52,8 +54,8 @@ _DAY_KEYS = ("due_days", "birthday_days", "nutrient_days", "follow_up_days",
              "follow_up_window", "lapsed_days", "drift_recent", "drift_baseline")
 _FLAG_WORDS = {"true": True, "yes": True, "on": True, "1": True,
                "false": False, "no": False, "off": False, "0": False}
-KIND_ORDER = ("reminder", "follow_up", "goal", "drift", "birthday", "nutrient", "stale",
-              "lapsed")
+KIND_ORDER = ("reminder", "follow_up", "goal", "drift", "birthday", "nutrient", "collect",
+              "stale", "lapsed")
 # Drift: what counts as a change between the last `drift_recent` days and the
 # `drift_baseline` days before them. A level compares means and needs 3
 # recent and 8 baseline known days; a weekly rate needs 80 % of both windows
@@ -384,6 +386,54 @@ def _stale(conn: sqlite3.Connection, now: datetime, ids: _Ids) -> list[dict]:
                               f"import {TIER_NOTE}",
                     "date": c["latest"][:10], "ids": [oid], "tier": "observed",
                     "_sort": (c["connector"],)})
+    return out
+
+
+_COLLECT_TITLES = {
+    "first_import": "{s}: the daily import is waiting for your first one",
+    "mass_removal": "{s}: the daily import held a large removal for you",
+    "invalid": "{s}: the daily import held records it cannot validate",
+    "missing": "{s}: the daily import found nothing to read",
+    "error": "{s}: the daily import failed",
+}
+
+
+def _collect(conn: sqlite3.Connection, cfg: Config, ids: _Ids,
+             notes: list[str]) -> list[dict]:
+    """Sources in [collect] sources whose newest run held them, found nothing
+    or failed (lifecrm/collect.py). Each rests on that run's row, C#; the
+    reason line says what to run. Gone by itself once a run is routine."""
+    from . import collect as collect_mod
+    from .domain import collect as collect_dom
+    try:
+        configured = collect_mod.settings(cfg)["sources"]
+    except DomainError as e:
+        notes.append(f"collect: {e}")
+        return []
+    if not configured:
+        return []
+    try:
+        latest = collect_dom.latest(conn)
+    except sqlite3.OperationalError:     # pre-v8: nothing collected yet
+        return []
+    out = []
+    for source in configured:
+        row = latest.get(source)
+        if row is None or row["outcome"] not in collect_dom.ATTENTION:
+            continue
+        why = row["hold"] or row["outcome"]
+        # the run's journal day (timezone, rollover), as every date here is
+        ran = datetime.strptime(row["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+        day = days_mod.journal_date_for(ran, cfg.timezone, cfg.day_rollover_hour)
+        cid = ids.cite("C", ("collect", row["id"]), {
+            "type": "collect", "tier": "system", "run_uuid": row["run_uuid"],
+            "source": source, "outcome": row["outcome"], "hold": row["hold"],
+            "date": day, "reason": row["reason"], "target": row["target"]})
+        out.append({"kind": "collect", "key": f"collect:{source}:{why}",
+                    "title": _COLLECT_TITLES[why].format(s=source),
+                    "detail": row["reason"], "date": day,
+                    "ids": [cid], "tier": "system", "_sort": (source,)})
     return out
 
 
@@ -797,6 +847,7 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
     found += _drift(conn, cfg, s, today, ids, notes)
     found += _birthdays(conn, cfg, s, today, ids, owners)
     found += _nutrients(conn, cfg, s, today, ids, notes)
+    found += _collect(conn, cfg, ids, notes)
     found += _stale(conn, now, ids)
     try:
         found += _lapsed(conn, cfg, s, today, ids, followed)
@@ -873,12 +924,20 @@ def nudge_line(item: dict) -> str:
             f" · rests on {', '.join(item['ids'])}{state}")
 
 
+def collect_line(item: dict) -> str:
+    """One durable line for a C#: the run, the source, what it decided, why."""
+    return (f"collect run {item['run_uuid']} · {item['date']} · {item['source']} · "
+            f"{item['outcome']}" + (f" ({item['hold']})" if item.get("hold") else "")
+            + f" · {item['reason']}")
+
+
 def lines(pack: dict) -> dict[str, str]:
     out = {}
     for cid, item in pack["index"].items():
         kind = item.get("type")
         out[cid] = (nudge_line(item) if kind == "nudge" else
-                    pattern_line(item) if kind == "pattern" else index_line(item))
+                    pattern_line(item) if kind == "pattern" else
+                    collect_line(item) if kind == "collect" else index_line(item))
     return out
 
 
