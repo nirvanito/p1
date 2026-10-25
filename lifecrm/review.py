@@ -53,18 +53,21 @@ LENSES = ("week", "health", "career", "relationships", "finance", "all")
 
 SECTIONS = ("days", "entries", "loops", "journal_metrics", "health",
             "observations", "titles", "relationships", "career", "finance",
-            "goals")
+            "goals", "patterns")
 
 # What each lens is about. The week is the overview; an advisor lens trades
 # breadth for its own section and the entries that bear on it. Goals (a plan
-# with a measurable target, docs/contract.md) belong to every lens.
+# with a measurable target, docs/contract.md) belong to every lens; so does
+# the pattern finder's section, which is empty and says so unless
+# `[assistant] patterns = "on"` (experimental, docs/patterns.md).
 LENS_SECTIONS: dict[str, tuple[str, ...]] = {
     "week": ("days", "entries", "loops", "journal_metrics", "health",
-             "observations", "titles", "goals"),
-    "health": ("days", "entries", "loops", "journal_metrics", "health", "goals"),
-    "career": ("entries", "loops", "career", "titles", "goals"),
-    "relationships": ("entries", "loops", "relationships", "observations", "goals"),
-    "finance": ("entries", "loops", "finance", "goals"),
+             "observations", "titles", "goals", "patterns"),
+    "health": ("days", "entries", "loops", "journal_metrics", "health", "goals", "patterns"),
+    "career": ("entries", "loops", "career", "titles", "goals", "patterns"),
+    "relationships": ("entries", "loops", "relationships", "observations", "goals",
+                      "patterns"),
+    "finance": ("entries", "loops", "finance", "goals", "patterns"),
     "all": SECTIONS,
 }
 
@@ -1485,6 +1488,7 @@ def build_pack(conn: sqlite3.Connection, cfg: Config, period: dict, *,
         "career": lambda: _section_career(ctx, all_entries),
         "finance": lambda: _section_finance(ctx, all_entries),
         "goals": lambda: _section_goals(ctx),
+        "patterns": lambda: _section_patterns(ctx),
     }
     for name in sections:
         pack[name] = builders[name]()
@@ -1539,6 +1543,26 @@ def _section_goals(ctx: _Ctx) -> dict:
                      "an unknown day is never a zero")}
 
 
+def _section_patterns(ctx: _Ctx) -> dict:
+    """The pattern finder (lifecrm/patterns.py, experimental) over a window
+    ending on the period's last day, at least 90 days long, the series
+    filtered to this lens; off unless `[assistant] patterns = "on"`. Never
+    None: off says off."""
+    from . import nudges as nudges_mod
+    s = nudges_mod.settings(ctx.cfg)
+    if s["patterns"] != "on":
+        return {"enabled": False, "items": [],
+                "note": 'off — experimental; [assistant] patterns = "on" turns it on '
+                        '(docs/patterns.md)'}
+    p = ctx.period
+    try:
+        s = {**s, "pattern_days": max(s["pattern_days"], p["days"])}
+        return nudges_mod.pattern_items(ctx.conn, ctx.cfg, end=date.fromisoformat(p["end"]),
+                                        ids=ctx.ids, s=s, lens=ctx.lens)
+    except (DomainError, sqlite3.OperationalError) as e:
+        return {"enabled": True, "items": [], "notes": [f"patterns: {e}"]}
+
+
 def _brief_item(ctx: _Ctx, e: dict) -> dict:
     try:
         data = json.loads(e["_data"]) if e["_data"] else {}
@@ -1579,7 +1603,7 @@ def _coverage(ctx: _Ctx, n_entries: int) -> dict:
 
 # ---------------------------------------------------------------- citations
 
-CITE_RE = re.compile(r"\[((?:[DEMHO]\d+)(?:\s*[,;]\s*[DEMHO]\d+)*)\]")
+CITE_RE = re.compile(r"\[((?:[DEMHOP]\d+)(?:\s*[,;]\s*[DEMHOP]\d+)*)\]")
 
 
 def cited_ids(text: str) -> list[str]:
@@ -1629,6 +1653,9 @@ def index_line(item: dict) -> str:
         span = f"{item['first_date']} to {item['last_date']}"
         sample = f" · e.g. {item['uuids'][0]}" if item.get("uuids") else ""
         return f"{item['table']} rows: {item['what']} · {item['count']} · {span}{sample}"
+    if t == "pattern":
+        from .nudges import pattern_line
+        return pattern_line(item)
     span = f"{item['first_date']} to {item['last_date']}"
     sample = ""
     if item.get("first_uuid"):
@@ -1978,6 +2005,20 @@ def render_markdown(pack: dict) -> str:
         s = pack["goals"]
         out += [f"## Goals (plans with a target; decided as of {s['decided_as_of']})", ""]
         out += [f"- [{g['id']}] {g['line']}" for g in s["items"]] or ["- (no open goals)"]
+        out.append("")
+    if "patterns" in pack:
+        s = pack["patterns"]
+        out += ["## Patterns (co-occurrence, not cause; EXPERIMENTAL)", ""]
+        if not s.get("enabled"):
+            out.append(f"- {s.get('note', 'off')}")
+        else:
+            w = s.get("window") or {}
+            out.append(f"Window {w.get('start')} to {w.get('end')}, family of "
+                       f"{s.get('family_size', 0)} tests over {len(s.get('series', []))} series.")
+            out += [f"- [{it['id']}] {it['wording']}"
+                    + (f" · shift check p {it['shift_p']}" if it.get("shift_p") is not None
+                       else "") for it in s["items"]] or ["- (nothing clears the floors)"]
+            out += [f"- {n}" for n in s.get("notes", [])]
         out.append("")
     if pack["briefs"]:
         out += ["## Briefs already saved for this period (interpretations, not evidence)", ""]

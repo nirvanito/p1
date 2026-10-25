@@ -777,15 +777,20 @@ def health_series(anchor: date, days: int = WINDOW_DAYS) -> list[HealthDay]:
             kcal = int(minutes * (10.5 if kind == "running" else 7.5))
             workouts.append({"type": kind, "start": w_start, "minutes": minutes,
                              "distance_km": km, "kcal": kcal})
-            if kind == "running":
-                steps += int((km or 5) * 1300)
+            # A workout day walks more: the warm-up, the gym, the run itself.
+            steps += 3500 + (int((km or 5) * 1300) if kind == "running" else 0)
         weight = None
         if (off % 3 == 0) or off == -12:
             weight = 78.4 if off == -12 else round(79.3 - (off + days) * 0.022
                                                     + rng.uniform(-0.25, 0.25), 1)
+        # Resting heart rate follows the night before it: about 61 after seven
+        # hours, three beats more per hour short — which is what makes the
+        # last week's dip visible to the advisor, and gives the pattern finder
+        # a real co-occurrence to find (docs/patterns.md).
+        resting = int(round(61 + 3 * (7.0 - hours) + rng.uniform(-0.8, 0.8)))
         out.append(HealthDay(
             date=d, sleep_start=start, sleep_end=end, steps=steps,
-            resting_hr=rng.randint(57, 64) + (3 if -6 <= off <= -3 else 0),
+            resting_hr=max(48, min(80, resting)),
             weight_kg=weight, kcal_in=rng.randint(2050, 2700), workouts=workouts))
     return out
 

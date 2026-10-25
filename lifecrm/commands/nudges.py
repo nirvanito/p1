@@ -68,7 +68,10 @@ def nudges(ctx: typer.Context,
            check: str = typer.Option(None, "--check", metavar="BRIEF",
                                      help="Check a brief's citations against --pack"),
            pack_file: str = typer.Option(None, "--pack", metavar="FILE",
-                                         help="The saved pack a brief was written from")
+                                         help="The saved pack a brief was written from"),
+           patterns: bool = typer.Option(None, "--patterns/--no-patterns",
+                                         help="Include the pattern finder's block "
+                                              "(experimental; default: [assistant] patterns)")
            ) -> None:
     """List what matters today, cited (default when no sub-command is given)."""
     if ctx.invoked_subcommand is not None:
@@ -108,7 +111,7 @@ def nudges(ctx: typer.Context,
         _fail(str(e))
     conn = _conn(cfg, readonly=True)
     try:
-        pack = mod.build(conn, cfg, today=day, now=now)
+        pack = mod.build(conn, cfg, today=day, now=now, patterns=patterns)
     except DomainError as e:
         _fail(str(e))
     except sqlite3.Error as e:

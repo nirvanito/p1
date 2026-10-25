@@ -323,6 +323,10 @@ def health_records(conn, cfg, anchor, combo):
             "metric": "steps", "journal_date": day, "started_at": _utc(noon),
             "value": d.steps, "unit": "count", "origin_app": origin,
             "external_id": f"step{n:04d}" * 4, "source_file": f"health-{combo}.zip"})
+        health.insert(conn, {
+            "metric": "resting_heart_rate", "journal_date": day, "started_at": _utc(noon),
+            "value": d.resting_hr, "unit": "bpm", "origin_app": origin,
+            "external_id": f"rhr{n:04d}" * 4, "source_file": f"health-{combo}.zip"})
 
 
 def build_world(conn, cfg, tmp_path, anchor=ANCHOR, combo="android") -> dict:

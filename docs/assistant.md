@@ -306,6 +306,8 @@ follow_up_window = 30 # how far back follow-ups look
 lapsed_days = 180     # the history a person's own contact rhythm is learned from
 drift_recent = 7      # drift: the last N days ...
 drift_baseline = 30   # ... against the N days before them
+patterns = "off"      # "on": the EXPERIMENTAL pattern finder in nudges, review and /morning
+pattern_series = []   # extra series keys for it; pattern_days = 90 its window
 reminders_dir = "~/OneDrive/LifeCRM reminders"   # unset = no calendar
 reminder_hour = 9     # local hour of a due item's alarm
 auto_publish = true   # republish after every command that changes the database
@@ -314,10 +316,22 @@ auto_publish = true   # republish after every command that changes the database
 `lifecrm configure` writes the section, commented out, into a new
 config.toml.
 
+## Patterns (experimental)
+
+`lifecrm patterns` tests every pair of daily series for an association the
+same day and the next day and reports what survives a false-discovery
+control ([patterns.md](patterns.md)): statistics over your own records, no
+model, co-occurrence never cause. It is experimental and **off everywhere
+else by default**: with `[assistant] patterns = "on"`, `nudges --json`
+carries a `patterns` block whose items are `P#` ids in the same index (so a
+brief can cite them and `--check --pack` holds them to the saved pack), the
+review pack adds a `patterns` section, and `/morning` adds an optional
+paragraph. `nudges --patterns` turns it on for one run.
+
 ## Not yet
 
-Patterns (co-occurrence between daily series) come next, experimental until
-their validation suite passes. Coverage declarations exist only for the
-sources whose formats carry a guarantee (the table above); the others stay
-unknown. Anniversaries have no source field yet, and a birthday without a
-contact card has no home in the schema.
+Coverage declarations exist only for the sources whose formats carry a
+guarantee (the table above); the others stay unknown. Patterns stay off by
+default until the full-strength validation gate has been run and recorded
+in [patterns.md](patterns.md). Anniversaries have no source field yet, and
+a birthday without a contact card has no home in the schema.

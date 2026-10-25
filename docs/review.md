@@ -150,7 +150,10 @@ it, marked unresolved — never guessed onto an entity.
 | `finance` | entries, loops, finance, goals | purchase, or carrying an amount |
 | `all` | every section | all |
 
-A section a lens does not include is absent from the pack. `goals` is in
+A section a lens does not include is absent from the pack. `patterns`
+(the experimental pattern finder, [patterns.md](patterns.md)) is in every
+lens too, and says "off" unless `[assistant] patterns = "on"`; on, its
+reported pairs are `P#` ids a brief may cite. `goals` is in
 every lens: each open plan with a `data.goal` ([assistant.md](assistant.md),
 "Goals"), the periods of it that overlap the pack decided as of the day after
 the period, the plan cited as `E#`, and a line per goal ("2026-W42: 1 of 3

@@ -72,6 +72,15 @@ Rules (non-negotiable):
   the pack's own disclaimer line says so and you keep its spirit.
 - Observed items are what the records show, not what happened.
 
+**Patterns (experimental, optional).** Only when the pack's `patterns`
+block has `enabled: true` (the user set `[assistant] patterns = "on"`) and it
+holds items: add one short paragraph, **Patterns (experimental)**, one
+sentence per `P#`, copying its wording's register — "X tends to go with Y the
+same day in this window" — citing `[P#]`, and ending with the words
+"co-occurrence, not cause". Never turn a pattern into advice, a cause, or a
+diagnosis; a health series is a comparison with the user's own record. When
+the block is off or empty, say nothing about patterns at all.
+
 Write the brief to a temporary file **outside** `data\` — e.g.
 `$env:TEMP\morning-<today>.md` on Windows, `$TMPDIR/morning-<today>.md` on
 macOS.

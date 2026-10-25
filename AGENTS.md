@@ -119,6 +119,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [--if-configured]: the one publisher of the .ics — revisions recorded
   in reminder_revisions, data/reminders/ + `[assistant] reminders_dir`,
   served by `serve` at /reminders.ics),
+  patterns (EXPERIMENTAL: co-occurrence between daily series, --days,
+  --today, --keys, --all, --json; off in nudges/review//morning unless
+  `[assistant] patterns = "on"` or `nudges --patterns`; docs/patterns.md),
   demo (--combo android|iphone|windows-iphone|both|all — both = android +
   iphone; --dir, --anchor, --force, --with-audio, --no-ask, --json),
   observe/connectors/imports/handles (observed tier — bulk imports that never
@@ -304,6 +307,18 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   `observed_mean`, `above_target`, decided only when over with `min_known`
   days), streaks say what ended them. Review pack section `goals` (every
   lens, never None).
+- `lifecrm/patterns.py` + `lifecrm/commands/patterns.py` — the pattern
+  finder, EXPERIMENTAL (docs/patterns.md): every pair of series at lags 0
+  and 1 on CALENDAR days, linear detrend, Spearman, Fisher z on a
+  CONSERVATIVE effective n (lag-1 autocorrelation + one SE), Benjamini-
+  Hochberg over the whole family (`family_size`), floors |rho| >= 0.4 and
+  n >= 30, a circular day-shift check printed beside reported pairs.
+  `nudges.pattern_items` cites them as P# (shared by the nudges pack and
+  review's `patterns` section); off unless `[assistant] patterns = "on"`.
+  The validation gate is tests/test_patterns_validation.py (R 40 in the
+  suite, LIFECRM_PATTERN_GATE=1 for R 200 on the reserved seeds); the method
+  stays off by default until that run is recorded in docs/patterns.md.
+  Wording: co-occurrence, never cause.
 - `lifecrm/reminders.py` + `lifecrm/commands/reminders.py` +
   `lifecrm/domain/reminders.py` + `lifecrm/ics.py` — the reminders calendar.
   ONE publisher (`publish`: BEGIN IMMEDIATE, components, revisions, atomic

@@ -24,3 +24,7 @@ def test_the_morning_skill_names_its_contract():
     assert "**Never apply without it.**" in text
     assert "Never diagnose" in text and "not what happened" in text
     assert "python -m lifecrm import <brief file> --type manual --date <today> --json" in text
+    # patterns: only when the pack says they are on, and never as advice
+    assert "**Patterns (experimental, optional).**" in text
+    assert "`enabled: true`" in text and "co-occurrence, not cause" in text
+    assert "say nothing about patterns at all" in text

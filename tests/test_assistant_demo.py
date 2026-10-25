@@ -60,6 +60,29 @@ def test_the_persona_has_a_due_task_a_birthday_and_an_agenda(world):
         pack["notes"]
 
 
+def test_the_planted_physiology_is_tested_by_the_pattern_finder(world):
+    """The persona's resting heart rate follows the night before it, and a
+    workout day walks more. The finder must TEST both pairs over the demo's
+    42 days; whether it reports them is the method's call — insufficient
+    evidence is a valid outcome, and the reason is stated."""
+    from lifecrm import patterns
+    conn, cfg, info, combo = world
+    result = patterns.find(conn, cfg, end=ANCHOR, days=persona.WINDOW_DAYS)
+    assert result["status"] == "experimental"
+    tested = {(t["x"], t["y"], t["lag"]): t for t in result["tested"]}
+    hr = tested[("resting_heart_rate", "sleep", 0)]
+    steps = tested[("steps", "workouts", 0)]
+    for t in (hr, steps):
+        assert "rho" in t and t["n"] >= 30, t
+        assert t.get("reported") or t.get("reason"), t
+    assert hr["rho"] < -0.3                      # short nights, higher resting rate
+    assert steps["rho"] > 0.3                    # workout days, more steps
+    reported = {(it["x"], it["y"], it["lag"]) for it in result["items"]}
+    for key in reported:
+        assert result["tested"] and all("co-occurrence" in it["wording"]
+                                        for it in result["items"])
+
+
 def test_the_pack_is_deterministic_and_checkable(world):
     conn, cfg, info, combo = world
     a = mod.build(conn, cfg, today=ANCHOR, now=NOW)

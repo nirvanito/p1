@@ -46,7 +46,8 @@ SECTION = "assistant"
 DEFAULTS = {"due_days": 7, "birthday_days": 14, "nutrient_days": 14,
             "follow_up_days": 3, "follow_up_window": 30, "lapsed_days": 180,
             "drift_recent": 7, "drift_baseline": 30,
-            "reminder_hour": 9, "reminders_dir": None, "auto_publish": True}
+            "reminder_hour": 9, "reminders_dir": None, "auto_publish": True,
+            "patterns": "off", "pattern_series": [], "pattern_days": 90}
 _DAY_KEYS = ("due_days", "birthday_days", "nutrient_days", "follow_up_days",
              "follow_up_window", "lapsed_days", "drift_recent", "drift_baseline")
 _FLAG_WORDS = {"true": True, "yes": True, "on": True, "1": True,
@@ -105,6 +106,26 @@ def settings(cfg: Config) -> dict:
         if not isinstance(v, bool):
             raise DomainError(f"[{SECTION}] auto_publish must be true or false, got {v!r}")
         out["auto_publish"] = v
+    if "patterns" in raw:
+        v = raw["patterns"]
+        if isinstance(v, bool):
+            v = "on" if v else "off"
+        if not isinstance(v, str) or v.strip().lower() not in ("on", "off"):
+            raise DomainError(f'[{SECTION}] patterns must be "on" or "off" (experimental, '
+                              f'docs/patterns.md), got {raw["patterns"]!r}')
+        out["patterns"] = v.strip().lower()
+    if "pattern_series" in raw:
+        v = raw["pattern_series"]
+        if not isinstance(v, list) or not all(isinstance(k, str) and k.strip() for k in v):
+            raise DomainError(f"[{SECTION}] pattern_series must be a list of series keys, "
+                              f"got {v!r}")
+        out["pattern_series"] = [k.strip() for k in v]
+    if "pattern_days" in raw:
+        v = raw["pattern_days"]
+        if isinstance(v, bool) or not isinstance(v, int) or not 14 <= v <= 365:
+            raise DomainError(f"[{SECTION}] pattern_days must be a whole number of days, "
+                              f"14-365, got {v!r}")
+        out["pattern_days"] = v
     known = set(DEFAULTS)
     unknown = sorted(set(raw) - known)
     if unknown:
@@ -708,15 +729,54 @@ def _lapsed(conn: sqlite3.Connection, cfg: Config, s: dict, today: date, ids: _I
 
 # ---------------------------------------------------------------- the pack
 
+def pattern_items(conn: sqlite3.Connection, cfg: Config, *, end: date, ids: _Ids,
+                  s: dict, keys: list[str] | None = None, lens: str | None = None) -> dict:
+    """The pattern finder's result (lifecrm/patterns.py, experimental) with
+    its reported pairs cited as P# in `ids`. Shared by the nudges pack and
+    the review pack; `lens` keeps the series that belong to it."""
+    from . import patterns as patterns_mod
+    from . import series as series_mod
+    wanted = keys or [k for k, m in series_mod.KEYS.items() if m["pattern_default"]]
+    wanted = list(dict.fromkeys(wanted + list(s.get("pattern_series") or [])))
+    if lens and lens not in ("week", "all"):
+        wanted = [k for k in wanted if lens in series_mod.info(k)["lenses"]]
+    result = patterns_mod.find(conn, cfg, end=end, days=s["pattern_days"], keys=wanted)
+    items = []
+    for it in result["items"]:
+        tier = "observed" if "observed" in it["tiers"].values() else "confirmed"
+        item = {"type": "pattern", "tier": tier, "x": it["x"], "y": it["y"], "lag": it["lag"],
+                "n": it["n"], "n_eff": it["n_eff"], "rho": it["rho"], "p": it["p"],
+                "q": it["q"], "shift_p": it.get("shift_p"), "shifts": it.get("shifts"),
+                "contrast": it["contrast"], "first_date": it["dates"][0],
+                "last_date": it["dates"][-1], "wording": it["wording"],
+                "labels": {k: result["series"][k]["label"] for k in (it["x"], it["y"])},
+                "window": result["window"]}
+        cid = ids.cite("P", ("pattern", it["x"], it["y"], it["lag"]), item)
+        items.append({"id": cid, **{k: v for k, v in item.items() if k != "type"}})
+    return {"enabled": True, "status": result["status"], "window": result["window"],
+            "family_size": result["family_size"], "series": sorted(result["series"]),
+            "items": items, "notes": result["notes"]}
+
+
+def pattern_line(item: dict) -> str:
+    """One durable line for a P#: the pair, the window, every number."""
+    return (f"pattern {item['x']} -> {item['y']} lag {item['lag']} · {item['first_date']} to "
+            f"{item['last_date']} · {item['wording']}"
+            + (f" · shift check p {item['shift_p']}" if item.get("shift_p") is not None else ""))
+
+
 def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
-          now: datetime | None = None, include_hidden: bool = True) -> dict:
-    """Everything the records say matters on `today`, as one pack."""
+          now: datetime | None = None, include_hidden: bool = True,
+          patterns: bool | None = None) -> dict:
+    """Everything the records say matters on `today`, as one pack. `patterns`
+    None follows `[assistant] patterns`; True or False overrides it."""
     if isinstance(today, str):
         today = date.fromisoformat(today)
     now = now or datetime.now(timezone.utc)
     s = settings(cfg)
     ids = _Ids()
     notes: list[str] = []
+    want_patterns = (s["patterns"] == "on") if patterns is None else patterns
     try:
         from . import owner as owner_mod
         ident = owner_mod.identity(conn, cfg)
@@ -775,10 +835,19 @@ def build(conn: sqlite3.Connection, cfg: Config, *, today: date | str,
             ids.index.pop(h["id"], None)
         hidden_out = []
 
+    if want_patterns:
+        try:
+            patterns_block = pattern_items(conn, cfg, end=today, ids=ids, s=s)
+        except (DomainError, sqlite3.OperationalError) as e:
+            patterns_block = {"enabled": True, "items": [], "notes": [f"patterns: {e}"]}
+    else:
+        patterns_block = {"enabled": False, "items": [],
+                          "notes": ['off — experimental; [assistant] patterns = "on" or '
+                                    '--patterns turns it on (docs/patterns.md)']}
     pack = {"pack_version": PACK_VERSION, "today": today.isoformat(),
             "as_of": as_of_date(conn, cfg), "settings": s,
             "nudges": nudges_out, "agenda": agenda, "hidden": hidden_out,
-            "notes": notes, "index": ids.index}
+            "patterns": patterns_block, "notes": notes, "index": ids.index}
     pack["pack_id"] = pack_id(pack)
     return pack
 
@@ -807,7 +876,9 @@ def nudge_line(item: dict) -> str:
 def lines(pack: dict) -> dict[str, str]:
     out = {}
     for cid, item in pack["index"].items():
-        out[cid] = nudge_line(item) if item.get("type") == "nudge" else index_line(item)
+        kind = item.get("type")
+        out[cid] = (nudge_line(item) if kind == "nudge" else
+                    pattern_line(item) if kind == "pattern" else index_line(item))
     return out
 
 
@@ -845,6 +916,17 @@ def render_lines(pack: dict, *, show_hidden: bool = False) -> list[str]:
             st = n["state"]
             how = st["state"] + (f" until {st['until']}" if st.get("until") else "")
             out.append(f"  [{n['id']}] {n['title']} — {how} · key {n['key']}")
+    pt = pack.get("patterns") or {}
+    if pt.get("enabled"):
+        w = pt.get("window") or {}
+        out.append(f"Patterns (EXPERIMENTAL, {w.get('start')} to {w.get('end')}, family of "
+                   f"{pt.get('family_size', 0)} tests):")
+        for it in pt["items"]:
+            out.append(f"  [{it['id']}] {it['wording']}")
+        if not pt["items"]:
+            out.append("  nothing clears the floors in this window")
+        for note in pt.get("notes", []):
+            out.append(f"  {note}")
     for note in pack["notes"]:
         out.append(f"note: {note}")
     out.append("Sources:")

@@ -344,6 +344,7 @@ lifecrm nudges --json --out pack.json        # save the pack (what /morning writ
 lifecrm nudges --check brief.md --pack pack.json   # verify a brief's ids, numbers and dates against that pack
 lifecrm nudges snooze due:<uuid> --days 7    # "not now", by key; dismiss <key> for "never"; restore <key> undoes
 lifecrm reminders publish                    # the reminders calendar (.ics) for the phone: due items and birthdays
+lifecrm patterns                             # EXPERIMENTAL: which daily series go together, same day or next day (docs/patterns.md)
 ```
 
 Every nudge is recomputed from the records and rests on ids you can check;
