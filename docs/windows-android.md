@@ -153,7 +153,7 @@ This registers, for your user (no admin):
 
 | task | when | does | log |
 |---|---|---|---|
-| LifeCRM collect | daily 06:30 | the imports `[collect] sources` names (section 7): routine changes applied, anything unusual held for you | `data\collect.log` |
+| LifeCRM collect | daily 06:30 | every source on this laptop, found by itself (section 7): routine changes applied, a new source or anything unusual a yes/no question in /morning | `data\collect.log` |
 | LifeCRM intake | daily 07:00 and at logon | transcribes audio, imports text notes | `data\transcribe.log` |
 | LifeCRM doctor | daily 08:00 | doctor against the live database | `data\doctor.log` (WARN/FAIL lines) |
 | LifeCRM backup | daily 21:30 | tiered snapshots, local + OneDrive | — |
@@ -220,21 +220,17 @@ counts, date spans and sample lines; then run the same command with
 | Bank and card | the bank's website | a `.csv` / `.ofx` / `.qfx` | `lifecrm observe finance "<file or folder>"` ([finance.md](finance.md)) |
 | AI chats | Claude / ChatGPT data export | a `.zip` | `lifecrm observe ai_chat "<zip>"` ([ai-chat.md](ai-chat.md)) |
 
-**After a source's first import, the morning job can take over.** The
-phone already sends texts and calls (SMS Backup & Restore's nightly
-backup), health (Health Connect's scheduled export) and photos (Gallery's
-OneDrive sync) to the laptop by itself, and the browser keeps its own
-history; list those in `config.toml` and the 06:30 task imports them each
-morning, holding anything unusual for you in /morning and doctor:
-
-```toml
-[collect]
-sources = ["android_sms", "health", "browser", "photos"]
-# health_dir = "~/OneDrive/Health Connect"   # if Health Connect exports into a subfolder
-```
-
-[collect.md](collect.md) has the rules. Every source's first import stays
-yours: the job holds a source it has never imported.
+**Or let the morning job do it.** Once the phone sends texts and calls (SMS
+Backup & Restore's nightly backup), health (Health Connect's scheduled
+export) and photos (Gallery's OneDrive sync) to the laptop, and with the
+browser's own history already here, the 06:30 task finds each one by
+itself — no config. A source it has never imported is a question in
+/morning ("New on this computer: texts and calls. Import it?"); your yes
+imports it (`lifecrm collect approve android_sms` shows the same dry run as
+the commands below), and from then on it comes in every morning.
+`lifecrm collect setup` is the phone's side as a checklist: what is
+collected, what is ready, the steps for the rest. [collect.md](collect.md)
+has the rules.
 
 A path in brackets is optional: with none, the connector looks where that
 export usually lands. For health, texts and WhatsApp, `lifecrm where` shows

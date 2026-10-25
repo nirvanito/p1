@@ -199,7 +199,7 @@ This registers, for your user (no admin):
 
 | task | when | does | log |
 |---|---|---|---|
-| LifeCRM collect | daily 06:30 | the imports `[collect] sources` names, e.g. `["ios_messages", "browser"]` once each has had its first import by hand: routine changes applied, anything unusual held for you ([collect.md](collect.md)) | `data\collect.log` |
+| LifeCRM collect | daily 06:30 | every source on this laptop, found by itself (the iPhone backup, the newest health export, photos, the browser): routine changes applied, a new source or anything unusual a yes/no question in /morning (`collect setup` is the checklist; [collect.md](collect.md)) | `data\collect.log` |
 | LifeCRM intake | daily 07:00 and at logon | transcribes audio, imports text notes | `data\transcribe.log` |
 | LifeCRM doctor | daily 08:00 | doctor against the live database | `data\doctor.log` (WARN/FAIL lines) |
 | LifeCRM backup | daily 21:30 | tiered snapshots, local + OneDrive | — |
@@ -214,8 +214,10 @@ file in its log ([windows-android.md](windows-android.md#5-background-work-sched
 has the details, the same on this setup).
 
 The iPhone's own data arrives when you make a backup or a download
-(section 7). Once a source has had its first import by hand, the collect
-task picks up each new backup or download the next morning.
+(section 7). The collect task finds each new backup or download the next
+morning: a source it has never imported is a yes/no question in /morning,
+and after your yes it is imported by itself. `lifecrm collect setup` lists
+what is still to do on the phone.
 
 ## 6. The daily loop
 

@@ -1,25 +1,35 @@
 """`lifecrm collect` — the imports the owner would run by hand, run by
 themselves every morning (docs/collect.md).
 
-Each source `[collect] sources` names is read where its connector finds it
-with no path given — the backup app's OneDrive folder, the browser's own
-history file, the newest health export in Downloads or OneDrive — and goes
-through the very plan an `observe` or `health import` dry run shows. What
-happens next is decided here, per source, and recorded (domain/collect.py):
+Which sources: with no `[collect] sources` in config.toml, every source that
+knows where its data lives on this computer (`default_target`, and health)
+— the owner configures nothing. A source it cannot find is skipped without
+a word; one found for the first time becomes a question ("new on this
+computer: browser history, 12,034 records — import it?") that `collect
+approve` answers yes and `collect decline` answers never. A `[collect]
+sources` list, when set, names the sources instead and nothing else is
+looked at.
+
+Each source is read where its connector finds it with no path given — the
+backup app's OneDrive folder, the browser's own history file, the newest
+health export in Downloads or OneDrive — and goes through the very plan an
+`observe` or `health import` dry run shows. Then, per source, recorded
+(domain/collect.py):
 
   applied    a routine plan, written as `--apply` writes it: new and updated
              records, refreshed ones, the few deletions a mirroring source
              made (snapshot first, as observe takes one), the coverage a new
              file declares
   unchanged  nothing the database does not already hold; nothing written
-  held       nothing written; the owner looks and runs it by hand:
+  held       nothing written; it waits for the owner's yes:
                first_import  never imported from this source (and account)
                              before — the first import of every source is
-                             the owner's, with its doc's first-real-import
-                             checklist; a new phone or account starts over
+                             the owner's (`collect approve` shows the dry
+                             run and imports on yes); a new phone or account
+                             starts over
                mass_removal  the removal observe would refuse
                invalid       records the reader produced but cannot validate
-  missing    nothing found where the connector looks
+  missing    a source the owner named found nothing where it looks
   error      the reader failed on what it found
 
 A conflict — a stored record the source now spells differently, with no
@@ -36,8 +46,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db as db_mod
+from . import platforms
 from .config import Config
 from .domain import collect as collect_dom
+from .domain import nudges as nudge_state
 from .domain.util import DomainError, new_uuid, now_utc
 
 SECTION = "collect"
@@ -45,6 +57,27 @@ HEALTH = "health"
 # A connector's doc, where it is not docs/<name>.md (CLAUDE.md, Layout).
 DOCS = {"ai_chat": "ai-chat.md", "ios_messages": "texts.md", "mac_messages": "texts.md",
         "ios_calls": "calls.md", "android_sms": "android-texts.md"}
+# What each source is, in the words a question to the owner uses.
+LABELS = {
+    HEALTH: "health data", "android_sms": "texts and calls (SMS Backup & Restore)",
+    "browser": "browser history", "calendar": "calendar events",
+    "contacts": "contact cards", "email": "email", "finance": "bank and card transactions",
+    "fitness": "workouts", "google_activity": "Google searches and YouTube history",
+    "ios_calls": "iPhone calls", "ios_messages": "iPhone texts (from a backup)",
+    "linkedin": "LinkedIn connections and messages", "location": "places visited",
+    "mac_messages": "Messages on this Mac", "meta_messages": "Instagram and Messenger messages",
+    "notes": "notes", "nutrition": "the food diary", "payments": "Venmo and PayPal payments",
+    "photos": "photo dates and places", "reading": "Kindle highlights and Goodreads books",
+    "rides": "Uber rides and Eats orders", "spotify": "Spotify listening",
+    "telegram": "Telegram messages", "whatsapp": "WhatsApp chats",
+}
+# The owner's "never" for a source: a dismissed nudge key, so `nudges
+# restore` undoes it like any other dismissal (domain/nudges.py).
+DECLINE_KEYS = ("declined", "first_import")
+
+
+def label(name: str) -> str:
+    return LABELS.get(name, name)
 
 
 # ---------------------------------------------------------------- settings
@@ -77,30 +110,43 @@ def check_sources(names: list[str], where: str = "collect") -> list[str]:
 
 
 def settings(cfg: Config) -> dict:
-    """[collect] in config.toml: `sources`, the list a run takes when none
-    is named (missing means none — the scheduled job then does nothing), and
-    `health_dir`, a folder searched for the newest health export before the
-    usual places (a phone's scheduled export often lands in a subfolder of
-    the cloud drive, which `health import` alone never looks in)."""
+    """[collect] in config.toml, all optional. `sources`: the list a run
+    takes instead of finding them itself (None, the default, means find
+    them). `health_dir`: a folder searched for the newest health export
+    before the usual places."""
     raw = (cfg.extra or {}).get(SECTION, {})
     if not isinstance(raw, dict):
-        raise DomainError(f"[{SECTION}] must be a table with a sources list")
+        raise DomainError(f"[{SECTION}] must be a table")
     unknown = sorted(set(raw) - {"sources", "health_dir"})
     if unknown:
         raise DomainError(f"[{SECTION}] has unknown setting(s) {', '.join(unknown)} — "
                           f"known: sources, health_dir")
-    sources = raw.get("sources", [])
-    if not isinstance(sources, list) or not all(isinstance(s, str) and s.strip()
-                                                for s in sources):
+    sources = raw.get("sources")
+    if sources is not None and (not isinstance(sources, list) or not all(
+            isinstance(s, str) and s.strip() for s in sources)):
         raise DomainError(f'[{SECTION}] sources must be a list of source names, e.g. '
-                          f'["android_sms", "health"], got {sources!r}')
+                          f'["android_sms", "health"] — or leave it out and every '
+                          f'source on this computer is found — got {sources!r}')
     health_dir = raw.get("health_dir")
     if health_dir is not None and (not isinstance(health_dir, str) or not health_dir.strip()):
         raise DomainError(f"[{SECTION}] health_dir must be a folder path in quotes, "
                           f"got {health_dir!r}")
-    return {"sources": check_sources([s.strip() for s in sources],
-                                     where=f"[{SECTION}] sources"),
+    return {"sources": (None if sources is None else
+                        check_sources([s.strip() for s in sources],
+                                      where=f"[{SECTION}] sources")),
             "health_dir": cfg.resolve(health_dir.strip()) if health_dir else None}
+
+
+def declined(conn: sqlite3.Connection) -> set[str]:
+    """Sources the owner said never to: `collect decline`, or the first-import
+    question dismissed in /morning."""
+    out = set()
+    for key, row in nudge_state.state_for(conn).items():
+        parts = key.split(":")
+        if (len(parts) == 3 and parts[0] == "collect" and parts[2] in DECLINE_KEYS
+                and row["state"] == "dismissed"):
+            out.add(parts[1])
+    return out
 
 
 # ---------------------------------------------------------------- shared apply
@@ -135,7 +181,7 @@ def apply_observed(conn: sqlite3.Connection, cfg: Config, scan: dict, plan: dict
     return summary, snapshot
 
 
-# ---------------------------------------------------------------- one source
+# ---------------------------------------------------------------- reading a source
 
 def _doc(name: str) -> str:
     return f"docs/{DOCS.get(name, name + '.md')}"
@@ -157,7 +203,14 @@ def _plan_counts(plan: dict) -> dict:
     for key in ("invalid", "removed", "reappeared", "format_upgrades"):
         if plan.get(key):
             counts[key] = len(plan[key])
+    if plan.get("absent"):                         # Apple Health only
+        counts["absent"] = sum(plan["absent"].values())
     return {k: v for k, v in counts.items() if v}
+
+
+def _span(records: list[dict]) -> tuple[str, str] | None:
+    days = sorted(r["journal_date"] for r in records if r.get("journal_date"))
+    return (days[0], days[-1]) if days else None
 
 
 def _imported_before(conn: sqlite3.Connection, scan: dict) -> bool:
@@ -166,6 +219,16 @@ def _imported_before(conn: sqlite3.Connection, scan: dict) -> bool:
     return conn.execute(
         "SELECT 1 FROM imports WHERE connector=? AND account IS ? AND status='applied' "
         "LIMIT 1", (scan["connector"], scan.get("account"))).fetchone() is not None
+
+
+def in_use(conn: sqlite3.Connection, name: str) -> bool:
+    """The source was imported before, from any account: health records of
+    any kind, or an applied import of the connector."""
+    if name == HEALTH:
+        return conn.execute("SELECT 1 FROM health_records WHERE status='active' "
+                            "LIMIT 1").fetchone() is not None
+    return conn.execute("SELECT 1 FROM imports WHERE connector=? AND status='applied' "
+                        "LIMIT 1", (name,)).fetchone() is not None
 
 
 def _nothing_new(conn: sqlite3.Connection, scan: dict, plan: dict) -> bool:
@@ -184,112 +247,148 @@ def _nothing_new(conn: sqlite3.Connection, scan: dict, plan: dict) -> bool:
         "LIMIT 1", (scan["connector"], scan["source_hash"])).fetchone() is not None
 
 
-def _observed(conn: sqlite3.Connection, cfg: Config, name: str, *,
-              dry_run: bool) -> dict:
+class NotFound(DomainError):
+    """Nothing where the source looks: a question for the owner only when
+    they named the source."""
+
+
+def _health_dirs(cfg: Config) -> list[Path]:
+    """Where a health export is looked for: [collect] health_dir, the usual
+    places (`health import`'s), and one folder down in the cloud drives — a
+    phone's scheduled export usually lands in a folder of its own."""
+    from . import health_import as hi
+    first = settings(cfg)["health_dir"]
+    dirs = ([first] if first else []) + hi.search_dirs()
+    for root in platforms.onedrive_candidates():
+        try:
+            dirs += sorted(p for p in root.iterdir() if p.is_dir()
+                           and not p.name.startswith("."))
+        except OSError:
+            continue
+    return list(dict.fromkeys(dirs))
+
+
+def _read(conn: sqlite3.Connection, cfg: Config, name: str) -> dict:
+    """Find the source, read it, plan it: everything a decision needs.
+    NotFound when nothing is where it looks."""
+    if name == HEALTH:
+        from . import apple_health
+        from . import health_import as hi
+        search = hi.find_exports(_health_dirs(cfg))
+        if not search["found"]:
+            raise NotFound(hi.not_found_message(search).replace(
+                "python -m lifecrm health import <path>",
+                "python -m lifecrm health import <path>, or set [collect] health_dir "
+                "to the folder the phone exports to"))
+        target = search["found"][0]
+        reader = hi.reader_for(target)
+        scan = reader.read_export(target, cfg)
+        plan = reader.build_plan(conn, scan["records"])
+        apple = reader is apple_health
+        return {"kind": "health", "target": target, "scan": scan, "plan": plan,
+                "reader": reader, "apple": apple,
+                "label": "health data (Apple Health)" if apple
+                else "health data (Health Connect)",
+                "doc": "docs/apple-health.md" if apple else "docs/health-connect.md",
+                "look": f'python -m lifecrm health import "{target}"'}
     from .connectors import base as conn_base
     from .domain import observations as obs
     c = conn_base.get(name)
     try:
         target = c.default_target(cfg)
     except DomainError as e:
-        return {"outcome": "missing", "reason": str(e)}
+        raise NotFound(str(e)) from e
     scan = c.scan(target, cfg)
-    plan = obs.build_plan(conn, scan)
-    base = {"target": str(target), "counts": _plan_counts(plan)}
-    look = f'python -m lifecrm observe {name} "{target}"'
-    if not _imported_before(conn, scan):
-        whose = f" for {scan['account']}" if scan.get("account") else ""
+    return {"kind": "observed", "target": target, "scan": scan,
+            "plan": obs.build_plan(conn, scan), "connector": c, "label": label(name),
+            "doc": _doc(name), "look": f'python -m lifecrm observe {name} "{target}"'}
+
+
+def _first_time(conn: sqlite3.Connection, src: dict) -> bool:
+    if src["kind"] == "health":
+        from .apple_health import ID_PREFIX
+        op = "LIKE" if src["apple"] else "NOT LIKE"
+        return conn.execute(
+            f"SELECT 1 FROM health_records WHERE status='active' AND external_id {op} ? "
+            f"LIMIT 1", (ID_PREFIX + "%",)).fetchone() is None
+    return not _imported_before(conn, src["scan"])
+
+
+def _question(name: str, src: dict) -> str:
+    """The one line a new source is offered in: what, how much, which days."""
+    n = len(src["plan"]["new"])
+    span = _span(src["plan"]["new"])
+    whose = (f" for {src['scan']['account']}" if src["kind"] == "observed"
+             and src["scan"].get("account") else "")
+    days = f" from {span[0]} to {span[1]}" if span else ""
+    return (f"new on this computer: {src['label']}{whose}, {n:,} record(s){days}, in "
+            f"{src['target']} — yes imports them: python -m lifecrm collect approve "
+            f"{name}; never: python -m lifecrm collect decline {name}; what to check "
+            f"first: {src['doc']}")
+
+
+def _decide(conn: sqlite3.Connection, cfg: Config, name: str, *, dry_run: bool,
+            auto: bool) -> dict:
+    """One source's outcome, writing only an applied plan (uncommitted). A
+    found-for-the-first-time source the reader cannot read, or holding
+    nothing, is `skipped` when it was found rather than named: there is
+    nothing to ask."""
+    using = in_use(conn, name)
+    try:
+        src = _read(conn, cfg, name)
+    except NotFound as e:
+        return {"outcome": "skipped" if auto else "missing", "reason": str(e),
+                "skip": "not found"}
+    except Exception as e:
+        if auto and not using:
+            return {"outcome": "skipped", "reason": _error_line(e), "skip": "unreadable"}
+        raise
+    plan = src["plan"]
+    base = {"target": str(src["target"]), "counts": _plan_counts(plan)}
+    if _first_time(conn, src):
+        if auto and not plan["new"]:
+            return {**base, "outcome": "skipped", "reason": "holds no records",
+                    "skip": "empty"}
         return {**base, "outcome": "held", "hold": "first_import",
-                "reason": f"first import from {name}{whose} — every source's first import "
-                          f"is yours: {look} (a dry run), then add --apply; the checks "
-                          f"are in {_doc(name)}"}
+                "reason": _question(name, src)}
+    if src["kind"] == "health":
+        if not (plan["new"] or plan["updates"] or plan["refreshed"]):
+            return {**base, "outcome": "unchanged"}
+        if dry_run:
+            return {**base, "outcome": "applied", "dry_run": True}
+        summary = src["reader"].apply_plan(conn, plan)
+        return {**base, "outcome": "applied",
+                "counts": {k: v for k, v in summary.items() if v}}
+    from .domain import observations as obs
     if plan["invalid"]:
         return {**base, "outcome": "held", "hold": "invalid",
                 "reason": f"{len(plan['invalid'])} record(s) the {name} reader cannot "
-                          f"validate, first: {plan['invalid'][0]} — {look} shows them"}
+                          f"validate, first: {plan['invalid'][0]} — {src['look']} "
+                          f"shows them"}
     refusal = obs.mass_removal(plan)
     if refusal:
         return {**base, "outcome": "held", "hold": "mass_removal",
-                "reason": f"{refusal} — {look} lists what would go"}
-    if _nothing_new(conn, scan, plan):
+                "reason": f"{refusal} — to see what would go, and import on yes: "
+                          f"python -m lifecrm collect approve {name}"}
+    if _nothing_new(conn, src["scan"], plan):
         return {**base, "outcome": "unchanged"}
     if dry_run:
         return {**base, "outcome": "applied", "dry_run": True}
-    summary, snapshot = apply_observed(conn, cfg, scan, plan)
+    summary, snapshot = apply_observed(conn, cfg, src["scan"], plan)
     return {**base, "outcome": "applied", "import_uuid": summary["import_uuid"],
             "counts": {k: v for k, v in summary.items() if k != "import_uuid" and v},
             "snapshot": str(snapshot) if snapshot else None}
 
 
-def _health_imported_before(conn: sqlite3.Connection, apple: bool) -> bool:
-    """Active health records from this phone's kind of export exist (Apple
-    Health ids carry the 'ah1:' prefix, Health Connect's are its own)."""
-    from .apple_health import ID_PREFIX
-    op = "LIKE" if apple else "NOT LIKE"
-    return conn.execute(
-        f"SELECT 1 FROM health_records WHERE status='active' AND external_id {op} ? "
-        f"LIMIT 1", (ID_PREFIX + "%",)).fetchone() is not None
-
-
-def _health(conn: sqlite3.Connection, cfg: Config, name: str, *,
-            dry_run: bool) -> dict:
-    from . import apple_health
-    from . import health_import as hi
-    first = settings(cfg)["health_dir"]
-    search = hi.find_exports(([first] if first else []) + hi.search_dirs())
-    if not search["found"]:
-        return {"outcome": "missing", "reason": hi.not_found_message(search)
-                .replace("python -m lifecrm health import <path>",
-                         "python -m lifecrm health import <path>, or set [collect] "
-                         "health_dir to the folder the phone exports to")}
-    target = search["found"][0]
-    reader = hi.reader_for(target)
-    apple = reader is apple_health
-    scan = reader.read_export(target, cfg)
-    plan = reader.build_plan(conn, scan["records"])
-    counts = {"new": len(plan["new"]), "updated": len(plan["updates"]),
-              "refreshed": len(plan["refreshed"]), "identical": plan["identical"],
-              "conflicts": len(plan["conflicts"]),
-              "absent": sum((plan.get("absent") or {}).values())}
-    base = {"target": str(target), "counts": {k: v for k, v in counts.items() if v}}
-    if not _health_imported_before(conn, apple):
-        label, doc = (("Apple Health", "apple-health.md") if apple
-                      else ("Health Connect", "health-connect.md"))
-        return {**base, "outcome": "held", "hold": "first_import",
-                "reason": f"first {label} import — every source's first import is "
-                          f'yours: python -m lifecrm health import "{target}" (a dry '
-                          f"run), then add --apply; the checks are in docs/{doc}"}
-    if not (plan["new"] or plan["updates"] or plan["refreshed"]):
-        return {**base, "outcome": "unchanged"}
-    if dry_run:
-        return {**base, "outcome": "applied", "dry_run": True}
-    summary = reader.apply_plan(conn, plan)
-    return {**base, "outcome": "applied", "counts": {k: v for k, v in summary.items() if v}}
-
-
-def collect_source(conn: sqlite3.Connection, cfg: Config, name: str, *,
-                   run_uuid: str, dry_run: bool = False) -> dict:
-    """One source, start to finish: decide, apply when routine, record. An
-    applied import and the row that says so commit together; a failure rolls
-    the source back and is recorded instead. Never raises for one source —
-    the next one still runs."""
-    started = now_utc()
+def _record(conn: sqlite3.Connection, out: dict, run_uuid: str, started: str,
+            actor: str = "system") -> dict:
+    """The outcome's row, committed with whatever the source applied."""
     try:
-        found = (_health if name == HEALTH else _observed)(conn, cfg, name,
-                                                           dry_run=dry_run)
-    except Exception as e:                # one source failing never stops the others
-        conn.rollback()
-        found = {"outcome": "error", "reason": _error_line(e)}
-    out = {"source": name, "hold": None, "reason": None, "target": None,
-           "import_uuid": None, "counts": {}, **found}
-    if dry_run:
-        conn.rollback()
-        return out
-    try:
-        collect_dom.record(conn, run_uuid=run_uuid, source=name, outcome=out["outcome"],
-                           hold=out["hold"], reason=out["reason"], target=out["target"],
-                           import_uuid=out["import_uuid"], counts=out["counts"],
-                           started_at=started, finished_at=now_utc())
+        collect_dom.record(conn, run_uuid=run_uuid, source=out["source"],
+                           outcome=out["outcome"], hold=out["hold"], reason=out["reason"],
+                           target=out["target"], import_uuid=out["import_uuid"],
+                           counts=out["counts"], started_at=started,
+                           finished_at=now_utc(), actor=actor)
         conn.commit()
     except (DomainError, sqlite3.Error) as e:
         conn.rollback()
@@ -298,31 +397,269 @@ def collect_source(conn: sqlite3.Connection, cfg: Config, name: str, *,
     return out
 
 
+def collect_source(conn: sqlite3.Connection, cfg: Config, name: str, *,
+                   run_uuid: str, dry_run: bool = False, auto: bool = False) -> dict:
+    """One source, start to finish: decide, apply when routine, record. An
+    applied import and the row that says so commit together; a failure rolls
+    the source back and is recorded instead; a skipped source leaves no row.
+    Never raises for one source — the next one still runs."""
+    started = now_utc()
+    try:
+        found = _decide(conn, cfg, name, dry_run=dry_run, auto=auto)
+    except Exception as e:                # one source failing never stops the others
+        conn.rollback()
+        found = {"outcome": "error", "reason": _error_line(e)}
+    out = {"source": name, "hold": None, "reason": None, "target": None,
+           "import_uuid": None, "counts": {}, **found}
+    if dry_run or out["outcome"] == "skipped":
+        conn.rollback()
+        return out
+    return _record(conn, out, run_uuid, started)
+
+
 def run(conn: sqlite3.Connection, cfg: Config, sources: list[str] | None = None, *,
         dry_run: bool = False) -> dict:
-    """Every source named (default: [collect] sources), in order. Each source
-    commits or rolls back on its own, so the connection must arrive with
-    nothing pending — a caller's half-done write is never committed here."""
+    """The sources named here, else [collect] sources, else every source on
+    this computer — less the ones the owner declined. Each source commits or
+    rolls back on its own, so the connection must arrive with nothing
+    pending: a caller's half-done write is never committed here."""
     if conn.in_transaction:
         raise DomainError("collect needs a connection with no uncommitted writes")
-    names = check_sources(sources) if sources else settings(cfg)["sources"]
+    configured = settings(cfg)["sources"]
+    names = check_sources(sources) if sources else configured
+    auto = names is None
+    if auto:
+        names = collectable()
+    no = declined(conn)
     run_uuid = new_uuid()
-    results = [collect_source(conn, cfg, n, run_uuid=run_uuid, dry_run=dry_run)
-               for n in names]
-    return {"run_uuid": run_uuid, "dry_run": dry_run, "sources": results}
+    results = []
+    for n in names:
+        if n in no:
+            results.append({"source": n, "outcome": "skipped", "skip": "declined",
+                            "reason": "you declined it", "hold": None, "target": None,
+                            "import_uuid": None, "counts": {}})
+            continue
+        results.append(collect_source(conn, cfg, n, run_uuid=run_uuid, dry_run=dry_run,
+                                      auto=auto))
+    return {"run_uuid": run_uuid, "dry_run": dry_run, "auto": auto, "sources": results}
 
+
+# ---------------------------------------------------------------- the owner's answers
+
+def _forget_no(conn: sqlite3.Connection, name: str) -> None:
+    states = nudge_state.state_for(conn)
+    for why in DECLINE_KEYS:
+        key = f"collect:{name}:{why}"
+        if key in states:
+            nudge_state.restore(conn, key)
+
+
+def approve(conn: sqlite3.Connection, cfg: Config, name: str, *,
+            apply: bool = False) -> dict:
+    """The owner's yes. Without `apply`: what importing the source now would
+    write — the connector's own dry-run report and the one-line question.
+    With it: that import, a held removal included (the yes is what it
+    waited for), recorded like a run. Records the reader cannot validate are
+    never imported: they need a fix, not a yes."""
+    if conn.in_transaction:
+        raise DomainError("collect needs a connection with no uncommitted writes")
+    check_sources([name], where="collect approve")
+    try:
+        src = _read(conn, cfg, name)
+    except NotFound as e:
+        raise DomainError(f"nothing to approve for {name}: {e} — python -m lifecrm "
+                          f"collect setup shows how to get it onto this computer") from e
+    plan, scan = src["plan"], src["scan"]
+    report = (src["reader"].report_lines(scan, plan) if src["kind"] == "health"
+              else src["connector"].report_lines(scan, plan))
+    out = {"source": name, "label": src["label"], "target": str(src["target"]),
+           "counts": _plan_counts(plan), "span": _span(plan["new"]),
+           "first_import": _first_time(conn, src), "doc": src["doc"],
+           "report": report, "applied": False}
+    if src["kind"] == "observed":
+        from .domain import observations as obs
+        out["mass_removal"] = obs.mass_removal(plan)
+        if plan["invalid"]:
+            raise DomainError(f"{len(plan['invalid'])} record(s) the {name} reader cannot "
+                              f"validate, first: {plan['invalid'][0]} — this needs a fix "
+                              f"to the reader, not a yes")
+        nothing = _nothing_new(conn, scan, plan) and not out["first_import"]
+    else:
+        nothing = not (plan["new"] or plan["updates"] or plan["refreshed"])
+    out["nothing_new"] = nothing
+    if not apply or nothing:
+        conn.rollback()
+        return out
+    started = now_utc()
+    if src["kind"] == "observed":
+        summary, snapshot = apply_observed(conn, cfg, scan, plan, allow_mass_removal=True)
+        out.update(import_uuid=summary["import_uuid"],
+                   snapshot=str(snapshot) if snapshot else None)
+        counts = {k: v for k, v in summary.items() if k != "import_uuid" and v}
+    else:
+        counts = {k: v for k, v in src["reader"].apply_plan(conn, plan).items() if v}
+    _forget_no(conn, name)
+    row = _record(conn, {"source": name, "outcome": "applied", "hold": None,
+                         "reason": None, "target": str(src["target"]),
+                         "import_uuid": out.get("import_uuid"), "counts": counts},
+                  new_uuid(), started, actor="user")
+    if row.get("record_failed"):
+        raise DomainError(row["reason"])
+    out.update(applied=True, applied_counts=counts)
+    return out
+
+
+def decline(conn: sqlite3.Connection, name: str) -> dict:
+    """The owner's never: the source is not looked at again (`collect
+    approve` or `nudges restore collect:<source>:declined` take it back)."""
+    check_sources([name], where="collect decline")
+    row = nudge_state.dismiss(conn, f"collect:{name}:declined",
+                              note="never collect this source")
+    conn.commit()
+    return {"source": name, "key": row["nudge_key"]}
+
+
+# ---------------------------------------------------------------- phone setup
+
+# What the phone (or this computer) does so each source arrives by itself,
+# per setup; the steps are the setup guides' own (docs/android.md,
+# docs/windows-iphone.md, docs/mac.md), "(verify)" where those say it.
+PHONE = {
+    "android": ("Windows + Android", "docs/windows-android.md", [
+        ("android_sms", "Texts and calls", [
+            "Install SMS Backup & Restore (SyncTech) from the Play Store.",
+            "Set up a backup: tick Messages and Call logs, and back up all "
+            "conversations, not selected ones.",
+            "Where: OneDrive — sign in, and keep the folder it offers (verify the name).",
+            "Schedule recurring backups: daily, at night."]),
+        (HEALTH, "Health (Samsung Health through Health Connect)", [
+            "Samsung Health › ≡ › Settings › Health Connect: let it write sleep, steps, "
+            "weight, exercise, heart rate and nutrition (verify the menu path).",
+            "Health Connect › App permissions: only one app writing each metric.",
+            "Health Connect › Export / Scheduled export: daily, to OneDrive (verify)."]),
+        ("photos", "Photo dates and places (never the pictures)", [
+            "Gallery › ≡ › Settings › Sync with OneDrive (verify), or the OneDrive "
+            "app's Camera upload."]),
+        ("browser", "Browser history", [
+            "Nothing on this computer: Chrome's own history is read.",
+            "On the phone: sign in to Chrome with the same Google account and turn "
+            "on Sync, so the phone's browsing reaches this computer's Chrome."]),
+    ]),
+    "iphone-windows": ("Windows + iPhone", "docs/windows-iphone.md", [
+        ("ios_messages", "Texts (from the iPhone's backup)", [
+            "Install Apple Devices from the Microsoft Store and connect the iPhone "
+            "with its cable.",
+            "Under Backups: Back up all of the data on your iPhone to this computer, "
+            "with Encrypt local backup unticked, then Back Up Now.",
+            "Each later backup (the cable, or Wi-Fi while it charges if Apple "
+            "Devices does that (verify)) is collected the next morning."]),
+        (HEALTH, "Health (Apple Health)", [
+            "Health › your picture › Export All Health Data › Save to Files › OneDrive "
+            "(top level).",
+            "The iPhone has no scheduled export: repeat it when you want newer data "
+            "in; the next morning takes the newest file."]),
+        ("photos", "Photo dates and places (never the pictures)", [
+            "The OneDrive app on the iPhone › Camera upload, so photos land in "
+            "OneDrive › Pictures › Camera Roll (verify)."]),
+        ("browser", "Browser history", [
+            "Nothing on this computer: the browser's own history is read."]),
+    ]),
+    "iphone-mac": ("Mac + iPhone", "docs/mac.md", [
+        ("mac_messages", "Messages", [
+            "Messages in iCloud on, on the iPhone and on this Mac, so the Mac holds "
+            "the whole history.",
+            "Give your terminal Full Disk Access: System Settings › Privacy & "
+            "Security › Full Disk Access (docs/mac.md, section 5)."]),
+        ("ios_calls", "Calls", [
+            "FaceTime on this Mac › Settings › Calls from iPhone.",
+            "iPhone › Settings › Apps › Phone › Calls on Other Devices, with this "
+            "Mac allowed."]),
+        (HEALTH, "Health (Apple Health)", [
+            "Health › your picture › Export All Health Data › AirDrop to this Mac "
+            "(it lands in Downloads).",
+            "The iPhone has no scheduled export: repeat it when you want newer data "
+            "in; the next morning takes the newest file."]),
+        ("photos", "Photo dates and places (never the pictures)", [
+            "iCloud Photos on in Photos › Settings on this Mac."]),
+        ("contacts", "Contacts", ["iCloud Contacts on, on this Mac."]),
+        ("notes", "Notes", ["iCloud Notes on, on this Mac."]),
+        ("browser", "Browser history", [
+            "Nothing on this Mac: Safari's or Chrome's own history is read."]),
+    ]),
+}
+
+
+def guess_phone() -> str:
+    """'iphone-mac' on a Mac; on Windows 'iphone-windows' when Apple's backup
+    folder exists, else 'android'."""
+    if platforms.is_mac():
+        return "iphone-mac"
+    for folder in platforms.mobilesync_backup_dirs():
+        try:
+            if folder.is_dir():
+                return "iphone-windows"
+        except OSError:
+            continue
+    return "android"
+
+
+def _found(cfg: Config, name: str) -> bool:
+    """Something is where the source looks. Looks only: nothing is read."""
+    if name == HEALTH:
+        from . import health_import as hi
+        return bool(hi.find_exports(_health_dirs(cfg))["found"])
+    from .connectors import base as conn_base
+    try:
+        conn_base.get(name).default_target(cfg)
+        return True
+    except (DomainError, OSError):
+        return False
+
+
+def setup_checklist(conn: sqlite3.Connection, cfg: Config,
+                    phone: str | None = None) -> dict:
+    """Per phone source: collecting (imported before), waiting (on this
+    computer, never imported: `collect approve`), declined, or to do (not on
+    this computer yet: the steps). Reads only."""
+    phone = phone or guess_phone()
+    if phone not in PHONE:
+        raise DomainError(f"phone must be one of {', '.join(PHONE)}, got {phone!r}")
+    title, guide, sources = PHONE[phone]
+    no = declined(conn)
+    configured = settings(cfg)["sources"]
+    items = []
+    for name, what, steps in sources:
+        if name in no:
+            state = "declined"
+        elif in_use(conn, name):
+            state = "collecting"
+        elif _found(cfg, name):
+            state = "waiting"
+        else:
+            state = "to do"
+        if configured is not None and name not in configured and state != "declined":
+            state += " (not in [collect] sources)"
+        items.append({"source": name, "what": what, "state": state,
+                      "steps": steps if state.startswith("to do") else []})
+    return {"phone": phone, "title": title, "guide": guide, "items": items}
+
+
+# ---------------------------------------------------------------- status
 
 def status(conn: sqlite3.Connection, cfg: Config) -> dict:
-    """The newest outcome of every configured source (and of any other
-    source ever collected), when it last applied, and when a run last
-    started. Reads only."""
+    """The newest outcome of every source collected (or named in [collect]
+    sources), when it last applied, when a run last started, and what the
+    owner declined. Reads only."""
     configured = settings(cfg)["sources"]
     latest = collect_dom.latest(conn)
     applied = collect_dom.last_applied(conn)
+    no = declined(conn)
+    names = (configured or []) + sorted(set(latest) - set(configured or []))
     rows = []
-    for name in configured + sorted(set(latest) - set(configured)):
-        row = latest.get(name)
-        rows.append({"source": name, "configured": name in configured,
-                     "latest": row, "last_applied": applied.get(name)})
-    return {"configured": configured, "last_run_at": collect_dom.last_run_at(conn),
+    for name in names:
+        rows.append({"source": name, "configured": configured is None or name in configured,
+                     "declined": name in no, "latest": latest.get(name),
+                     "last_applied": applied.get(name)})
+    return {"configured": configured, "auto": configured is None,
+            "last_run_at": collect_dom.last_run_at(conn), "declined": sorted(no),
             "sources": rows}

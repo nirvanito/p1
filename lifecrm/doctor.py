@@ -539,9 +539,10 @@ def _collect_checks(conn: sqlite3.Connection, cfg: Config | None, _add, _rows) -
     """collect_runs (schema v8, lifecrm/collect.py). The schema pairs a hold
     with its outcome and a reason with every outcome that needs one; what it
     cannot see is a run naming an import that does not exist. With a config:
-    the sources the daily import left for the owner, and a job that stopped
-    running — a scheduled task nobody registered looks exactly like quiet
-    mornings."""
+    the sources the daily import left for the owner (less the declined), and
+    a job that stopped running — a scheduled task nobody registered looks
+    exactly like quiet mornings. With no [collect] sources the job finds them
+    itself, so a job that never ran is only a warning once one has."""
     _rows("collect_runs_imports",
           "SELECT c.id, c.import_uuid FROM collect_runs c WHERE c.import_uuid IS NOT NULL "
           "AND NOT EXISTS (SELECT 1 FROM imports i WHERE i.uuid = c.import_uuid)",
@@ -556,26 +557,30 @@ def _collect_checks(conn: sqlite3.Connection, cfg: Config | None, _add, _rows) -
     except DomainError as e:
         _add("warn", "collect_config", str(e))
         return
-    if not configured:
-        return
     latest = collect_dom.latest(conn)
-    waiting = [f"{s} ({latest[s]['hold'] or latest[s]['outcome']})" for s in configured
-               if s in latest and latest[s]["outcome"] in collect_dom.ATTENTION]
+    last = collect_dom.last_run_at(conn)
+    if configured == [] or (configured is None and last is None):
+        return
+    no = collect_mod.declined(conn)
+    waiting = [f"{s} ({latest[s]['hold'] or latest[s]['outcome']})"
+               for s in (configured if configured is not None else sorted(latest))
+               if s in latest and latest[s]["outcome"] in collect_dom.ATTENTION
+               and s not in no]
     if waiting:
         _add("warn", "collect_waiting",
              f"{len(waiting)} source(s) the daily import left for you: "
-             f"{', '.join(waiting)} — see: python -m lifecrm collect --status")
+             f"{', '.join(waiting)} — see: python -m lifecrm collect status")
     else:
         _add("ok", "collect_waiting")
-    last = collect_dom.last_run_at(conn)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=COLLECT_LATE_DAYS)
               ).strftime("%Y-%m-%dT%H:%M:%SZ")
     if last is None or last < cutoff:
+        names = (f"[collect] names {len(configured)} source(s)" if configured is not None
+                 else "it ran before")
         _add("warn", "collect_last_run",
              (f"no collect run since {last[:10]}" if last else "collect has never run")
-             + f", though [collect] names {len(configured)} source(s) — is the "
-               f"'LifeCRM collect' task registered? Run scripts/install-tasks.ps1 "
-               f"(a Mac: scripts/install-tasks.sh)")
+             + f", though {names} — is the 'LifeCRM collect' task registered? Run "
+               f"scripts/install-tasks.ps1 (a Mac: scripts/install-tasks.sh)")
     else:
         _add("ok", "collect_last_run")
 

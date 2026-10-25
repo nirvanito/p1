@@ -29,9 +29,11 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   entity_aliases or entity_links.** Relationships come only from a reviewed
   draft's `entity_links` (stated, never inferred) or `entities link add`.
 - **The daily collect job never does a source's first import.** `lifecrm
-  collect` applies a routine plan for each `[collect] sources` entry and
-  HOLDS (writes nothing, records why) a first import from a connector +
-  account, a mass removal, or invalid records; the owner runs those by hand.
+  collect` finds every source on the computer by itself (no config), applies
+  a routine plan, and HOLDS (writes nothing, records why) a first import
+  from a connector + account, a mass removal, or invalid records. Only the
+  owner's yes (`collect approve`, or /morning on their answer) imports a
+  held one; `collect decline` is their never.
 - **A missing row is unknown, never zero.** A connector declares a day
   complete (`scan["coverage"]` -> `import_coverage`, schema v7) only from a
   guarantee in its source format (an OFX statement's DTSTART/DTEND, a full
@@ -124,12 +126,14 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [--if-configured]: the one publisher of the .ics — revisions recorded
   in reminder_revisions, data/reminders/ + `[assistant] reminders_dir`,
   served by `serve` at /reminders.ics),
-  collect ([SOURCE]... [--dry-run] [--status] [--if-configured] [--json]:
-  the observe/health imports `[collect] sources` names, each from where its
-  connector looks with no path; routine plans applied through observe's own
-  write path, a first import / mass removal / invalid records HELD; every
-  outcome a `collect_runs` row; exit 1 only when a source failed;
-  docs/collect.md),
+  collect ([--dry-run] [--status] [--if-configured] [--json]: every source
+  on this computer, or `[collect] sources`; each from where its connector
+  looks with no path; routine plans applied through observe's own write
+  path, a first import / mass removal / invalid records HELD as a question;
+  `run SOURCE...`, `approve SOURCE [--yes]` (the dry run, then the import),
+  `decline SOURCE`, `status`, `setup [--phone android|iphone-windows|
+  iphone-mac]` (the phone's side as a checklist); every decided outcome a
+  `collect_runs` row; exit 1 only when a source failed; docs/collect.md),
   patterns (EXPERIMENTAL: co-occurrence between daily series, --days,
   --today, --keys, --all, --json; off in nudges/review//morning unless
   `[assistant] patterns = "on"` or `nudges --patterns`; docs/patterns.md),
@@ -347,20 +351,33 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   `ics.py` is the shared RFC 5545 writer (the demo's calendar uses it too).
 - `lifecrm/collect.py` + `lifecrm/commands/collect.py` +
   `lifecrm/domain/collect.py` — the daily collection (schema v8,
-  docs/collect.md). Per `[collect] sources` entry (a connector with
-  `default_target`, or "health"; `health_dir` adds a folder): the connector's
-  own target, its scan and `build_plan`, then applied | unchanged | held
-  (first_import per connector + account, mass_removal, invalid) | missing |
-  error; `apply_observed` is the one observed-tier write path, shared with
+  docs/collect.md). Sources: `[collect] sources` when set, else
+  `collectable()` — every connector with `default_target`, and "health"
+  (found one folder down in OneDrive too; `health_dir` adds a folder). Per
+  source: the connector's own target, its scan and `build_plan`, then
+  applied | unchanged | held (first_import per connector + account,
+  mass_removal, invalid) | missing (named only) | error; with no list, a
+  source not found, or found for the first time but unreadable or empty, is
+  `skipped` and leaves no row. `approve` = the owner's yes (preview = the
+  connector's report_lines; apply allows the held removal, records the run
+  with actor user, clears a decline); `decline` = a dismissed nudge key
+  `collect:<source>:declined` (the first-import key dismissed counts too).
+  `setup_checklist` is per phone (PHONE: android, iphone-windows,
+  iphone-mac; `guess_phone`): collecting | waiting | to do (with the
+  guides' steps) | declined, from `default_target` lookups only.
+  `apply_observed` is the one observed-tier write path, shared with
   `observe --apply` (refusal, pre-removal snapshot, apply_plan). A new file
   that only declares coverage applies (a quiet day is a known zero); the
   same file again is unchanged; a conflict holds nothing. Each source is its
   own transaction with its `collect_runs` row; one failing never stops the
   next. Rows are bookkeeping: `CONTENT_CHANGE` (the as-of date) ignores
   them, `REFRESH_CHANGE` (the after-write hook) does not. Read by `collect
-  --status`, doctor (`collect_waiting`, `collect_last_run`) and the nudges
-  pack (kind `collect`, key `collect:<source>:<why>`, resting on C#). The
-  06:30 job is scripts/collect.* with --if-configured.
+  status`, doctor (`collect_waiting`, `collect_last_run`) and the nudges
+  pack (kind `collect`, key `collect:<source>:<why>`, resting on C#; a
+  first import's title is the question). The 06:30 job is
+  scripts/collect.* with --if-configured. Tests isolate the home folder
+  (tests/test_collect.py `home` fixture): with no list, a run looks
+  everywhere a connector looks.
 - `lifecrm/web/` + `lifecrm/commands/web.py` — `lifecrm serve`: stdlib HTTP
   over a backup-API snapshot in data/web/lifecrm.db, re-copied when the live
   db or its -wal changes; one read-only connection per request; `api.py`

@@ -195,17 +195,15 @@ max_loops = 10                     # open tasks/plans listed
 # currency = "usd"                  # Uber Eats' file names none: default is the trips' own
 
 # ---------------------------------------------------------------- collect
-# Optional. The sources the daily job (`lifecrm collect`, scripts/collect.*,
-# 06:30) imports by itself, each from where its connector looks with no path
-# given — the [connectors.*] settings above still apply. Routine changes are
-# applied; a source's first import, a large removal and records the reader
-# cannot validate are held for you, in /morning and doctor (docs/collect.md).
-# Any connector that finds its own data can be listed, plus "health".
-# Unset, the job does nothing.
+# Optional — you need none of it. The daily job (`lifecrm collect`,
+# scripts/collect.*, 06:30) finds every source on this computer by itself,
+# each where its connector looks with no path given (the [connectors.*]
+# settings above still apply); routine changes are applied, and a new source,
+# a large removal or records the reader cannot validate wait for your yes in
+# /morning (docs/collect.md). `collect decline <source>` is a no for good.
 # [collect]
-# sources = ["android_sms", "health", "browser", "photos"]   # Windows + Samsung
-# sources = ["mac_messages", "ios_calls", "health", "browser", "photos", "notes", "contacts"]   # Mac + iPhone
-# health_dir = "~/OneDrive/Health Connect"   # the phone's scheduled health export, if not at the drive's top
+# sources = ["android_sms", "health"]   # only these, and nothing else is looked at
+# health_dir = "D:/Exports/Health Connect"   # one more folder for the phone's health export
 
 # ---------------------------------------------------------------- nutrition
 # Optional. Whose reference intakes `lifecrm nutrients` compares against

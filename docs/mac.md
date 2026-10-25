@@ -223,7 +223,7 @@ no sudo):
 
 | job | when | runs |
 |---|---|---|
-| `local.lifecrm.collect` | daily 06:30 | `scripts/collect.sh` — the imports `[collect] sources` names, e.g. `["mac_messages", "ios_calls", "health", "browser", "photos", "notes", "contacts"]`: routine changes applied, a source's first import or anything unusual held for you ([collect.md](collect.md)); needs the same Full Disk Access as the imports themselves |
+| `local.lifecrm.collect` | daily 06:30 | `scripts/collect.sh` — every source on this Mac, found by itself (Messages, calls, contacts, notes, photos, the browser, the newest health export): routine changes applied, a new source or anything unusual a yes/no question in /morning (`collect setup` is the checklist; [collect.md](collect.md)); needs the same Full Disk Access as the imports themselves |
 | `local.lifecrm.intake` | daily 07:00 **and at login** | `scripts/transcribe-inbox.sh` — both inboxes; transcripts ready before you sit down |
 | `local.lifecrm.doctor` | daily 08:00 | `scripts/doctor.sh` — invariants on the live database |
 | `local.lifecrm.backup` | daily 21:30 | `scripts/backup.sh` — snapshot, local + iCloud Drive, tiered retention |

@@ -22,7 +22,7 @@ import pytest
 from conftest import cli_project
 from typer.testing import CliRunner
 
-from lifecrm import SCHEMA_VERSION, collect, db as db_mod, nudges, obsidian
+from lifecrm import SCHEMA_VERSION, collect, db as db_mod, nudges, obsidian, platforms
 from lifecrm.cli import app
 from lifecrm.config import load_config
 from lifecrm.connectors import android_sms as an
@@ -36,6 +36,29 @@ from test_android_sms import make_backup
 from test_health_connect import CDT, _ms, _u, make_hc_db
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def home(tmp_path, monkeypatch):
+    """With no [collect] sources a run looks everywhere a connector looks:
+    in a test that is a home of its own, never this machine's Downloads,
+    OneDrive, browser profile or a plugged-in Kindle."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(platforms.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(platforms, "home", lambda: home)
+    for var in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "HOME"):
+        monkeypatch.setenv(var, str(home))
+    for var in ("OneDriveConsumer", "OneDrive", "OneDriveCommercial"):
+        monkeypatch.delenv(var, raising=False)
+    from lifecrm.connectors import reading
+    monkeypatch.setattr(reading, "_kindle_volumes", lambda: [])
+    return home
+
+
+def _phone_backup(home, **kw):
+    """An SMS backup where the app uploads it: OneDrive › Apps."""
+    return make_backup(home / "OneDrive" / "Apps" / "SMS Backup & Restore", **kw)
 
 
 def _sms_source(cfg, folder):
@@ -117,7 +140,7 @@ def test_a_collect_row_moves_the_refresh_stamp_but_not_the_as_of_date(conn, cfg)
 # ---------------------------------------------------------------- settings
 
 def test_settings_name_sources_and_refuse_what_cannot_be_collected(cfg):
-    assert collect.settings(cfg) == {"sources": [], "health_dir": None}
+    assert collect.settings(cfg) == {"sources": None, "health_dir": None}   # find them
     cfg.extra = {"collect": {"sources": ["health", "android_sms", "health"],
                              "health_dir": "exports/health"}}
     s = collect.settings(cfg)
@@ -141,7 +164,10 @@ def test_the_first_import_is_held_and_writes_nothing(conn, cfg, tmp_path):
     _sms_source(cfg, folder)
     r = _only(collect.run(conn, cfg))
     assert (r["outcome"], r["hold"]) == ("held", "first_import")
-    assert "python -m lifecrm observe android_sms" in r["reason"]
+    assert r["reason"].startswith("new on this computer: texts and calls")
+    assert "python -m lifecrm collect approve android_sms" in r["reason"]
+    assert "python -m lifecrm collect decline android_sms" in r["reason"]
+    assert re.search(r"[\d,]+ record\(s\) from \d{4}-\d\d-\d\d to \d{4}-\d\d-\d\d", r["reason"])
     assert "docs/android-texts.md" in r["reason"]
     assert r["counts"]["new"] > 0                       # what the owner's run will add
     assert _counts(conn) == {"imports": 0, "observations": 0, "collect_runs": 1}
@@ -199,7 +225,8 @@ def test_a_mass_removal_is_held_and_removes_nothing(conn, cfg, tmp_path):
     make_backup(folder, variant="few", stamp="20260921020003")
     r = _only(collect.run(conn, cfg))
     assert (r["outcome"], r["hold"]) == ("held", "mass_removal")
-    assert "would remove" in r["reason"] and "lists what would go" in r["reason"]
+    assert "would remove" in r["reason"]
+    assert "python -m lifecrm collect approve android_sms" in r["reason"]
     assert conn.execute("SELECT COUNT(*) FROM observations WHERE status='active'"
                         ).fetchone()[0] == active
     assert list(cfg.backups_dir.glob("pre-removal-*.db")) == []
@@ -319,7 +346,8 @@ def test_health_is_held_once_then_collected(conn, cfg, tmp_path, monkeypatch):
     cfg.extra = {"collect": {"health_dir": str(drop)}}
     r = _only(collect.run(conn, cfg, ["health"]))
     assert (r["outcome"], r["hold"]) == ("held", "first_import")
-    assert "health import" in r["reason"] and "docs/health-connect.md" in r["reason"]
+    assert "health data (Health Connect)" in r["reason"]
+    assert "collect approve health" in r["reason"] and "docs/health-connect.md" in r["reason"]
     assert conn.execute("SELECT COUNT(*) FROM health_records").fetchone()[0] == 0
 
     hc.apply_plan(conn, hc.build_plan(conn, hc.read_export(z, cfg)["records"]))
@@ -345,7 +373,7 @@ def test_a_held_source_is_a_cited_nudge_until_a_run_is_routine(conn, cfg, tmp_pa
     pack = nudges.build(conn, cfg, today="2026-09-21")
     (n,) = [x for x in pack["nudges"] if x["kind"] == "collect"]
     assert n["key"] == "collect:android_sms:mass_removal"
-    assert n["title"] == "android_sms: the daily import held a large removal for you"
+    assert n["title"] == "android_sms: the daily import held a large removal for your yes"
     (cid,) = n["ids"]
     assert cid.startswith("C") and pack["index"][cid]["type"] == "collect"
     removed, scope = re.search(r"remove (\d+) of (\d+)", n["detail"]).groups()
@@ -355,8 +383,8 @@ def test_a_held_source_is_a_cited_nudge_until_a_run_is_routine(conn, cfg, tmp_pa
     bad = nudges.check(f"It held back removing {int(removed) + 40} texts [{cid}].", pack)
     assert bad["unsupported"]
     assert any(line.startswith(f"  {cid}: collect run ") for line in nudges.render_lines(pack))
-    home = obsidian._today_section({"ents": {}}, pack)
-    assert any("*(the daily import)*" in line and n["key"] in line for line in home)
+    today = obsidian._today_section({"ents": {}}, pack)
+    assert any("*(the daily import)*" in line and n["key"] in line for line in today)
 
     # snoozable by its durable key
     nudge_state.snooze(conn, n["key"], until="2026-09-30")
@@ -428,14 +456,23 @@ def _project(tmp_path, monkeypatch, extra: str = ""):
     return load_config(root)
 
 
-def test_cli_with_nothing_configured(tmp_path, monkeypatch):
+def test_cli_on_a_computer_with_nothing_yet(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
+    for args in (["collect", "--if-configured"], ["collect"]):
+        r = runner.invoke(app, args)
+        assert r.exit_code == 0, r.output
+        assert "nothing on this computer to collect yet" in r.output
+        assert "collect setup" in r.output
+    r = runner.invoke(app, ["collect", "run", "sms"])
+    assert r.exit_code == 1 and "unknown source 'sms'" in r.output
+
+
+def test_cli_with_an_empty_sources_list(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch, "[collect]\nsources = []\n")
     r = runner.invoke(app, ["collect", "--if-configured"])
     assert r.exit_code == 0 and "nothing collected" in r.output
     r = runner.invoke(app, ["collect"])
-    assert r.exit_code == 1 and "[collect] sources" in r.output
-    r = runner.invoke(app, ["collect", "sms"])
-    assert r.exit_code == 1 and "unknown source 'sms'" in r.output
+    assert r.exit_code == 1 and "empty list" in r.output
 
 
 def test_cli_collects_reports_and_shows_status(tmp_path, monkeypatch):
@@ -445,7 +482,8 @@ def test_cli_collects_reports_and_shows_status(tmp_path, monkeypatch):
                    '[collect]\nsources = ["android_sms"]\n')
     r = runner.invoke(app, ["collect", "--if-configured"])
     assert r.exit_code == 0, r.output
-    assert "android_sms     held" in r.output and "waiting for you: android_sms" in r.output
+    assert "android_sms     held" in r.output
+    assert "waiting for your yes: android_sms" in r.output
 
     r = runner.invoke(app, ["observe", "android_sms", "--apply"])     # the owner's own run
     assert r.exit_code == 0, r.output
@@ -480,3 +518,184 @@ def test_cli_exits_1_when_a_source_failed(tmp_path, monkeypatch):
              '[collect]\nsources = ["android_sms"]\n')
     r = runner.invoke(app, ["collect"])
     assert r.exit_code == 1 and "android_sms     error" in r.output
+
+
+# ---------------------------------------------------------------- no config: found, asked, answered
+
+def test_with_no_config_a_source_on_this_computer_is_found_and_asked_about(conn, cfg, home):
+    _phone_backup(home)
+    result = collect.run(conn, cfg)
+    assert result["auto"]
+    by = {r["source"]: r for r in result["sources"]}
+    assert (by["android_sms"]["outcome"], by["android_sms"]["hold"]) == ("held", "first_import")
+    assert by["browser"]["outcome"] == "skipped" and by["browser"]["skip"] == "not found"
+    assert set(collect.collectable()) == set(by)
+    # only the source it found leaves a row; the rest are not questions
+    assert _counts(conn) == {"imports": 0, "observations": 0, "collect_runs": 1}
+
+    pack = nudges.build(conn, cfg, today="2026-09-21")
+    (n,) = [x for x in pack["nudges"] if x["kind"] == "collect"]
+    assert n["key"] == "collect:android_sms:first_import"
+    assert n["title"] == ("New on this computer: Texts and calls (SMS Backup & Restore). "
+                          "Import it?")
+    assert "collect approve android_sms" in n["detail"]
+    # /morning's question copies the detail's numbers, and the check holds it to them
+    count, first, last = re.search(r"([\d,]+) record\(s\) from (\S+) to (\S+),",
+                                   n["detail"]).groups()
+    asked = f"Import your texts and calls — {count} records, {first} to {last}? [{n['id']}]"
+    assert nudges.check(asked, pack)["unsupported"] == []
+    wrong = f"Import your texts and calls — {int(count.replace(',', '')) + 9} records? [{n['id']}]"
+    assert nudges.check(wrong, pack)["unsupported"]
+
+
+def test_yes_shows_the_dry_run_then_imports_and_the_job_takes_over(conn, cfg, home):
+    _phone_backup(home)
+    collect.run(conn, cfg)
+    preview = collect.approve(conn, cfg, "android_sms")
+    assert not preview["applied"] and preview["first_import"]
+    assert preview["counts"]["new"] > 0 and preview["span"]
+    assert preview["report"] and preview["doc"] == "docs/android-texts.md"
+    assert _counts(conn)["imports"] == 0                          # a preview writes nothing
+
+    done = collect.approve(conn, cfg, "android_sms", apply=True)
+    assert done["applied"] and done["import_uuid"] and done["applied_counts"]["added"] > 0
+    row = collect_dom.latest(conn)["android_sms"]
+    assert (row["outcome"], row["import_uuid"]) == ("applied", done["import_uuid"])
+    audit = conn.execute("SELECT actor FROM audit_log WHERE table_name='collect_runs' "
+                         "ORDER BY id DESC LIMIT 1").fetchone()
+    assert audit["actor"] == "user"
+    assert not [x for x in nudges.build(conn, cfg, today="2026-09-21")["nudges"]
+                if x["kind"] == "collect"]
+    by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
+    assert by["android_sms"]["outcome"] == "unchanged"
+    assert collect.approve(conn, cfg, "android_sms")["nothing_new"]
+    assert run_checks(conn, cfg)["failures"] == 0
+
+
+def test_yes_to_a_held_removal_imports_it_with_a_snapshot(conn, cfg, home):
+    folder = _phone_backup(home)
+    collect.approve(conn, cfg, "android_sms", apply=True)
+    shutil.rmtree(folder)
+    _phone_backup(home, variant="few", stamp="20260921020003")
+    by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
+    assert by["android_sms"]["hold"] == "mass_removal"
+    preview = collect.approve(conn, cfg, "android_sms")
+    assert "would remove" in preview["mass_removal"]
+    done = collect.approve(conn, cfg, "android_sms", apply=True)
+    assert done["applied_counts"]["removed"] > 1 and done["snapshot"]
+    assert list(cfg.backups_dir.glob("pre-removal-*.db"))
+
+
+def test_no_means_never_until_yes(conn, cfg, home):
+    _phone_backup(home)
+    collect.run(conn, cfg)
+    assert collect.decline(conn, "android_sms")["key"] == "collect:android_sms:declined"
+    assert collect.declined(conn) == {"android_sms"}
+    by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
+    assert (by["android_sms"]["outcome"], by["android_sms"]["skip"]) == ("skipped", "declined")
+    assert _counts(conn)["collect_runs"] == 1                     # not looked at again
+    assert not [x for x in nudges.build(conn, cfg, today="2026-09-21")["nudges"]
+                if x["kind"] == "collect"]
+    collect.approve(conn, cfg, "android_sms", apply=True)         # yes takes it back
+    assert collect.declined(conn) == set() and nudge_state.states(conn) == []
+
+
+def test_dismissing_the_question_in_morning_is_a_no(conn, cfg, home):
+    _phone_backup(home)
+    collect.run(conn, cfg)
+    nudge_state.dismiss(conn, "collect:android_sms:first_import")
+    conn.commit()
+    assert collect.declined(conn) == {"android_sms"}
+
+
+def test_a_found_source_nobody_can_read_is_not_offered(conn, cfg, home):
+    folder = home / "OneDrive" / "Apps" / "SMS Backup & Restore"
+    folder.mkdir(parents=True)
+    (folder / "sms-20260920020003.xml").write_text("<smses><sms", encoding="utf-8")
+    by = {r["source"]: r for r in collect.run(conn, cfg)["sources"]}
+    assert (by["android_sms"]["outcome"], by["android_sms"]["skip"]) == ("skipped", "unreadable")
+    assert _counts(conn)["collect_runs"] == 0
+
+
+def test_yes_is_refused_for_records_the_reader_cannot_validate(conn, cfg, home, monkeypatch):
+    _phone_backup(home)
+    real = an.scan
+
+    def broken(target, cfg_):
+        scan = real(target, cfg_)
+        scan["records"][0]["started_at"] = ""
+        return scan
+    monkeypatch.setattr(an, "scan", broken)
+    with pytest.raises(DomainError, match="needs a fix to the reader, not a yes"):
+        collect.approve(conn, cfg, "android_sms", apply=True)
+    assert _counts(conn)["imports"] == 0
+
+
+def test_health_one_folder_down_in_onedrive_is_found(conn, cfg, home):
+    _hc_zip(home / "OneDrive" / "Health Connect")
+    r = _only(collect.run(conn, cfg, ["health"]))
+    assert (r["outcome"], r["hold"]) == ("held", "first_import")
+    assert r["target"].endswith("Health Connect.zip")
+
+
+# ---------------------------------------------------------------- the phone's side
+
+def test_the_setup_checklist_says_what_is_left_and_how(conn, cfg, home):
+    data = collect.setup_checklist(conn, cfg, "android")
+    assert data["title"] == "Windows + Android"
+    states = {it["source"]: it["state"] for it in data["items"]}
+    assert states == {"android_sms": "to do", "health": "to do", "photos": "to do",
+                      "browser": "to do"}
+    sms = next(it for it in data["items"] if it["source"] == "android_sms")
+    assert any("SMS Backup & Restore" in s for s in sms["steps"])
+
+    _phone_backup(home)
+    assert {it["source"]: it["state"] for it in
+            collect.setup_checklist(conn, cfg, "android")["items"]}["android_sms"] == "waiting"
+    collect.approve(conn, cfg, "android_sms", apply=True)
+    collect.decline(conn, "photos")
+    items = {it["source"]: it for it in collect.setup_checklist(conn, cfg, "android")["items"]}
+    assert items["android_sms"]["state"] == "collecting" and not items["android_sms"]["steps"]
+    assert items["photos"]["state"] == "declined"
+    with pytest.raises(DomainError, match="phone must be one of"):
+        collect.setup_checklist(conn, cfg, "nokia")
+
+
+def test_the_phone_is_guessed_from_this_computer(home, monkeypatch):
+    monkeypatch.setattr(platforms, "is_mac", lambda: True)
+    assert collect.guess_phone() == "iphone-mac"
+    monkeypatch.setattr(platforms, "is_mac", lambda: False)
+    monkeypatch.setattr(platforms, "is_windows", lambda: True)
+    assert collect.guess_phone() == "android"
+    (home / "Apple" / "MobileSync" / "Backup").mkdir(parents=True)
+    assert collect.guess_phone() == "iphone-windows"
+
+
+def test_cli_approve_decline_and_setup(tmp_path, monkeypatch, home):
+    _phone_backup(home)
+    _project(tmp_path, monkeypatch)
+    r = runner.invoke(app, ["collect"])
+    assert r.exit_code == 0, r.output
+    assert "android_sms     held        new on this computer" in r.output
+    assert "not on this computer: health" in r.output
+
+    r = runner.invoke(app, ["collect", "approve", "android_sms"])       # not a terminal
+    assert r.exit_code == 0, r.output
+    assert "texts and calls (SMS Backup & Restore): " in r.output and "new record(s)" in r.output
+    assert "collect approve android_sms --yes" in r.output
+    r = runner.invoke(app, ["collect", "approve", "android_sms", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert "imported texts and calls" in r.output and "imports retract" in r.output
+
+    r = runner.invoke(app, ["collect", "decline", "photos"])
+    assert r.exit_code == 0 and "declined: photos" in r.output
+    r = runner.invoke(app, ["collect", "setup", "--phone", "android"])
+    assert r.exit_code == 0, r.output
+    assert "Phone setup — Windows + Android" in r.output
+    assert "[done ] Texts and calls" in r.output and "[  no ] Photo dates" in r.output
+    assert "1. Samsung Health" in r.output
+    r = runner.invoke(app, ["collect", "status"])
+    assert r.exit_code == 0 and "every source on this computer" in r.output
+    r = runner.invoke(app, ["collect", "run", "android_sms", "--json"])
+    import json
+    assert json.loads(r.output)["sources"][0]["outcome"] == "unchanged"

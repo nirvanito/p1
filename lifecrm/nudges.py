@@ -390,19 +390,25 @@ def _stale(conn: sqlite3.Connection, now: datetime, ids: _Ids) -> list[dict]:
 
 
 _COLLECT_TITLES = {
-    "first_import": "{s}: the daily import is waiting for your first one",
-    "mass_removal": "{s}: the daily import held a large removal for you",
+    "first_import": "New on this computer: {label}. Import it?",
+    "mass_removal": "{s}: the daily import held a large removal for your yes",
     "invalid": "{s}: the daily import held records it cannot validate",
     "missing": "{s}: the daily import found nothing to read",
     "error": "{s}: the daily import failed",
 }
 
 
+def _first_upper(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 def _collect(conn: sqlite3.Connection, cfg: Config, ids: _Ids,
              notes: list[str]) -> list[dict]:
-    """Sources in [collect] sources whose newest run held them, found nothing
-    or failed (lifecrm/collect.py). Each rests on that run's row, C#; the
-    reason line says what to run. Gone by itself once a run is routine."""
+    """Sources whose newest collect run held them (a new source's question,
+    a large removal), found nothing or failed (lifecrm/collect.py) — every
+    source collected, or those [collect] sources names, less the declined.
+    Each rests on that run's row, C#; the reason line says what yes and no
+    run. Gone by itself once a run is routine."""
     from . import collect as collect_mod
     from .domain import collect as collect_dom
     try:
@@ -410,16 +416,15 @@ def _collect(conn: sqlite3.Connection, cfg: Config, ids: _Ids,
     except DomainError as e:
         notes.append(f"collect: {e}")
         return []
-    if not configured:
-        return []
     try:
         latest = collect_dom.latest(conn)
+        no = collect_mod.declined(conn)
     except sqlite3.OperationalError:     # pre-v8: nothing collected yet
         return []
     out = []
-    for source in configured:
+    for source in (configured if configured is not None else sorted(latest)):
         row = latest.get(source)
-        if row is None or row["outcome"] not in collect_dom.ATTENTION:
+        if row is None or row["outcome"] not in collect_dom.ATTENTION or source in no:
             continue
         why = row["hold"] or row["outcome"]
         # the run's journal day (timezone, rollover), as every date here is
@@ -431,7 +436,8 @@ def _collect(conn: sqlite3.Connection, cfg: Config, ids: _Ids,
             "source": source, "outcome": row["outcome"], "hold": row["hold"],
             "date": day, "reason": row["reason"], "target": row["target"]})
         out.append({"kind": "collect", "key": f"collect:{source}:{why}",
-                    "title": _COLLECT_TITLES[why].format(s=source),
+                    "title": _COLLECT_TITLES[why].format(
+                        s=source, label=_first_upper(collect_mod.label(source))),
                     "detail": row["reason"], "date": day,
                     "ids": [cid], "tier": "system", "_sort": (source,)})
     return out
