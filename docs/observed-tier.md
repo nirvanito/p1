@@ -23,6 +23,8 @@ tested. Every planned connector has been built since (2026-09-24 and
 | [`linkedin`](linkedin.md) | `linkedin_connection`, `linkedin_message` | LinkedIn's data export | connections **mirror** per owner profile; messages remember |
 | [`payments`](payments.md) | `txn` (with the person on the other side) | Venmo statements, PayPal activity CSV | remembers |
 | [`rides`](rides.md) | `ride`, `food_order` | Uber's data export (trips, Eats) | remembers |
+| [`lastfm`](lastfm.md) | `music_play` | Last.fm's API, fetched each morning (`lifecrm connect lastfm`, [online.md](online.md)) | remembers |
+| [`gps_track`](gps_track.md) | `place_visit` | GPSLogger's daily GPX / CSV / GeoJSON tracks in OneDrive | remembers |
 
 `lifecrm connectors` lists them all, each stream with the active rows its
 own imports created (`finance` and `payments` both write `txn`, and each

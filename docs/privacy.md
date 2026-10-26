@@ -13,6 +13,8 @@ accordingly.
 | `data\transcripts\`, `data\staging\` | Transcript text mirrors; drafts and diffs awaiting review (full journal text) | Yes — gitignored, local |
 | `data\dashboard\lifecrm.db` | **A full copy of the database**, taken by `lifecrm dashboard` and served by Datasette. Rewritten on each run, never deleted | Yes — gitignored (`/data/`); delete it when you are done |
 | `data\web\lifecrm.db` | The same kind of full copy, for the web view | Yes — gitignored (`/data/`); delete it when you are done |
+| `data\secrets.json` | What each connected online service needs: a calendar's private link, Gmail's app password, Google's refresh token, the Last.fm key (`docs/online.md`) | Yes — gitignored (`/data/`); never printed; `lifecrm disconnect <service>` forgets an entry |
+| `data\fetched\` | What the daily job downloaded from those services (calendar files, mail as .eml, the address book) | Yes — gitignored (`/data/`) |
 | `backups\` | Local DB snapshots (`lifecrm-*.db`, `pre-migration-*.db`, `pre-restore-*.db`, `pre-removal-*.db`) | Yes — gitignored, local |
 | `archive\`, `archive-data\`, `exports\` | `lifecrm export` output (markdown / jsonl) — the whole journal in plain text | Yes — gitignored; keep them out of synced folders unless you mean to |
 | Phone/health export zips (`*.zip`), iPhone backups | Health Connect exports, unencrypted iPhone backups (every message on the phone) | Yes — `*.zip` is gitignored; iPhone backups live outside the project (`MobileSync\Backup`) |

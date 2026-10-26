@@ -712,7 +712,7 @@ def test_the_setup_checklist_says_what_is_left_and_how(conn, cfg, home):
     assert data["title"] == "Windows + Android"
     states = {it["source"]: it["state"] for it in data["items"]}
     assert states == {"android_sms": "to do", "health": "to do", "photos": "to do",
-                      "browser": "to do"}
+                      "browser": "to do", "gps_track": "to do"}
     sms = next(it for it in data["items"] if it["source"] == "android_sms")
     assert any("SMS Backup & Restore" in s for s in sms["steps"])
 

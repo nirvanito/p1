@@ -1276,7 +1276,14 @@ def observe(
     cfg = _cfg()
     try:
         c = conn_base.get(connector)
-        if target is None:
+        from . import online
+        service = online.for_connector(cfg, connector) if target is None else None
+        if service is not None:
+            p = online.fetch(cfg, service)      # a connected service: today's data
+            if p is None:
+                typer.echo(f"nothing new from {service.TITLE} — nothing to read")
+                return
+        elif target is None:
             finder = getattr(c, "default_target", None)
             if finder is None:
                 _fail(f"{connector} needs a path to read — the export file or folder")
@@ -1328,11 +1335,13 @@ def observe(
 
         # Refused on a mass removal, a snapshot first when anything goes —
         # the one write path `lifecrm collect` shares (lifecrm/collect.py).
-        from .collect import apply_observed
+        from .collect import _settle, apply_observed
         try:
             summary, snapshot = apply_observed(conn, cfg, scan, plan,
                                                allow_mass_removal=allow_mass_removal)
             conn.commit()
+            if service is not None:           # what was fetched is in: file it away
+                _settle(cfg, connector, str(p))
         except DomainError as e:
             conn.rollback()
             _fail(str(e))
