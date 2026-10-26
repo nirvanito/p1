@@ -547,11 +547,12 @@ def test_reimport_is_a_no_op_and_doctor_stays_green(cfg, conn, tmp_path):
     assert report["failures"] == 0, [c for c in report["checks"] if c["status"] == "fail"]
 
 
-def test_texts_from_the_mac_count_toward_the_texts_freshness_check(cfg, conn, tmp_path):
+def test_texts_from_the_mac_have_a_freshness_check_of_their_own(cfg, conn, tmp_path):
     _apply(conn, mm.scan(make_mac_home(tmp_path), cfg))       # newest: 2026-09-03
     checks = {c["check"]: c["status"] for c in run_checks(conn, cfg)["checks"]}
-    assert checks.get("ios_messages_data_age") == "warn"
-    assert "mac_messages_data_age" not in checks               # not said twice
+    conn.rollback()
+    assert checks.get("mac_messages_data_age") == "warn"
+    assert "ios_messages_data_age" not in checks       # no backup read: not in use
 
 
 # ---------------------------------------------------------------- CLI

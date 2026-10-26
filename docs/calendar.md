@@ -13,6 +13,14 @@ touch `entries`, `measurements` or `mentions`. See
 
 ## Getting the export
 
+### Automatic — no export at all (Google Calendar)
+
+Connect the calendar once and the daily collect job downloads it every
+morning through its private iCal link: `python -m lifecrm connect
+google_calendar`, then paste *Settings › (the calendar) › Integrate calendar ›
+Secret address in iCal format*. See [docs/online.md](online.md). The exports
+below are for a one-off import or for calendars without such a link.
+
 ### Windows laptop + Android (Samsung) — Google Calendar
 
 A Samsung phone's events reach Google only if they are saved to the Google

@@ -170,6 +170,23 @@ With no path, every connector except `ai_chat` looks in its usual place
 `[connectors.<name>]` table). `lifecrm where` lists what this machine has,
 with the command for each.
 
+**No export at all — connect once** ([docs/online.md](docs/online.md)). These
+live on a service's servers, so the 06:30 collect job downloads them itself
+each morning; the first import still waits for your yes.
+
+| source | connect once with | read by | guide |
+|---|---|---|---|
+| Google Calendar | its *Secret address in iCal format* | `calendar` | [online.md](docs/online.md#google-calendar--google_calendar--the-calendar-connector) |
+| Gmail | a Google app password (2-Step Verification on) | `email` | [gmail.md](docs/gmail.md) |
+| Google Contacts | your own Google Cloud OAuth client (ten minutes, once) | `contacts` | [google_contacts.md](docs/google_contacts.md) |
+| Spotify listening | Spotify scrobbling to Last.fm + a free Last.fm API key | `lastfm` | [lastfm.md](docs/lastfm.md) |
+
+```
+lifecrm connect                              # which services there are, which are connected
+lifecrm connect gmail you@gmail.com          # set one up (passwords asked for, hidden)
+lifecrm fetch gmail                          # download now, import nothing; disconnect <service> forgets it
+```
+
 **Windows laptop + Samsung:**
 
 | source | how it reaches the laptop | command | guide |
@@ -179,21 +196,22 @@ with the command for each.
 | Call recordings (only the ones you pick) | Samsung Phone's `Recordings/Call` → the same inbox | held by intake; `lifecrm calls take <n>` | [android.md](docs/android.md#call-recordings-optional-and-only-the-ones-you-pick) |
 | Health | Samsung Health → Health Connect → scheduled export `.zip` | `lifecrm health import [zip]` | [health-connect.md](docs/health-connect.md) |
 | Texts and calls | SMS Backup & Restore XML, scheduled to OneDrive | `lifecrm observe android_sms [folder]` | [android-texts.md](docs/android-texts.md) |
-| Contacts | Contacts › Export → `.vcf` | `lifecrm observe contacts [file]` | [contacts.md](docs/contacts.md) |
-| Calendar | Google Takeout, or Google Calendar's `.ical.zip` | `lifecrm observe calendar [export]` | [calendar.md](docs/calendar.md) |
+| Contacts | automatic: Google Contacts, connected once; or Contacts › Export → `.vcf` | `lifecrm observe contacts [file]` | [google_contacts.md](docs/google_contacts.md), [contacts.md](docs/contacts.md) |
+| Calendar | automatic: Google Calendar's secret iCal link, connected once; or Google Takeout | `lifecrm observe calendar [export]` | [calendar.md](docs/calendar.md) |
 | Notes | Google Keep Takeout, or a folder of `.md`/`.txt` (Obsidian, Samsung Notes text) | `lifecrm observe notes [path]` | [notes.md](docs/notes.md) |
 | Photos (metadata only) | Gallery › Sync with OneDrive, or a Google Photos Takeout | `lifecrm observe photos [folder]` | [photos.md](docs/photos.md) |
-| Location visits | Timeline › Export Timeline data → `Timeline.json` | `lifecrm observe location [file]` | [location.md](docs/location.md) |
+| Location visits (automatic) | GPSLogger's daily track → Autosync → `OneDrive\GPSLogger` | `lifecrm observe gps_track [folder]` | [gps_track.md](docs/gps_track.md) |
+| Location visits (Timeline) | Timeline › Export Timeline data → `Timeline.json` | `lifecrm observe location [file]` | [location.md](docs/location.md) |
 | Browser history | the laptop's Chrome/Edge/Brave (phone Chrome syncs into it) | `lifecrm observe browser` | [browser.md](docs/browser.md) |
 | WhatsApp | ⋮ › More › Export chat, Quick Share to the laptop | `lifecrm observe whatsapp <zip>`, after setting `[connectors.whatsapp] me` | [whatsapp.md](docs/whatsapp.md) |
 | Bank and card | the bank's CSV or OFX/QFX download | `lifecrm observe finance <file or folder>` | [finance.md](docs/finance.md) |
 | AI chats | Claude / ChatGPT data export | `lifecrm observe ai_chat <zip>` | [ai-chat.md](docs/ai-chat.md) |
-| Email | Gmail: Google Takeout › Mail → `takeout-….zip` in Downloads | `lifecrm observe email [zip]` | [email.md](docs/email.md) |
+| Email | automatic: Gmail, connected once; or Google Takeout › Mail → `takeout-….zip` in Downloads | `lifecrm observe email [zip]` | [gmail.md](docs/gmail.md), [email.md](docs/email.md) |
 | Instagram and Messenger | Accounts Center › Download your information, **JSON** → `instagram-….zip`, `facebook-….zip` | `lifecrm observe meta_messages [zip or folder]` | [meta_messages.md](docs/meta_messages.md) |
 | Telegram | Telegram Desktop on the laptop › Export chat history / Export Telegram data, machine-readable JSON | `lifecrm observe telegram [folder]` | [telegram.md](docs/telegram.md) |
 | Google searches and YouTube | Google Takeout › My Activity + YouTube history | `lifecrm observe google_activity [zip]` | [google_activity.md](docs/google_activity.md) |
 | Workouts | Strong / Hevy export from the app, Strava's archive from strava.com | `lifecrm observe fitness [file]` | [fitness.md](docs/fitness.md) |
-| Spotify | spotify.com › Account › Privacy settings › Download your data → `my_spotify_data.zip` | `lifecrm observe spotify [zip or folder]` | [spotify.md](docs/spotify.md) |
+| Spotify | automatic: scrobbling to Last.fm, connected once; or spotify.com › Account › Privacy settings › Download your data (earlier years) | `lifecrm observe lastfm` / `observe spotify [zip]` | [lastfm.md](docs/lastfm.md), [spotify.md](docs/spotify.md) |
 | Kindle highlights, Goodreads | the Kindle by USB (`documents\My Clippings.txt`); Goodreads › Export Library | `lifecrm observe reading [file]` | [reading.md](docs/reading.md) |
 | Food diary | cronometer.com › Settings › Account › Export Data → `servings.csv`, `dailysummary.csv` | `lifecrm observe nutrition <folder>`, then `lifecrm nutrients` | [nutrition.md](docs/nutrition.md) |
 | LinkedIn | Settings & Privacy › Data privacy › Get a copy of your data | `lifecrm observe linkedin [zip]` | [linkedin.md](docs/linkedin.md) |
@@ -215,7 +233,7 @@ backups, and the import says so in one line.
 | Calls | the Mac's call history (FaceTime › Calls from iPhone) | `lifecrm observe ios_calls` | [calls.md](docs/calls.md) |
 | Texts from a backup (alternative) | an unencrypted Finder backup of the iPhone | `lifecrm observe ios_messages` | [texts.md](docs/texts.md) |
 | Contacts | the Mac's Contacts stores, iCloud included | `lifecrm observe contacts` | [contacts.md](docs/contacts.md) |
-| Calendar | Calendar › File › Export → `.ics` | `lifecrm observe calendar <ics>` | [calendar.md](docs/calendar.md) |
+| Calendar | Google Calendar: automatic, its secret iCal link connected once; else Calendar › File › Export → `.ics` | `lifecrm observe calendar <ics>` | [calendar.md](docs/calendar.md) |
 | Notes | Apple Notes' store | `lifecrm observe notes` | [notes.md](docs/notes.md) |
 | Photos (metadata only) | the Photos library | `lifecrm observe photos` | [photos.md](docs/photos.md) |
 | Browser history | Safari (the iPhone's Safari syncs into it), Chrome, Brave or Edge | `lifecrm observe browser` (`[connectors.browser] browser = "safari"`) | [browser.md](docs/browser.md) |
@@ -223,12 +241,12 @@ backups, and the import says so in one line.
 | Bank and card | Apple Card CSV, or the bank's CSV or OFX/QFX | `lifecrm observe finance <file or folder>` | [finance.md](docs/finance.md) |
 | Location visits | only Google Maps Timeline on the iPhone. Apple's Significant Locations cannot be exported | `lifecrm observe location <file>` | [location.md](docs/location.md) |
 | AI chats | Claude / ChatGPT data export | `lifecrm observe ai_chat <zip>` | [ai-chat.md](docs/ai-chat.md) |
-| Email | Apple Mail's own store (`~/Library/Mail`), a Mailbox › Export Mailbox… folder, or a Gmail Takeout | `lifecrm observe email [path]` | [email.md](docs/email.md) |
+| Email | Gmail: automatic, connected once; else Apple Mail's own store (`~/Library/Mail`), a Mailbox › Export Mailbox… folder, or a Gmail Takeout | `lifecrm observe email [path]` | [gmail.md](docs/gmail.md), [email.md](docs/email.md) |
 | Instagram and Messenger | Accounts Center › Download your information, **JSON** → `instagram-….zip`, `facebook-….zip` | `lifecrm observe meta_messages [zip or folder]` | [meta_messages.md](docs/meta_messages.md) |
 | Telegram | the Telegram Desktop app on the Mac › Export chat history / Export Telegram data, machine-readable JSON | `lifecrm observe telegram [folder]` | [telegram.md](docs/telegram.md) |
 | Google searches and YouTube | Google Takeout › My Activity + YouTube history | `lifecrm observe google_activity [zip]` | [google_activity.md](docs/google_activity.md) |
 | Workouts | Strong / Hevy export saved to iCloud Drive, Strava's archive from strava.com | `lifecrm observe fitness [file]` | [fitness.md](docs/fitness.md) |
-| Spotify | spotify.com › Account › Privacy settings › Download your data → `my_spotify_data.zip` | `lifecrm observe spotify [zip or folder]` | [spotify.md](docs/spotify.md) |
+| Spotify | automatic: scrobbling to Last.fm, connected once; or spotify.com › Account › Privacy settings › Download your data (earlier years) | `lifecrm observe lastfm` / `observe spotify [zip]` | [lastfm.md](docs/lastfm.md), [spotify.md](docs/spotify.md) |
 | Kindle highlights, Goodreads | a Kindle at `/Volumes/Kindle` (USB-C models: copy the file off first); Goodreads › Export Library | `lifecrm observe reading [file]` | [reading.md](docs/reading.md) |
 | Food diary | cronometer.com › Settings › Account › Export Data → `servings.csv`, `dailysummary.csv` | `lifecrm observe nutrition <folder>`, then `lifecrm nutrients` | [nutrition.md](docs/nutrition.md) |
 | LinkedIn | Settings & Privacy › Data privacy › Get a copy of your data | `lifecrm observe linkedin [zip]` | [linkedin.md](docs/linkedin.md) |
@@ -393,6 +411,7 @@ lifecrm nudges snooze due:<uuid> --days 7    # "not now", by key; dismiss <key> 
 lifecrm reminders publish                    # the reminders calendar (.ics) for the phone: due items and birthdays
 lifecrm collect setup                        # the phone's side as a checklist: what is collected, ready, still to do (docs/collect.md)
 lifecrm collect approve browser              # yes to a new source: the dry run, then the import (decline <source> = never)
+lifecrm connect                              # the online services the job fetches by itself, once connected (docs/online.md)
 lifecrm patterns                             # EXPERIMENTAL: which daily series go together, same day or next day (docs/patterns.md)
 ```
 

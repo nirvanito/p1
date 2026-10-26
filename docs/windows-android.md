@@ -214,7 +214,8 @@ counts, date spans and sample lines; then run the same command with
 | Calendar | §6 Google Takeout | `Takeout\Calendar` | `lifecrm observe calendar "<…\Takeout\Calendar>"` |
 | Keep notes | §6 Google Takeout | `Takeout\Keep` | `lifecrm observe notes "<…\Takeout\Keep>"` |
 | Photos (metadata) | §6 Takeout, or Gallery › Sync with OneDrive | `Takeout\Google Photos` / `OneDrive\Pictures\…` | `lifecrm observe photos "<folder>"` |
-| Location visits | §6 Timeline › Export Timeline data | `Timeline.json` | `lifecrm observe location ["<Timeline.json>"]` ([location.md](location.md)) |
+| Location visits (automatic) | GPSLogger + Autosync ([gps_track.md](gps_track.md)) | `OneDrive\GPSLogger` | `lifecrm observe gps_track ["<folder>"]` |
+| Location visits (Timeline) | §6 Timeline › Export Timeline data | `Timeline.json` | `lifecrm observe location ["<Timeline.json>"]` ([location.md](location.md)) |
 | Browser history | Chrome sync on the phone | the laptop's Chrome/Edge/Brave profile | `lifecrm observe browser` ([browser.md](browser.md)) |
 | WhatsApp | ⋮ › More › Export chat › Quick Share | `Downloads\WhatsApp Chat with ….zip` | `lifecrm observe whatsapp ["<zip>"]`; set `[connectors.whatsapp] me` first ([whatsapp.md](whatsapp.md)) |
 | Bank and card | the bank's website | a `.csv` / `.ofx` / `.qfx` | `lifecrm observe finance "<file or folder>"` ([finance.md](finance.md)) |
@@ -222,9 +223,13 @@ counts, date spans and sample lines; then run the same command with
 
 **Or let the morning job do it.** Once the phone sends texts and calls (SMS
 Backup & Restore's nightly backup), health (Health Connect's scheduled
-export) and photos (Gallery's OneDrive sync) to the laptop, and with the
+export), photos (Gallery's OneDrive sync) and places (GPSLogger's daily
+track, synced to OneDrive › GPSLogger) to the laptop, and with the
 browser's own history already here, the 06:30 task finds each one by
-itself — no config. A source it has never imported is a question in
+itself — no config. Calendar, Gmail, Google Contacts and your Spotify
+listening (through Last.fm) need no phone at all: connect each once with
+`lifecrm connect` and the same task downloads them first
+([online.md](online.md)). A source it has never imported is a question in
 /morning ("New on this computer: texts and calls. Import it?"); your yes
 imports it (`lifecrm collect approve android_sms` shows the same dry run as
 the commands below), and from then on it comes in every morning.
@@ -445,6 +450,7 @@ and [new-machine.md](new-machine.md).
 | symptom | look at |
 |---|---|
 | Nothing arrives from the phone | Autosync in *Never sleeping apps*; Autosync's own log; OneDrive running and not paused on the laptop; `lifecrm doctor` (`configured_dirs`, `inbox_stuck`) |
+| No places for days | GPSLogger still logging (its notification), Autosync's second folder pair, and in File Explorer OneDrive › GPSLogger › *Always keep on this device* (verify) so the 06:30 job never waits on a download ([gps_track.md](gps_track.md)) |
 | A note is on the wrong day | `lifecrm filedate "<file>"`; android.md "The time in the filename"; `transcribe --file … --date …` |
 | Task Scheduler shows `0x1` | `data\transcribe.log` — the failing file is named; it stays in the inbox |
 | `doctor` says a file type is never read | the phone saved a format intake does not take; the warning lists the ones it does |
