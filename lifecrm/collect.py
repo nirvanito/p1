@@ -95,21 +95,26 @@ def collectable() -> list[str]:
     """Every source a run can take: health, and each connector that knows
     where its data lives (`default_target`). One that needs a path every
     time (an AI chat export) is not among them."""
+    from . import online
     from .connectors import base as conn_base
+    fed = online.feeds()
     return [HEALTH] + sorted(n for n, c in conn_base.registry().items()
-                             if callable(getattr(c, "default_target", None)))
+                             if callable(getattr(c, "default_target", None)) or n in fed)
 
 
 def check_sources(names: list[str], where: str = "collect") -> list[str]:
     """`names` validated, duplicates dropped, order kept; one-line errors."""
+    from . import online
     from .connectors import base as conn_base
     reg = conn_base.registry()
+    fed = online.feeds()
     out: list[str] = []
     for n in names:
         if n != HEALTH and n not in reg:
             raise DomainError(f"{where}: unknown source '{n}' — one of: "
                               f"{', '.join(collectable())}")
-        if n != HEALTH and not callable(getattr(reg[n], "default_target", None)):
+        if n != HEALTH and n not in fed and not callable(
+                getattr(reg[n], "default_target", None)):
             raise DomainError(f"{where}: {n} needs the export's path every time, so it "
                               f"cannot be collected — import it by hand: python -m "
                               f"lifecrm observe {n} <export>")
@@ -361,12 +366,20 @@ def _read(conn: sqlite3.Connection, cfg: Config, name: str) -> dict:
                 else "health data (Health Connect)",
                 "doc": "docs/apple-health.md" if apple else "docs/health-connect.md",
                 "look": f'python -m lifecrm health import "{target}"'}
+    from . import online
     from .connectors import base as conn_base
     from .domain import observations as obs
     c = conn_base.get(name)
+    service = online.for_connector(cfg, name)
     try:
-        target = c.default_target(cfg)
+        # A connected online service: today's data fetched first, then read
+        # like any export (lifecrm/online). A failed fetch is an error, never
+        # "not found": the owner connected it.
+        target = (online.fetch(cfg, service) if service is not None
+                  else c.default_target(cfg))
     except (DomainError, PermissionError) as e:
+        if service is not None:
+            raise
         if blocked(e):
             raise Blocked(_error_line(e)) from e
         if isinstance(e, conn_base.Ambiguous):
@@ -436,7 +449,8 @@ def _decide(conn: sqlite3.Connection, cfg: Config, name: str, *, dry_run: bool,
     except Exception as e:
         if blocked(e):                    # refused while reading, not while looking
             return refusal(e)
-        if auto and not using:
+        from . import online
+        if auto and not using and online.for_connector(cfg, name) is None:
             return {"outcome": "skipped", "reason": _error_line(e), "skip": "unreadable"}
         raise
     plan = src["plan"]
@@ -511,7 +525,21 @@ def collect_source(conn: sqlite3.Connection, cfg: Config, name: str, *,
     if dry_run or out["outcome"] == "skipped":
         conn.rollback()
         return out
-    return _record(conn, out, run_uuid, started)
+    out = _record(conn, out, run_uuid, started)
+    if out["outcome"] in ("applied", "unchanged") and out.get("target"):
+        _settle(cfg, name, out["target"])
+    return out
+
+
+def _settle(cfg: Config, name: str, target: str) -> None:
+    """After a committed import: an online service that fetches only what is
+    new (mail) files away what is now in the database, so tomorrow's read is
+    tomorrow's mail. Before the yes it stays put: the first import reads it."""
+    from . import online
+    try:
+        online.settle(cfg, name, Path(target))
+    except (DomainError, OSError):
+        pass                 # left pending: re-read tomorrow, deduped, harmless
 
 
 def run(conn: sqlite3.Connection, cfg: Config, sources: list[str] | None = None, *,
@@ -629,6 +657,7 @@ def approve(conn: sqlite3.Connection, cfg: Config, name: str, *,
                   new_uuid(), started, actor="user")
     if row.get("record_failed"):
         raise DomainError(row["reason"])
+    _settle(cfg, name, str(src["target"]))
     out.update(applied=True, applied_counts=counts)
     return out
 
@@ -777,7 +806,11 @@ def setup_checklist(conn: sqlite3.Connection, cfg: Config,
             state.startswith("waiting") and name in ALWAYS_STEPS)
         items.append({"source": name, "what": what, "state": state,
                       "steps": steps if shown else []})
-    return {"phone": phone, "title": title, "guide": guide, "items": items}
+    from . import online
+    services = [{**s, "steps": [] if s["connected"] else s["steps"]}
+                for s in online.status(cfg)]
+    return {"phone": phone, "title": title, "guide": guide, "items": items,
+            "online": services}
 
 
 # ---------------------------------------------------------------- status

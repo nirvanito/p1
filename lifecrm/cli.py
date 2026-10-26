@@ -1276,7 +1276,11 @@ def observe(
     cfg = _cfg()
     try:
         c = conn_base.get(connector)
-        if target is None:
+        from . import online
+        service = online.for_connector(cfg, connector) if target is None else None
+        if service is not None:
+            p = online.fetch(cfg, service)      # a connected service: today's data
+        elif target is None:
             finder = getattr(c, "default_target", None)
             if finder is None:
                 _fail(f"{connector} needs a path to read — the export file or folder")

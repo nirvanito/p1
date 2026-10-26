@@ -349,6 +349,15 @@ def setup_cmd(phone: str = typer.Option(
         typer.echo(f"  [{mark}] {it['what']:<46} {text}{extra}")
         for i, step in enumerate(it["steps"], 1):
             typer.echo(f"            {i}. {step}")
+    if data.get("online"):
+        typer.echo("Online — fetched by the daily job once connected (docs/online.md):")
+        for s in data["online"]:
+            mark = "done " if s["connected"] else "to do"
+            typer.echo(f"  [{mark}] {s['title']:<46} "
+                       + ("connected" if s["connected"] else
+                          f"python -m lifecrm connect {s['service']}:"))
+            for i, step in enumerate(s["steps"], 1):
+                typer.echo(f"            {i}. {step}")
     typer.echo("Each one you finish shows up the next morning: /morning asks whether "
                "to import it.")
     typer.echo(f"The whole guide: {data['guide']}")
