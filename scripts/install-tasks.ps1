@@ -64,8 +64,14 @@ Register-LifeCrmTask "LifeCRM reminders" "reminders.ps1" @(
 # Before intake, the calendar and doctor, so all three see this morning's
 # imports: what [collect] sources names, routine changes applied, the rest
 # held for /morning. Exits 0 with one log line when [collect] names nothing.
+# ...and when you sign in: a laptop is asleep at 06:30 more often than not
+# (modern standby does not keep wake timers), and signing in is when Wi-Fi,
+# OneDrive and the phone are back. Three minutes lets them connect first.
+$collectLogon = New-ScheduledTaskTrigger -AtLogOn -User $Me
+$collectLogon.Delay = "PT3M"
 Register-LifeCrmTask "LifeCRM collect" "collect.ps1" @(
-    (New-ScheduledTaskTrigger -Daily -At 06:30)
+    (New-ScheduledTaskTrigger -Daily -At 06:30),
+    $collectLogon
 )
 Write-Host "done - inspect with: Get-ScheduledTask -TaskName 'LifeCRM*'"
 Write-Host "logs: data\transcribe.log, data\doctor.log, data\verify-restore.log, data\review.log, data\reminders.log, data\collect.log"

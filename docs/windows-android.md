@@ -122,7 +122,12 @@ like a quiet day.
 
 ## 4. The phone
 
-Follow [android.md](android.md):
+Two routes, and they can run side by side. **The shortcut**: show the phone
+in this laptop's File Explorer (Link to Windows; android.md, "No sync app at
+all") and the laptop reads the recorder's, SMS Backup & Restore's and
+GPSLogger's own folders over Wi-Fi — nothing to install on the phone. **The
+sync route**, which is also what every other setup uses, follows
+[android.md](android.md):
 
 1. **Voice notes** — Samsung Voice Recorder, the side-button shortcut, and
    an Autosync folder pair `Recordings/Voice Recorder` → OneDrive
@@ -226,10 +231,13 @@ Backup & Restore's nightly backup), health (Health Connect's scheduled
 export), photos (Gallery's OneDrive sync) and places (GPSLogger's daily
 track, synced to OneDrive › GPSLogger) to the laptop, and with the
 browser's own history already here, the 06:30 task finds each one by
-itself — no config. Calendar, Gmail, Google Contacts and your Spotify
-listening (through Last.fm) need no phone at all: connect each once with
-`lifecrm connect` and the same task downloads them first
-([online.md](online.md)). A source it has never imported is a question in
+itself — no config. With the phone shown in File Explorer, the same task
+reads texts and tracks straight off the phone, and intake pulls the
+recordings. Calendar, Gmail, Google Contacts and your Spotify listening
+(through Last.fm) need no phone at all: connect each once with `lifecrm
+connect` and the same task downloads them first ([online.md](online.md)).
+The task also runs three minutes after you sign in, for the mornings the
+laptop was asleep at 06:30. A source it has never imported is a question in
 /morning ("New on this computer: texts and calls. Import it?"); your yes
 imports it (`lifecrm collect approve android_sms` shows the same dry run as
 the commands below), and from then on it comes in every morning.
@@ -449,6 +457,7 @@ and [new-machine.md](new-machine.md).
 
 | symptom | look at |
 |---|---|
+| `collect status` says the phone is not answering | the phone on the same Wi-Fi as the laptop; Link to Windows signed in on the phone; Settings › Bluetooth & devices › Mobile devices › the phone › Show mobile device in File Explorer (android.md, "No sync app at all") |
 | Nothing arrives from the phone | Autosync in *Never sleeping apps*; Autosync's own log; OneDrive running and not paused on the laptop; `lifecrm doctor` (`configured_dirs`, `inbox_stuck`) |
 | No places for days | GPSLogger still logging (its notification), Autosync's second folder pair, and in File Explorer OneDrive › GPSLogger › *Always keep on this device* (verify) so the 06:30 job never waits on a download ([gps_track.md](gps_track.md)) |
 | A note is on the wrong day | `lifecrm filedate "<file>"`; android.md "The time in the filename"; `transcribe --file … --date …` |
