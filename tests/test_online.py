@@ -150,3 +150,60 @@ def test_cli_connect_list_fetch_disconnect(tmp_path, monkeypatch, served):
     assert "[done ] Google Calendar" in r.output
     r = runner.invoke(app, ["disconnect", "google_calendar"])
     assert r.exit_code == 0 and "disconnected" in r.output
+
+
+@pytest.fixture
+def incremental(monkeypatch):
+    """A fake service that fetches only what is new (as mail does): what it
+    downloads stays pending until settle files it away, and a morning with
+    nothing new and nothing pending is None."""
+    import types
+    state = {"new": _ics(("e1@google.com", "20261020T150000Z", "Dentist")),
+             "settled": []}
+
+    def fetch(cfg, secret, dest):
+        pending = dest / "pending"
+        if state["new"] is not None:
+            pending.mkdir(exist_ok=True)
+            (pending / "cal.ics").write_bytes(state["new"])
+            state["new"] = None
+        return pending if pending.is_dir() and any(pending.iterdir()) else None
+
+    def settle(cfg, secret, target):
+        state["settled"].append(target)
+        for f in target.iterdir():
+            f.replace(target.parent / f.name)
+
+    mod = types.SimpleNamespace(SERVICE="fake_mail", CONNECTOR="calendar",
+                                TITLE="Fake Mail", steps=lambda: ["Do it."],
+                                connect=lambda cfg, args, ask: {"k": 1},
+                                fetch=fetch, settle=settle)
+    monkeypatch.setattr(online, "registry", lambda: {"fake_mail": mod})
+    return state
+
+
+def test_pending_waits_for_the_yes_then_nothing_new_is_unchanged(conn, cfg, incremental):
+    online.connect(cfg, "fake_mail", [], None)
+    assert _only_calendar(collect.run(conn, cfg))["hold"] == "first_import"
+    assert incremental["settled"] == []                   # held: still pending
+    assert _only_calendar(collect.run(conn, cfg))["hold"] == "first_import"
+
+    done = collect.approve(conn, cfg, "calendar", apply=True)
+    assert done["applied"] and len(incremental["settled"]) == 1
+    r = _only_calendar(collect.run(conn, cfg))            # nothing new, nothing pending
+    assert (r["outcome"], r["target"]) == ("unchanged", None), r
+    preview = collect.approve(conn, cfg, "calendar")
+    assert preview["nothing_new"] and "nothing new from Fake Mail" in preview["report"][0]
+
+
+def test_cli_says_nothing_new(tmp_path, monkeypatch, incremental):
+    cli_project(tmp_path, monkeypatch)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert runner.invoke(app, ["connect", "fake_mail"]).exit_code == 0
+    assert "fetched Fake Mail" in runner.invoke(app, ["fetch", "fake_mail"]).output
+    r = runner.invoke(app, ["collect", "approve", "calendar", "--yes"])
+    assert r.exit_code == 0 and "imported" in r.output, r.output
+    for args in (["fetch", "fake_mail"], ["observe", "calendar"],
+                 ["collect", "approve", "calendar"]):
+        r = runner.invoke(app, args)
+        assert r.exit_code == 0 and "nothing new" in r.output, (args, r.output)

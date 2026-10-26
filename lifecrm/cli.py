@@ -1280,6 +1280,9 @@ def observe(
         service = online.for_connector(cfg, connector) if target is None else None
         if service is not None:
             p = online.fetch(cfg, service)      # a connected service: today's data
+            if p is None:
+                typer.echo(f"nothing new from {service.TITLE} — nothing to read")
+                return
         elif target is None:
             finder = getattr(c, "default_target", None)
             if finder is None:

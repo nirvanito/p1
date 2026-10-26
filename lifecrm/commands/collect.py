@@ -233,7 +233,8 @@ def approve_cmd(source: str = typer.Argument(..., help="The source to import, e.
         if not as_json:
             for line in preview["report"]:
                 typer.echo(line)
-            typer.echo(_summary(preview))
+            if preview["target"]:              # None: an online service had nothing
+                typer.echo(_summary(preview))
         if preview["nothing_new"]:
             _echo_json(preview) if as_json else typer.echo(
                 "nothing new to import — the daily job already has it all")

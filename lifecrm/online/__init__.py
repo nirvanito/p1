@@ -18,7 +18,8 @@ A service module defines
     TITLE     = "Google Calendar"
     def steps() -> list[str]          # the one-time setup, in words
     def connect(cfg, args, ask) -> dict   # what fetch needs, from the owner
-    def fetch(cfg, secret, dest) -> Path  # download into dest, return the target
+    def fetch(cfg, secret, dest) -> Path | None  # download into dest, return the
+                                      # target; None = nothing new, nothing pending
     def settle(cfg, secret, target)       # optional: what target held is imported
 
 A service that fetches its whole state each time (a calendar link) needs no
@@ -90,8 +91,10 @@ def feeds() -> set[str]:
     return {m.CONNECTOR for m in registry().values()}
 
 
-def fetch(cfg: Config, mod) -> Path:
-    """Download the service's new data; the path its connector reads."""
+def fetch(cfg: Config, mod) -> Path | None:
+    """Download the service's new data; the path its connector reads, or
+    None when there is nothing new and nothing pending (an incremental
+    service on a quiet morning) — collect reads that as unchanged."""
     secret = secrets.load(cfg).get(mod.SERVICE)
     if not secret:
         raise DomainError(f"{mod.TITLE} is not connected — run: python -m lifecrm "

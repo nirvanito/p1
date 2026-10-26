@@ -278,6 +278,11 @@ class NotFound(DomainError):
     they named the source."""
 
 
+class NothingNew(DomainError):
+    """A connected online service had nothing new to fetch and nothing
+    pending: unchanged, with nothing to read."""
+
+
 class Blocked(DomainError):
     """The source is there, but macOS privacy (TCC) refuses the read until
     the owner grants Full Disk Access — never 'not found', which would hide
@@ -385,6 +390,8 @@ def _read(conn: sqlite3.Connection, cfg: Config, name: str) -> dict:
         if isinstance(e, conn_base.Ambiguous):
             raise                         # several candidates: a question, not absence
         raise NotFound(str(e)) from e
+    if target is None:                     # only a connected service says so
+        raise NothingNew(f"nothing new from {service.TITLE}")
     scan = c.scan(target, cfg)
     return {"kind": "observed", "target": target, "scan": scan,
             "plan": obs.build_plan(conn, scan), "connector": c, "label": label(name),
@@ -432,6 +439,8 @@ def _decide(conn: sqlite3.Connection, cfg: Config, name: str, *, dry_run: bool,
         return {"outcome": "error", "reason": line, "blocked": True}
     try:
         src = _read(conn, cfg, name)
+    except NothingNew:
+        return {"outcome": "unchanged"}
     except Blocked as e:
         return refusal(e)
     except NotFound as e:
@@ -617,6 +626,11 @@ def approve(conn: sqlite3.Connection, cfg: Config, name: str, *,
     check_sources([name], where="collect approve")
     try:
         src = _read(conn, cfg, name)
+    except NothingNew as e:
+        return {"source": name, "label": label(name), "target": None, "counts": {},
+                "span": None, "first_import": False, "doc": _doc(name),
+                "checklist": False, "report": [f"  {e}"], "applied": False,
+                "nothing_new": True}
     except NotFound as e:
         raise DomainError(f"nothing to approve for {name}: {e} — python -m lifecrm "
                           f"collect setup shows how to get it onto this computer") from e

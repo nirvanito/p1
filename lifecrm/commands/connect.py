@@ -88,7 +88,10 @@ def fetch(service: str = typer.Argument(..., help="The service to fetch from now
     except DomainError as e:
         _fail(str(e))
     if as_json:
-        _echo_json({"service": service, "target": str(target)})
+        _echo_json({"service": service, "target": str(target) if target else None})
+        return
+    if target is None:
+        typer.echo(f"nothing new from {mod.TITLE}")
         return
     typer.echo(f"fetched {mod.TITLE} into {target} — nothing imported; read it with: "
                f"python -m lifecrm collect approve {mod.CONNECTOR}")
