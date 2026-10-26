@@ -25,8 +25,8 @@ Time: ~20 minutes at the computer, plus ~10 on the phone.
 
 Both:
 
-- A **GitHub account**, with the collaborator invite to the private repo
-  accepted (check your email / github.com notifications).
+- A **GitHub account** only if you want to file issues: the repo is public,
+  so cloning needs no invite.
 - **Claude Code** with a Pro or Max login — install per
   <https://claude.com/claude-code>. Extraction (`/log`) runs on your
   subscription; a nightly run is small and fits comfortably in Pro limits.
@@ -181,7 +181,7 @@ Contacts, Photos, Notes or an iPhone backup — see mac.md, section 5.
 - Keep a plain-text **friction log** next to the repo. Any time something
   takes more than two–three minutes or makes you not want to record — write
   it down in the moment. That file is the trial's most valuable output.
-- Report problems and observations as **GitHub issues** on the private repo
+- Report problems and observations as **GitHub issues** on the repo
   (never paste transcript contents into an issue — describe, don't quote).
 
 ## 7. Getting updates
