@@ -81,7 +81,10 @@ def _sync_roots() -> list[tuple[str, Path]]:
     File Explorer, from the registry; nothing anywhere else."""
     if not platforms.is_windows():
         return []
-    import winreg
+    try:
+        import winreg
+    except ImportError:          # a Windows faked on another OS (the tests)
+        return []
     out = []
     try:
         base = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _SYNC_ROOTS)

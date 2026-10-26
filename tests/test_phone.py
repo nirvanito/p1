@@ -7,6 +7,7 @@ the finding, the copying-once, the timeouts and the quiet "not answering".
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -73,6 +74,17 @@ def test_only_phones_in_the_registry_are_mounts(cfg, linked):
 def test_nothing_without_a_phone(cfg):
     assert phone.mounts(cfg) == [] and phone.folders(cfg, "GPSLogger") == []
     assert phone.pull(cfg) == [] and phone.status(cfg) == []
+
+
+def test_a_faked_windows_without_the_registry_finds_no_phone(cfg, monkeypatch):
+    """Tests on a Mac fake a Windows home (test_fix_ops._windows_home) and
+    then read the connectors' places: no registry there means no phone,
+    never an ImportError."""
+    monkeypatch.setattr(phone.platforms, "is_windows", lambda: True)
+    monkeypatch.setitem(sys.modules, "winreg", None)
+    phone.forget()
+    assert phone._sync_roots() == [] and phone.mounts(cfg) == []
+    assert android_sms.search_places(cfg)
 
 
 def test_the_connectors_look_on_the_phone_too(cfg, linked):
