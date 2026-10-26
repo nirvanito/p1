@@ -750,13 +750,16 @@ def _newest_in_zip(zf: zipfile.ZipFile) -> dict[str, str]:
 
 def search_places(cfg: Config) -> list[Path]:
     """Where the backups are looked for, in order: the configured folder, the
-    app's OneDrive upload folders, then Downloads."""
+    app's OneDrive upload folders, the app's own folder on a phone shown in
+    File Explorer (lifecrm/phone.py), then Downloads."""
+    from .. import phone
     places = []
     folder = _settings(cfg)["folder"]
     if folder is not None:
         places.append(folder)
     for root in platforms.onedrive_candidates():
         places.extend(root / sub for sub in ONEDRIVE_FOLDERS)
+    places.extend(phone.folders(cfg, "SMSBackupRestore"))
     places.append(platforms.home() / "Downloads")
     return list(dict.fromkeys(places))
 

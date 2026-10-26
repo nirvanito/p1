@@ -215,6 +215,13 @@ max_loops = 10                     # open tasks/plans listed
 # here: `python -m lifecrm connect <service>` keeps what each needs in
 # data/secrets.json, never in this file (docs/online.md).
 
+# A phone shown in Windows 11's File Explorer (Link to Windows) is read
+# directly — the recorder's notes into the inbox, the texts backup and the
+# GPS tracks where their connectors look — with no sync app (docs/android.md).
+# Nothing to set; the opt-out:
+# [phone]
+# read = false
+
 # ---------------------------------------------------------------- nutrition
 # Optional. Whose reference intakes `lifecrm nutrients` compares against
 # (docs/nutrition.md). Unset, each value is the higher of the female and male

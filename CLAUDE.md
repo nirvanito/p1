@@ -85,7 +85,7 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
   overrides the interpreter the .sh scripts use. Scripts (.ps1 / .sh): setup,
   transcribe-inbox, doctor, backup, verify-restore, restore, review,
   reminders, collect, demo, install-tasks (+ uninstall-tasks.sh).
-  install-tasks registers collect (06:30), intake (07:00 + logon), doctor
+  install-tasks registers collect (06:30, + logon on Windows), intake (07:00 + logon), doctor
   (08:00), backup (21:30), verify-restore (Sun 12:00), review (Mon 07:30),
   reminders (07:15) as Task Scheduler `LifeCRM *` / launchd
   `local.lifecrm.*`; logs in `data\*.log`.
@@ -94,8 +94,8 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
   concurrent pytest run needs its own `--basetemp`: pytest deletes a basetemp
   at session start. `.github/workflows/ci.yml` (Windows + macOS) runs only
   once the repo is pushed.
-- Full surface (`python -m lifecrm --help`): init, intake (holds call
-  recordings), transcribe (`--date` only with `--file`; a named file is
+- Full surface (`python -m lifecrm --help`): init, intake (pulls a linked
+  phone's notes first; holds call recordings), transcribe (`--date` only with `--file`; a named file is
   transcribed even if it is a call), calls (list | take <n|name>... |
   skip <n|name>... [--all]), import, ingest, apply, status, filedate,
   doctor, sql, export (jsonl | markdown | obsidian; obsidian has --dry-run),
@@ -484,6 +484,18 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
   scripts/collect.* with --if-configured. Tests isolate the home folder
   (tests/test_collect.py `home` fixture): with no list, a run looks
   everywhere a connector looks.
+- `lifecrm/phone.py` — a phone Windows 11 shows in File Explorer (Link to
+  Windows: a cloud-files sync root at `%USERPROFILE%\CrossDevice\<phone>\
+  storage`, found through the registry's SyncRootManager, never by folder
+  name) read directly: `pull` copies — never moves — the recorder's and the
+  quick-note folder's new files into the inboxes once (`data/phone-
+  pulled.json`; intake's content-hash check stands behind it), `folders()`
+  is one more place android_sms and gps_track look; every call has a
+  timeout, and a phone that is away is "not reachable" (collect: skipped
+  or "missing", never an error). NEVER relied on: the sync-app route stays
+  and is the only one on a Mac / with an iPhone; `[phone] read = false`
+  opts out. The Windows collect task also runs 3 min after logon
+  (modern standby keeps no wake timer). docs/android.md.
 - `lifecrm/web/` + `lifecrm/commands/web.py` — `lifecrm serve`: stdlib HTTP
   over a backup-API snapshot in data/web/lifecrm.db, re-copied when the live
   db or its -wal changes; one read-only connection per request; `api.py`

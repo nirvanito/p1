@@ -53,6 +53,9 @@ def home(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     from lifecrm.connectors import reading
     monkeypatch.setattr(reading, "_kindle_volumes", lambda: [])
+    from lifecrm import phone
+    monkeypatch.setattr(phone, "_sync_roots", lambda: [])
+    phone.forget()
     return home
 
 

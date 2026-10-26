@@ -87,6 +87,10 @@ an arrival can then read up to one heartbeat late, so keep the heartbeat at
 
 ## 2. The sync: a second Autosync folder pair
 
+Not needed when the phone is shown in the laptop's File Explorer (Windows
+11, [android.md](android.md), "No sync app at all"): the connector reads
+`GPSLogger` on the phone directly. Otherwise:
+
 1. Autosync › **Create folder pair** **(verify)** the menu names:
    - Local folder: `GPSLogger` (Internal storage).
    - Remote folder: `GPSLogger` at the **top** of OneDrive. Create it with
