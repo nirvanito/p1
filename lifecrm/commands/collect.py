@@ -197,6 +197,10 @@ def _status(as_json: bool) -> None:
              else f"{len(report['configured'])} source(s) in [collect] sources")
     typer.echo(f"collect: {scope}; "
                + (f"last run {last[:16].replace('T', ' ')} UTC" if last else "never run"))
+    for p in report.get("phone") or []:
+        typer.echo(f"  phone: {p['name']} shown in File Explorer — "
+                   + ("reachable" if p["reachable"] else
+                      "not answering (on the same Wi-Fi as this computer?)"))
     if not report["sources"]:
         typer.echo("  nothing collected yet — python -m lifecrm collect setup shows what "
                    "this computer has")
@@ -332,6 +336,11 @@ def setup_cmd(phone: str = typer.Option(
         return
     guessed = "" if phone else " (guessed from this computer; --phone to change it)"
     typer.echo(f"Phone setup — {data['title']}{guessed}")
+    for p in data.get("linked") or []:
+        typer.echo(f"  {p['name']} is shown in this computer's File Explorer"
+                   + (": its own app folders are read directly, no sync app needed "
+                      "(docs/android.md)" if p["reachable"] else
+                      ", but is not answering now — on the same Wi-Fi as this computer?"))
     for it in data["items"]:
         state = it["state"]
         mark = _SETUP_MARKS.get(state.split(" (")[0], "     ")

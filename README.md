@@ -187,7 +187,11 @@ lifecrm connect gmail you@gmail.com          # set one up (passwords asked for, 
 lifecrm fetch gmail                          # download now, import nothing; disconnect <service> forgets it
 ```
 
-**Windows laptop + Samsung:**
+**Windows laptop + Samsung:** with the phone shown in Windows 11's File
+Explorer (Link to Windows), voice notes, texts and GPS tracks need no sync app
+at all — the laptop reads them off the phone
+([android.md](docs/android.md#no-sync-app-at-all-windows-11-optional)). The
+sync route in the table works beside it.
 
 | source | how it reaches the laptop | command | guide |
 |---|---|---|---|
