@@ -450,14 +450,17 @@ def run_checks(conn: sqlite3.Connection, cfg: Config | None = None) -> dict:
 
         # A snapshot connector that stops being fed looks exactly like a
         # healthy one. Connectors that expect a steady flow declare how stale
-        # is too stale; the check applies once the connector is in use, and
-        # measures the newest record, not the newest run — re-importing an old
-        # backup does not make the data fresh.
+        # is too stale; the check applies once the connector is in use (an
+        # applied import of its own), and measures the newest record on its
+        # streams, not the newest run — re-importing an old backup does not
+        # make the data fresh.
         from .connectors import base as conn_base
         for cname, c in sorted(conn_base.registry().items()):
             limit = getattr(c, "stale_after_days", None)
-            if not limit:
-                continue
+            if not limit or conn.execute(
+                    "SELECT 1 FROM imports WHERE connector=? AND status='applied' "
+                    "LIMIT 1", (cname,)).fetchone() is None:
+                continue        # not in use: another connector's rows say nothing
             marks = ",".join("?" for _ in c.streams)
             latest = conn.execute(
                 f"SELECT MAX(started_at) latest FROM observations "

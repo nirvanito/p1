@@ -170,8 +170,10 @@ import of a source makes it a new source again: the next morning asks.
   refuse.
 - Write entries, measurements, mentions, aliases or entity links — the
   importer rule holds unattended too. Handles still wait for `handles link`.
-- Go online. It reads what is already on this computer; the phone and the
-  cloud drive bring it there.
+- Go online, except to fetch from a service you connected
+  (`docs/online.md`: Google Calendar, Gmail, Google Contacts, Last.fm). Everything
+  else it reads is already on this computer; the phone and the cloud drive
+  bring it there.
 - Run a model.
 
 ## Phone side, per setup
@@ -182,7 +184,8 @@ import of a source makes it a new source again: the next morning asks.
   scheduled daily backup to OneDrive (`android_sms`); Health Connect's
   scheduled export to OneDrive (`health`); Gallery › Sync with OneDrive
   (`photos`); Chrome sync brings the phone's history into the laptop's
-  browser (`browser`).
+  browser (`browser`); GPSLogger's daily track, uploaded by Autosync to
+  OneDrive › GPSLogger (`gps_track`, `docs/gps_track.md`).
 - **Mac + iPhone** (`docs/mac.md`): Messages in iCloud fills the Mac's
   `chat.db` (`mac_messages`); with *Calls from iPhone* on, the Mac's call
   history holds the phone's calls (`ios_calls`, `docs/calls.md`); iCloud
@@ -194,6 +197,10 @@ import of a source makes it a new source again: the next morning asks.
   does that for you **(verify)**, else whenever the cable is in; the OneDrive
   app's Camera upload feeds `photos`. There is no call history to collect on
   this setup.
+
+`collect setup` also lists the **online** services (`docs/online.md`) —
+Google Calendar, Gmail, Google Contacts, Last.fm — with their one-time steps
+until each is connected; from then on the job fetches each before reading it.
 
 Exports that can only be requested by hand (Google Takeout, Instagram,
 WhatsApp chats, LinkedIn, bank statements) are found the same way: the

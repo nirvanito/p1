@@ -454,7 +454,7 @@ def test_first_import_waits_for_the_yes_then_every_morning_is_routine(conn, cfg,
     result = collect.run(conn, cfg)
     r = _email(result)
     assert (r["outcome"], r["hold"]) == ("held", "first_import"), r
-    assert f"email for {ADDRESS}, 3 record(s)" in r["reason"]
+    assert f"email (Gmail) for {ADDRESS}, 3 record(s)" in r["reason"]
     assert APP_PASSWORD not in json.dumps(result)
     assert _uids(pending) == [1, 2, 3]
     assert _email(collect.run(conn, cfg))["hold"] == "first_import"   # asked again

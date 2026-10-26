@@ -1335,11 +1335,13 @@ def observe(
 
         # Refused on a mass removal, a snapshot first when anything goes —
         # the one write path `lifecrm collect` shares (lifecrm/collect.py).
-        from .collect import apply_observed
+        from .collect import _settle, apply_observed
         try:
             summary, snapshot = apply_observed(conn, cfg, scan, plan,
                                                allow_mass_removal=allow_mass_removal)
             conn.commit()
+            if service is not None:           # what was fetched is in: file it away
+                _settle(cfg, connector, str(p))
         except DomainError as e:
             conn.rollback()
             _fail(str(e))

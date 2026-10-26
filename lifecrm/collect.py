@@ -65,6 +65,8 @@ LABELS = {
     "contacts": "contact cards", "email": "email", "finance": "bank and card transactions",
     "fitness": "workouts", "google_activity": "Google searches and YouTube history",
     "ios_calls": "iPhone calls", "ios_messages": "iPhone texts (from a backup)",
+    "gps_track": "places visited (GPS track)",
+    "lastfm": "Last.fm scrobbles (your Spotify listening)",
     "linkedin": "LinkedIn connections and messages", "location": "places visited",
     "mac_messages": "Messages on this Mac", "meta_messages": "Instagram and Messenger messages",
     "notes": "notes", "nutrition": "the food diary", "payments": "Venmo and PayPal payments",
@@ -393,9 +395,13 @@ def _read(conn: sqlite3.Connection, cfg: Config, name: str) -> dict:
     if target is None:                     # only a connected service says so
         raise NothingNew(f"nothing new from {service.TITLE}")
     scan = c.scan(target, cfg)
+    what = label(name)
+    if service is not None and service.TITLE not in what:
+        what = f"{what} ({service.TITLE})"
     return {"kind": "observed", "target": target, "scan": scan,
-            "plan": obs.build_plan(conn, scan), "connector": c, "label": label(name),
-            "doc": _doc(name), "look": f'python -m lifecrm observe {name} "{target}"'}
+            "plan": obs.build_plan(conn, scan), "connector": c, "label": what,
+            "doc": getattr(service, "DOC", None) or _doc(name),
+            "look": f'python -m lifecrm observe {name} "{target}"'}
 
 
 def _first_time(conn: sqlite3.Connection, src: dict) -> bool:
@@ -714,6 +720,20 @@ PHONE = {
             "Nothing on this computer: Chrome's own history is read.",
             "On the phone: sign in to Chrome with the same Google account and turn "
             "on Sync, so the phone's browsing reaches this computer's Chrome."]),
+        ("gps_track", "Places visited (the phone's GPS track, docs/gps_track.md)", [
+            "Install GPSLogger (mendhak) from F-Droid or its GitHub releases; allow "
+            "location all the time with precise location, and Ignore battery "
+            "optimization.",
+            "GPSLogger › Logging details: Log to GPX on, New file creation Once a day, "
+            "Save to folder Internal storage › GPSLogger (allow it to manage all "
+            "files), Log time with timezone offset on; Performance: Logging interval "
+            "60 s, Distance filter 0, Start on bootup on — then Start logging.",
+            "Autosync › Create folder pair: GPSLogger → OneDrive › GPSLogger (top "
+            "level), Upload only, never Upload then delete; a second pair is "
+            "Autosync's paid upgrade, or use FolderSync (verify).",
+            "Settings › Apps › GPSLogger › Battery: Unrestricted, and Settings › "
+            "Battery › Background usage limits › Never sleeping apps: add GPSLogger "
+            "(verify the paths)."]),
     ]),
     "iphone-windows": ("Windows + iPhone", "docs/windows-iphone.md", [
         ("ios_messages", "Texts (from the iPhone's backup)", [

@@ -91,8 +91,11 @@ from . import base
 
 name = "lastfm"
 streams = ("music_play",)
-# No stale_after_days: freshness is measured per stream, and music_play is
-# Spotify's download too — an old download would read as a stopped feed.
+# A daily feed: a Spotify that stops scrobbling (its link to Last.fm ended)
+# would otherwise read as quiet mornings. Measured over music_play once this
+# connector has an import of its own (doctor), so a Spotify download alone
+# never trips it.
+stale_after_days = 14
 
 FORMAT = "lifecrm-lastfm-page/1"
 _ISO = "%Y-%m-%dT%H:%M:%SZ"

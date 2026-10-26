@@ -348,6 +348,24 @@ def test_places_reads_the_visits_unchanged(tmp_path, cfg, conn):
     assert gps_track.metres(pts[1].lat, pts[1].lon, *CAFE) < 15
 
 
+def test_freshness_waits_for_an_import_of_its_own(tmp_path, cfg, conn):
+    """place_visit is Timeline's stream too: an old Timeline export alone is
+    not a GPS feed that stopped."""
+    from datetime import date
+
+    from lifecrm.doctor import run_checks
+
+    def checks():
+        out = {c["check"] for c in run_checks(conn, cfg)["checks"]}
+        conn.rollback()
+        return out
+    sample = location_sample.write_sample(tmp_path / "tl", date(2025, 3, 1), "android")
+    _apply(conn, location.scan(sample, cfg))
+    assert "gps_track_data_age" not in checks()
+    _apply(conn, gps_track.scan(two_days(tmp_path / "GPSLogger"), cfg))
+    assert "gps_track_data_age" in checks()
+
+
 # ---------------------------------------------------------------- re-reading
 
 def test_a_grown_file_updates_the_open_visit_and_adds_nothing_twice(tmp_path, cfg, conn):

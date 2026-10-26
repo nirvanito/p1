@@ -268,8 +268,9 @@ both.
 `lifecrm doctor` warns (`gps_track_data_age`), and the morning nudges say so,
 when the newest visit started more than 7 days ago. That is the sign
 GPSLogger or the sync stopped; Samsung's battery saver is the usual cause.
-The check measures the newest `place_visit` from any source, Timeline
-imports included.
+The check starts once gps_track has an import of its own, and then measures
+the newest `place_visit` from any source, Timeline imports included — a
+Timeline export on its own never trips it.
 
 ## Known limitations
 

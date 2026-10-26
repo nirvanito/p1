@@ -192,6 +192,15 @@ So the cleanest archive takes one source per stretch of time: Last.fm from
 now on, and a Spotify download only for the years before scrobbling was
 connected. `lifecrm imports retract <uuid>` undoes a run either way.
 
+## When scrobbling stops
+
+Spotify's link to Last.fm can end without a word (a password change, a
+revoked app); the mornings would then just be quiet. So the connector is
+expected to stay fresh: once it has an import of its own, `lifecrm doctor`
+warns (`lastfm_data_age`) and `/morning` says so when the newest play is over
+14 days old. A fortnight without music is a false alarm — `nudges dismiss
+stale:lastfm`.
+
 ## Disconnecting
 
 ```bash

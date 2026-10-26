@@ -68,6 +68,7 @@ from . import secrets
 SERVICE = "lastfm"
 CONNECTOR = "lastfm"
 TITLE = "Last.fm"
+DOC = "docs/lastfm.md"
 API = "https://ws.audioscrobbler.com/2.0/"
 TIMEOUT = 60
 PER_PAGE = 200            # the API's maximum

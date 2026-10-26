@@ -1084,7 +1084,7 @@ def _connector_freshness(conn: sqlite3.Connection, now: datetime | None = None
         limit = getattr(c, "stale_after_days", None)
         run = runs.get(name)
         stale = None
-        if limit and latest:
+        if limit and latest and run:      # only once in use: shared streams
             cutoff = (now - timedelta(days=limit)).strftime("%Y-%m-%dT%H:%M:%SZ")
             stale = latest < cutoff
         out.append({"connector": name, "streams": streams,

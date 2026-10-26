@@ -16,6 +16,7 @@ A service module defines
     SERVICE   = "google_calendar"     # its name in `lifecrm connect`
     CONNECTOR = "calendar"            # the connector that reads what it fetches
     TITLE     = "Google Calendar"
+    DOC       = "docs/online.md"      # optional: the setup guide a first import names
     def steps() -> list[str]          # the one-time setup, in words
     def connect(cfg, args, ask) -> dict   # what fetch needs, from the owner
     def fetch(cfg, secret, dest) -> Path | None  # download into dest, return the

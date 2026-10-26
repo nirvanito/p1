@@ -72,6 +72,7 @@ from . import secrets
 SERVICE = "gmail"
 CONNECTOR = "email"
 TITLE = "Gmail"
+DOC = "docs/gmail.md"
 HOST = "imap.gmail.com"
 PORT = 993
 TIMEOUT = 60

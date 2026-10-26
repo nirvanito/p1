@@ -6,7 +6,9 @@ provenance, closable loops, entry links and entity relationships; beside it,
 an observed tier of bulk imports (texts, calls, email, Instagram/Messenger/
 Telegram, contacts, LinkedIn, calendar, notes, photos, location, browser,
 Google searches/YouTube, finance, Venmo/PayPal, Uber, workouts, food,
-Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
+Spotify/Last.fm, GPS tracks, Kindle/Goodreads, health, AI chats) that is
+cited, never asserted. Sources that live only online (Google Calendar,
+Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
 
 ## Rules
 
@@ -34,6 +36,14 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   from a connector + account, a mass removal, or invalid records. Only the
   owner's yes (`collect approve`, or /morning on their answer) imports a
   held one; `collect decline` is their never.
+- **Online sources are connected by the owner, read-only, and held like any
+  other.** `lifecrm connect <service>` is run by the owner in their own
+  terminal: never type a password, app password, API key, private link or
+  token yourself. What a service needs lives in `data\secrets.json` (never
+  config.toml, never printed, never in a result); fetching only reads the
+  owner's own data and never changes anything on the service; what is
+  fetched lands in `data\fetched\<service>\` and goes through the same
+  plan and holds (a first import waits for the yes). docs/online.md.
 - **A missing row is unknown, never zero.** A connector declares a day
   complete (`scan["coverage"]` -> `import_coverage`, schema v7) only from a
   guarantee in its source format (an OFX statement's DTSTART/DTEND, a full
@@ -128,6 +138,11 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   [--if-configured]: the one publisher of the .ics — revisions recorded
   in reminder_revisions, data/reminders/ + `[assistant] reminders_dir`,
   served by `serve` at /reminders.ics),
+  connect [SERVICE] [ARGS]... [--json] (an online source, once: lists the
+  services with their steps when no service is named; asks for what one
+  needs, hidden) | disconnect SERVICE (forgets its secret; fetched files and
+  imports stay) | fetch SERVICE (download now, import nothing; "nothing new"
+  for a quiet incremental service),
   collect ([--dry-run] [--status] [--if-configured] [--json]: every source
   on this computer, or `[collect] sources`; each from where its connector
   looks with no path; routine plans applied through observe's own write
@@ -154,9 +169,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   observe/connectors/imports/handles (observed tier — bulk imports that never
   pass the review gate; dry-run by default; connectors ai_chat, android_sms,
   browser, calendar, contacts, email, finance, fitness, google_activity,
-  ios_calls, ios_messages, linkedin, location, mac_messages, meta_messages,
-  notes, nutrition, payments, photos, reading, rides, spotify, telegram,
-  whatsapp; `connectors` counts each stream's rows per connector (finance and
+  gps_track, ios_calls, ios_messages, lastfm, linkedin, location,
+  mac_messages, meta_messages, notes, nutrition, payments, photos, reading,
+  rides, spotify, telegram, whatsapp; `connectors` counts each stream's rows per connector (finance and
   payments share txn); `imports list/retract/restore` —
   restore puts back exactly what retract hid, never what mirroring removed;
   `handles list --suggest` offers entity candidates (splits 'A / B' names,
@@ -249,7 +264,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   - `whatsapp` — "Export chat" .txt/.zip, one chat per export; remembers.
   - `contacts` (+ `_vcard.py`, `_ios_addressbook.py`, `_abcddb.py`) — vCard,
     Mac Contacts, iPhone AddressBook as `contact_card`; handles carry the
-    card's name (what `--suggest` matches); mirrors per account.
+    card's name (what `--suggest` matches); mirrors per account (a vCard's
+    account: every card's `X-LIFECRM-ACCOUNT`, which the Google Contacts
+    fetch writes, else `[connectors.contacts] account`).
   - `calendar` (+ `_ics.py`, stdlib RFC 5545) — .ics / Takeout ->
     `calendar_event`, repeats expanded to today + 90 days; mirrors per
     calendar or account.
@@ -264,12 +281,20 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
     mirrors.
   - `location` — Google Maps Timeline visits -> `place_visit`, place_id
     handles; remembers.
+  - `gps_track` — GPSLogger's daily GPX/CSV/GeoJSON tracks (OneDrive ›
+    GPSLogger, or one folder down; `[connectors.gps_track] path`) ->
+    `place_visit` with location.py's keys: stays of 100 m / 10 min, a gap
+    bridged only when both sides agree (<= 12 h), excursions under 10 min
+    dropped; `place_id` handle `gps:<geohash7>`; `gps@<start>` ids, so a
+    growing file updates its open visit; remembers; stale after 7 days.
   - `browser` — Chrome/Edge/Brave/Safari history -> `browser_visit`, one row
     per (URL, day); remembers.
   - `email` — Gmail Takeout mbox (read inside the zip), Apple Mail export or
     `~/Library/Mail`, Thunderbird, .eml -> `email` (own words: quoted reply
     and signature trimmed); email handles sender/recipient; direction from
-    [connectors.email] addresses, else [owner], else Sent; remembers.
+    [connectors.email] addresses, else [owner], else Sent; a first header
+    line `X-Lifecrm-Account` (the Gmail fetch) is the scan's account;
+    remembers.
   - `meta_messages` — Instagram/Facebook "Download your information" (JSON
     only) -> `instagram_dm` / `messenger`; Meta's Latin-1 mojibake repaired;
     `instagram:`/`messenger:` app_account handles; remembers.
@@ -282,6 +307,12 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
     per session, sets in value_json (top_set, weight_kg); remembers.
   - `spotify` — my_spotify_data.zip (account data + extended history) ->
     `music_play`, one per track per day; IPs/devices never read; remembers.
+  - `lastfm` — Last.fm scrobbles (Spotify scrobbling) -> `music_play` in
+    spotify's shape: one per track per day, plays but no minutes (value/unit
+    empty), kind music, ids of its own; reads the pages `online/lastfm.py`
+    fetches (per day the newest fetch wins); no handles; remembers; stale
+    after 14 days. With a Spotify download for the same days a track-day
+    counts twice: one source per stretch of time.
   - `reading` — Kindle My Clippings.txt -> `highlight`, Goodreads CSV ->
     `book`; finds a plugged-in Kindle; remembers.
   - `nutrition` — Cronometer servings/dailysummary (MyFitnessPal meal
@@ -322,7 +353,9 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   "what matters today" (schema v6). Read-only, deterministic: reminder
   (due within `due_days`), birthday (linked contact cards), nutrient
   (`nutrients.build_report` lows), collect (a held / missing / failed daily
-  import), stale (connector freshness), the agenda;
+  import), stale (connector freshness over its streams, only once the
+  connector has an applied import of its own — doctor and the Sources page
+  share the rule), the agenda;
   N# nudges rest on E#/O#/C# through `review._Ids`; `pack_id` hashes the pack;
   `check` = `recall.check_text` against a SAVED pack. State (snooze /
   dismiss / restore) is `lifecrm/domain/nudges.py` -> `nudge_states`, keyed
@@ -390,6 +423,35 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
   after-write hook (`cli._arm_vault_refresh`, with the vault refresh) and the
   07:15 job; `serve` returns the published bytes at /reminders.ics.
   `ics.py` is the shared RFC 5545 writer (the demo's calendar uses it too).
+- `lifecrm/online/` + `lifecrm/commands/connect.py` — online sources
+  (docs/online.md): a module per service (SERVICE, CONNECTOR, TITLE, DOC,
+  steps, connect, fetch -> Path | None, optional settle), discovered by
+  `online.registry()`; `online.fetch` downloads into data/fetched/<service>/
+  in a format the connector reads, wrapping OSError as one DomainError line;
+  `secrets.py` keeps what connect returned in data/secrets.json (atomic,
+  0600). collect fetches a connected service instead of the connector's
+  `default_target` (a failed fetch is an error, never a skip; None = nothing
+  new -> unchanged) and calls `settle` only after a committed import, so an
+  incremental fetch stays in pending/ until the yes (observe --apply settles
+  too). Services:
+  - `google_calendar` — each secret iCal link's whole state, one .ics per
+    link; no settle.
+  - `gmail` — IMAP + app password into gmail/pending/ as .eml; read-only
+    (EXAMINE, BODY.PEEK, certificate checked); all new mail every morning,
+    older mail 2,000 (250 MB) a morning newest-first only after the first
+    yes; UIDVALIDITY + UID cursor in secrets.json; over 1 MB fetched without
+    attachment bytes (X-Lifecrm-Omitted); X-Gmail-Labels as Takeout spells
+    them; settle moves what was imported to archive/. docs/gmail.md.
+  - `google_contacts` (+ `_google_oauth.py`: stdlib OAuth for installed apps
+    — loopback 127.0.0.1 on a random port, PKCE S256, state checked, refresh
+    at oauth2.googleapis.com; HTTP behind `_open`, the browser behind
+    `_open_browser`) — People API connections -> one vCard (UID =
+    resourceName, REV, E.164 TEL, `X-LIFECRM-ACCOUNT google:<email>`);
+    invalid_grant -> "needs connecting again". docs/google_contacts.md.
+  - `lastfm` — user.getRecentTracks pages, whole journal days only, into
+    lastfm/pending/; new days each morning plus a newest-first backfill of
+    50 pages a morning cut at day boundaries; settle -> archive/.
+    docs/lastfm.md.
 - `lifecrm/collect.py` + `lifecrm/commands/collect.py` +
   `lifecrm/domain/collect.py` — the daily collection (schema v8,
   docs/collect.md). Sources: `[collect] sources` when set, else
@@ -439,7 +501,8 @@ Spotify, Kindle/Goodreads, health, AI chats) that is cited, never asserted.
 - `lifecrm/platforms.py` — where things live on Windows vs macOS (cloud
   drives, Messages, backups); proposes paths, config.toml always wins.
 - `lifecrm/commands/` — CLI plug-ins (`register(app)`), discovered by
-  cli.py: calls, collect, configure, demo, entity_links, features, filedate,
+  cli.py: calls, collect, configure, connect (connect, disconnect, fetch),
+  demo, entity_links, features, filedate,
   gui (open), memory (onthisday, prompts, highlights), money (subscriptions,
   experiments), nudges, nutrients, obsidian, places, reminders, review,
   search (search, links, conversation, weekdays), verify (verify-backup),

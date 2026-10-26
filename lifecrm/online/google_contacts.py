@@ -45,6 +45,7 @@ from . import secrets as kept
 SERVICE = "google_contacts"
 CONNECTOR = "contacts"
 TITLE = "Google Contacts"
+DOC = "docs/google_contacts.md"
 API = "People API"
 
 CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts.readonly"

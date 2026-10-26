@@ -26,6 +26,7 @@ from ..domain.util import DomainError
 SERVICE = "google_calendar"
 CONNECTOR = "calendar"
 TITLE = "Google Calendar"
+DOC = "docs/online.md"
 TIMEOUT = 60
 
 
