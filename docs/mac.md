@@ -16,6 +16,13 @@ Contacts, Photos, Notes or an iPhone backup.
 
 Time: ~30 minutes at the Mac (most of it downloads), ~10 on the phone.
 
+There is no Mac equivalent of Windows 11's "phone in File Explorer"
+(android.md): macOS never mounts an iPhone's files. iCloud Drive is that
+shared folder here — the Shortcuts write into it, and an iPhone app that
+saves into Files › iCloud Drive lands on the Mac the same way. Apple Health
+has no scheduled export; third-party apps that write it to iCloud Drive on a
+schedule exist, but their formats are not read yet **(verify)**.
+
 ## 0. What you need
 
 - A Mac. **Apple Silicon (M1 or later) is the tested target**; an Intel Mac

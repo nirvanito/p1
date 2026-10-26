@@ -176,6 +176,20 @@ import of a source makes it a new source again: the next morning asks.
   bring it there.
 - Run a model.
 
+## The phone in File Explorer (Windows 11)
+
+A phone Windows shows in File Explorer (Link to Windows) is one more place
+the readers look, with nothing to sync: `android_sms` and `gps_track` find
+the app's own folder on the phone, and intake pulls the recorder's and the
+quick-note folder's new files into the inboxes (copied once, never moved —
+`data\phone-pulled.json` remembers, and intake's content-hash check stands
+behind it). `collect status` and `collect setup` say whether the phone
+answers. A phone that is away is never an error: a source found only there
+is skipped that morning, and one the phone stopped answering on mid-read is
+"missing" with the reason. Same Wi-Fi, one phone at a time, Windows only;
+`[phone] read = false` turns it off. The sync-app route is unchanged and is
+the whole story on a Mac. docs/android.md, "No sync app at all".
+
 ## Phone side, per setup
 
 `collect setup` prints these with each one's state on this computer:

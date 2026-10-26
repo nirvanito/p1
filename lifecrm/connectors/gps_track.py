@@ -598,9 +598,11 @@ def _subdirs(folder: Path, names: set[str] | None = None) -> list[Path]:
         return []
 
 
-def search_folders() -> list[Path]:
+def search_folders(cfg: Config | None = None) -> list[Path]:
     """Every folder named like the phone's track folder at the top of a
-    OneDrive, or one folder down (OneDrive › Apps › GPSLogger)."""
+    OneDrive, or one folder down (OneDrive › Apps › GPSLogger) — and, given
+    the config, the folder itself on a phone shown in File Explorer
+    (lifecrm/phone.py), where no sync app is needed."""
     wanted = {n.lower() for n in FOLDER_NAMES}
     out: list[Path] = []
     for root in platforms.onedrive_candidates():
@@ -609,6 +611,9 @@ def search_folders() -> list[Path]:
         for sub in top:
             if sub.name.lower() not in wanted:
                 out += _subdirs(sub, wanted)
+    if cfg is not None:
+        from .. import phone
+        out += phone.folders(cfg, *FOLDER_NAMES)
     return list({str(p).lower(): p for p in out}.values())
 
 
@@ -626,7 +631,7 @@ def default_target(cfg: Config) -> Path:
             raise DomainError(f"[connectors.gps_track] path does not exist: {p} — fix it, "
                               f"or pass the folder the phone's tracks sync to")
         return p
-    folders = search_folders()
+    folders = search_folders(cfg)
     found = [f for f in folders if _holds_tracks(f)]
     if len(found) == 1:
         return found[0]

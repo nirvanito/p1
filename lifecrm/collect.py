@@ -394,7 +394,15 @@ def _read(conn: sqlite3.Connection, cfg: Config, name: str) -> dict:
         raise NotFound(str(e)) from e
     if target is None:                     # only a connected service says so
         raise NothingNew(f"nothing new from {service.TITLE}")
-    scan = c.scan(target, cfg)
+    try:
+        scan = c.scan(target, cfg)
+    except OSError as e:
+        from . import phone
+        on = phone.under(cfg, target)
+        if on is None:
+            raise
+        raise NotFound(f"{on.name} stopped answering while {target.name} was read "
+                       f"({e}) — is the phone on the same Wi-Fi as this computer?") from e
     what = label(name)
     if service is not None and service.TITLE not in what:
         what = f"{what} ({service.TITLE})"
@@ -706,7 +714,9 @@ PHONE = {
             "Install SMS Backup & Restore (SyncTech) from the Play Store.",
             "Set up a backup: tick Messages and Call logs, and back up all "
             "conversations, not selected ones.",
-            "Where: OneDrive — sign in, and keep the folder it offers (verify the name).",
+            "Where: with the phone shown in this computer's File Explorer "
+            "(docs/android.md), nothing — its local backup folder is read; else "
+            "OneDrive — sign in, and keep the folder it offers (verify the name).",
             "Schedule recurring backups: daily, at night."]),
         (HEALTH, "Health (Samsung Health through Health Connect)", [
             "Samsung Health › ≡ › Settings › Health Connect: let it write sleep, steps, "
@@ -728,9 +738,11 @@ PHONE = {
             "Save to folder Internal storage › GPSLogger (allow it to manage all "
             "files), Log time with timezone offset on; Performance: Logging interval "
             "60 s, Distance filter 0, Start on bootup on — then Start logging.",
-            "Autosync › Create folder pair: GPSLogger → OneDrive › GPSLogger (top "
-            "level), Upload only, never Upload then delete; a second pair is "
-            "Autosync's paid upgrade, or use FolderSync (verify).",
+            "With the phone shown in this computer's File Explorer (docs/android.md): "
+            "nothing more, the folder is read there. Else Autosync › Create folder "
+            "pair: GPSLogger → OneDrive › GPSLogger (top level), Upload only, never "
+            "Upload then delete; a second pair is Autosync's paid upgrade, or use "
+            "FolderSync (verify).",
             "Settings › Apps › GPSLogger › Battery: Unrestricted, and Settings › "
             "Battery › Background usage limits › Never sleeping apps: add GPSLogger "
             "(verify the paths)."]),
@@ -841,10 +853,11 @@ def setup_checklist(conn: sqlite3.Connection, cfg: Config,
         items.append({"source": name, "what": what, "state": state,
                       "steps": steps if shown else []})
     from . import online
+    from . import phone as mount
     services = [{**s, "steps": [] if s["connected"] else s["steps"]}
                 for s in online.status(cfg)]
     return {"phone": phone, "title": title, "guide": guide, "items": items,
-            "online": services}
+            "online": services, "linked": mount.status(cfg)}
 
 
 # ---------------------------------------------------------------- status
@@ -863,6 +876,7 @@ def status(conn: sqlite3.Connection, cfg: Config) -> dict:
         rows.append({"source": name, "configured": configured is None or name in configured,
                      "declined": name in no, "latest": latest.get(name),
                      "last_applied": applied.get(name)})
+    from . import phone
     return {"configured": configured, "auto": configured is None,
             "last_run_at": collect_dom.last_run_at(conn), "declined": sorted(no),
-            "sources": rows}
+            "sources": rows, "phone": phone.status(cfg)}

@@ -21,6 +21,8 @@ Samsung Health ──> Health Connect ──scheduled export──> zip ──> 
 SMS Backup & Restore ──scheduled──> OneDrive ──> lifecrm observe android_sms
 Contacts export (.vcf), Google Takeout (Calendar, Keep, Photos) ──> lifecrm observe ...
 GPSLogger ──Autosync (2nd pair)──> OneDrive/GPSLogger ──> lifecrm collect (gps_track)
+   …or, with the phone shown in Windows 11's File Explorer: the laptop reads the
+   recorder's, SMS Backup & Restore's and GPSLogger's own folders — no sync app
 Timeline export (Timeline.json) ──> lifecrm observe location
 Google Calendar, Gmail, Google Contacts, Last.fm ──fetched by the laptop──> lifecrm collect
 WhatsApp "Export chat" (.zip) ──Quick Share──> lifecrm observe whatsapp
@@ -33,6 +35,40 @@ Voice and text notes are *journal sources*: they go through `/log` and your
 review. Everything else is the *observed tier*: bulk imports you check with a
 dry run, never reviewed one by one, always cited back to the row they came
 from.
+
+## No sync app at all (Windows 11, optional)
+
+Windows 11 can show a linked Android phone in File Explorer, and what it
+shows is a real folder on the laptop (`C:\Users\<you>\CrossDevice\<phone>\
+storage`, filled from the phone on demand, the way OneDrive's Files
+On-Demand works). Life CRM reads it: intake copies new recordings and text
+notes off the phone into the inboxes, and the texts and GPS connectors look
+in the phone's own backup and track folders. Nothing to install on a
+Samsung (Link to Windows is built in), nothing uploaded anywhere.
+
+1. On the phone: Quick settings › **Link to Windows** › sign in with the
+   Microsoft account the laptop uses. On the laptop: Settings › Bluetooth &
+   devices › **Mobile devices** › Manage devices › your phone › **Show
+   mobile device in File Explorer** on **(verify)** the wording on your
+   version.
+2. Apps keep their defaults: Voice Recorder saves to `Recordings/Voice
+   Recorder`, SMS Backup & Restore to its local folder `SMSBackupRestore`
+   (no upload needed), GPSLogger to `GPSLogger`; quick notes are any app
+   that saves a `.txt` into a phone folder named `VoiceJournal-text`.
+3. On the laptop, `lifecrm collect status` says whether the phone answers;
+   `lifecrm intake` pulls the notes (`pulled Voice 001.m4a from …`).
+
+What to know: the phone and laptop must be on the **same Wi-Fi** (at 06:30
+they are); Windows shows **one phone** at a time; files read off the phone
+are cached under `CrossDevice` and take disk space; the laptop **copies and
+never moves** (moving a file out of that folder deletes it from the phone);
+a phone that is away reads as "not answering" and the morning run skips it,
+quietly, and catches up next time. It is a shortcut, not a dependency: the
+sync-app route below works unchanged beside it, and is the only route on a
+Mac or with an iPhone (there is no Finder equivalent; iCloud Drive is that
+shared folder there). `[phone] read = false` in config.toml turns the
+shortcut off.
+
 
 ## The time in the filename (read this once)
 
@@ -126,6 +162,9 @@ upload time instead, either:
 
 ### Sync: Autosync for OneDrive
 
+Skip this when the phone shows in the laptop's File Explorer (above): the
+recordings are read straight off the phone. Otherwise:
+
 *Autosync for OneDrive* (MetaCtrl, Play Store) copies a phone folder to a
 OneDrive folder in the background. OneDrive is usually preinstalled on a
 Galaxy; sign it and Autosync into the **same** Microsoft account the computer
@@ -205,9 +244,11 @@ like any note.
 and the same sync is the quick note on a Samsung. It is the route with no
 extra setup and it works offline.
 
-**Typed or dictated text (optional).** Samsung Notes and Keep have no way to
-drop one plain-text file per note into a folder, so use a small automation
-that writes the file itself. With **Automate** (LlamaLab, free for small
+**Typed or dictated text (optional).** With the phone shown in the laptop's
+File Explorer, any app that saves one `.txt` per note into a phone folder
+named `VoiceJournal-text` is enough: intake pulls them. Otherwise Samsung
+Notes and Keep have no way to drop one plain-text file per note into a
+folder, so use a small automation that writes the file itself. With **Automate** (LlamaLab, free for small
 flows) **(verify)** the block names and the expression syntax in the current
 version:
 
@@ -266,8 +307,10 @@ read by anything here; Health Connect is the supported route.
 2. Back up **all conversations**, not selected ones. Texts mirror the phone
    (a message deleted there leaves the archive at the next full backup), and
    only a backup of everything can say what the phone no longer holds.
-3. Where: **OneDrive** (sign in) › a folder such as `SMSBackupRestore`
-   **(verify)** the default.
+3. Where: with the phone shown in the laptop's File Explorer, nothing —
+   leave the local backup folder (`SMSBackupRestore`) as it is, the laptop
+   reads it there. Otherwise **OneDrive** (sign in) › a folder such as
+   `SMSBackupRestore` **(verify)** the default.
 4. **Schedule recurring backups**: daily, at night.
 5. MMS media (photos sent in texts) makes the files large and is not needed
    for the text; leave it out unless you want it.
@@ -376,6 +419,9 @@ real Galaxy can show:
 
 - [ ] GPSLogger keeps logging overnight and after a restart (no gap in the
   next day's file in OneDrive › GPSLogger).
+- [ ] With the phone shown in File Explorer: `lifecrm collect status` says
+  it is reachable, and a test recording shows up as `pulled` in the next
+  `lifecrm intake` (then as a source like any other).
 - [ ] Record a note, wait **ten minutes**, then let it sync. On the computer,
       `python -m lifecrm filedate "<OneDrive>\VoiceJournal\inbox\Voice 0NN.m4a"`
       — does "recorded" match when you spoke, or when it uploaded? (This

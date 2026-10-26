@@ -344,9 +344,11 @@ def _report_held(held: list[dict], as_json: bool) -> None:
 def intake(as_json: bool = typer.Option(False, "--json")) -> None:
     """Process both inboxes: dictated text notes first (no whisper load), then
     audio. This is the command the scheduled task runs."""
+    from .phone import pull
     from .transcribe import (intake_text_inbox, scan_inbox, scan_text_inbox,
                              transcribe_inbox)
     cfg = _cfg()
+    pulled = pull(cfg)      # a phone shown in File Explorer: its notes, copied in
     conn = _conn(cfg)
     try:
         results = []
@@ -357,12 +359,20 @@ def intake(as_json: bool = typer.Option(False, "--json")) -> None:
         held = _held_results(cfg)
     finally:
         conn.close()
+    if as_json:
+        _echo_json(pulled + results + held)
+        _needs_attention(results)
+        return
+    for p in pulled:
+        if p["status"] == "pulled":
+            typer.echo(f"pulled {p['file']} from {p['phone']}")
+        elif p["status"] == "unreachable":
+            typer.echo(f"{p['phone']}: {p['reason']}", err=True)
+        else:
+            for w in p.get("warnings", []):
+                typer.echo(w, err=True)
     if not results and not held:
         typer.echo("both inboxes empty — nothing to intake")
-        return
-    if as_json:
-        _echo_json(results + held)
-        _needs_attention(results)
         return
     for r in results:
         for w in r.get("warnings", []):
