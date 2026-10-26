@@ -239,7 +239,7 @@ def approve_cmd(source: str = typer.Argument(..., help="The source to import, e.
                 "nothing new to import — the daily job already has it all")
             return
         if not yes:
-            if as_json or not sys.stdin.isatty() or not typer.confirm("Import this?"):
+            if as_json or not sys.stdin.isatty() or not _asked("Import this?"):
                 if as_json:
                     _echo_json(preview)
                 else:
@@ -263,6 +263,16 @@ def approve_cmd(source: str = typer.Argument(..., help="The source to import, e.
     typer.echo("from now on the daily job collects it by itself")
 
 
+def _asked(question: str) -> bool:
+    """A yes from the terminal; no answer at all (input closed, Ctrl+C,
+    a shell that only looks like a terminal) is a no, never an abort."""
+    try:
+        return typer.confirm(question)
+    except (typer.Abort, EOFError, KeyboardInterrupt):
+        typer.echo("")
+        return False
+
+
 def _summary(p: dict) -> str:
     span = f" from {p['span'][0]} to {p['span'][1]}" if p.get("span") else ""
     line = (f"{p['label']}: {p['counts'].get('new', 0):,} new record(s){span}, in "
@@ -270,7 +280,8 @@ def _summary(p: dict) -> str:
     if p.get("mass_removal"):
         line += f"; it also removes what the source no longer holds — {p['mass_removal']}"
     if p.get("first_import"):
-        line += f"; first import — what to check: {p['doc']} (the checklist at its end)"
+        line += f"; first import — what to check: {p['doc']}" + (
+            " (its first-real-import checklist)" if p.get("checklist") else "")
     return line
 
 
