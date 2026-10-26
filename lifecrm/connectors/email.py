@@ -5,7 +5,8 @@ Mail is where advice, plans and confirmations get written down at length:
 "what exactly did Priya tell me about the deck" is answered by an email more
 often than by a text. This connector reads mail archives the owner already
 has. It never logs in to a mail server, never calls an API, and never sends
-anything.
+anything; the Gmail online source (lifecrm/online/gmail.py) does the
+fetching, into .eml files read here like any others.
 
 Accepted targets
 ----------------
@@ -49,7 +50,9 @@ One observation per message, stream 'email':
               yourself, 'in' otherwise — None while nothing says which
               address is yours
   value_json  labels (Gmail) or mailbox (other stores), thread, in_reply_to,
-              attachments [{name, mime, size}] (never the bytes), cc_count,
+              attachments [{name, mime, size}] (never the bytes; a part the
+              Gmail source left on the server has the size its
+              X-Lifecrm-Omitted line gives), cc_count,
               list_id, text_length (the whole text, before trimming),
               trimmed, invite (a calendar invitation, kept as the email it is)
 
@@ -82,6 +85,9 @@ display_name (the most frequent spelling). Which addresses are yours:
 config.toml, else the most frequent sender of the archive's Sent mail
 (Gmail's 'Sent' label, a Sent mailbox), else the address mail was delivered
 to (Delivered-To). The report says which, and warns when none is known.
+Mail the Gmail source fetched opens with an X-Lifecrm-Account line naming
+the account it came from: that address is the account and always one of
+yours, ahead of any inference.
 
 Deletion semantics — the archive remembers
 ------------------------------------------
@@ -643,6 +649,14 @@ def _filename(part: Message) -> str | None:
     return (_text(fn) or None) if fn else None
 
 
+def _omitted(part: Message) -> int | None:
+    """The size of a part whose bytes lifecrm's Gmail fetch left on the
+    server (X-Lifecrm-Omitted, lifecrm/online/gmail.py): its name and type
+    are there, its bytes never were."""
+    value = (part.get("X-Lifecrm-Omitted") or "").strip()
+    return int(value) if value.isdigit() else None
+
+
 def _content(msg: Message, partial: bool) -> dict:
     """{plain, html, attachments, invite} of a parsed message. An attached
     message (message/rfc822) is described as an attachment, never read for
@@ -655,10 +669,12 @@ def _content(msg: Message, partial: bool) -> dict:
             inner = part.get_payload()
             inner = inner[0] if isinstance(inner, list) and inner else None
             subject = _text(inner.get("Subject")) if isinstance(inner, Message) else ""
-            try:
-                size = len(inner.as_bytes()) if isinstance(inner, Message) else None
-            except (ValueError, LookupError, UnicodeError, TypeError, KeyError):
-                size = None
+            size = _omitted(part)
+            if size is None:
+                try:
+                    size = len(inner.as_bytes()) if isinstance(inner, Message) else None
+                except (ValueError, LookupError, UnicodeError, TypeError, KeyError):
+                    size = None
             found["attachments"].append({
                 "name": _filename(part) or (f"{subject}.eml" if subject else None),
                 "mime": ctype, "size": size})
@@ -681,7 +697,9 @@ def _content(msg: Message, partial: bool) -> dict:
                     found[key] = text
             return
         if disposition == "attachment" or filename:
-            size = len(_payload(part))
+            size = _omitted(part)
+            if size is None:
+                size = len(_payload(part))
             found["attachments"].append({"name": filename, "mime": ctype,
                                          "size": None if partial and not size else size})
 
@@ -879,6 +897,7 @@ class _Reader:
         self.ignored: list[str] = []
         self.read = 0
         self.bad_addresses = 0
+        self.fetched_for: Counter = Counter()     # X-Lifecrm-Account, by address
 
     def _box(self, mailbox: str | None) -> dict:
         return self.mailboxes.setdefault(mailbox or "(none)", {"kept": 0, "skipped": 0})
@@ -928,6 +947,12 @@ class _Reader:
                                         "to", "received")):
             self.unmap("text with no mail headers", where["label"], mailbox)
             return
+        if next(iter(heads)) == "x-lifecrm-account":
+            # The account lifecrm's Gmail fetch took it from, written as the
+            # first line — only there: one further down came with the message.
+            fetched, _ = _addresses(heads["x-lifecrm-account"][:1])
+            if fetched:
+                self.fetched_for[fetched[0][0]] += 1
         labels = _labels(heads)
         reason = self._skip_label(labels, mailbox)
         if reason:
@@ -1220,13 +1245,25 @@ def _owner(reader: _Reader, settings: dict) -> dict:
     docstring for the order the answer is looked for in."""
     froms = Counter(m["from"][0] for m in reader.messages if m["from"])
     configured = settings["addresses"]
+    # Mail lifecrm fetched from Gmail names its account, so the account is
+    # the same every morning whatever that morning's mail says.
+    fetched = (sorted(reader.fetched_for.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+               if reader.fetched_for else None)
     if configured:
         present = [a for a in configured if froms.get(a)]
-        account = (max(present, key=lambda a: (froms[a], -configured.index(a)))
-                   if present else configured[0])
-        return {"addresses": set(configured), "account": account,
-                "source": settings["addresses_from"], "also": [], "warning": None}
+        account = fetched or (max(present, key=lambda a: (froms[a], -configured.index(a)))
+                              if present else configured[0])
+        return {"addresses": set(configured) | ({fetched} if fetched else set()),
+                "account": account, "source": settings["addresses_from"], "also": [],
+                "warning": None}
     sent = Counter(m["from"][0] for m in reader.messages if m["sent_copy"] and m["from"])
+    if fetched:
+        others = sorted(((a, n) for a, n in sent.items() if a != fetched),
+                        key=lambda kv: (-kv[1], kv[0]))
+        return {"addresses": {fetched}, "account": fetched,
+                "source": "the Gmail account it was fetched from (lifecrm connect gmail)",
+                "also": [{"address": a, "messages": n} for a, n in others],
+                "warning": None}
     if sent:
         ranked = sorted(sent.items(), key=lambda kv: (-kv[1], kv[0]))
         account = ranked[0][0]

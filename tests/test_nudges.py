@@ -106,9 +106,14 @@ def seed(conn, cfg) -> dict:
         {"kind": "phone", "value": MOM, "display_name": "Linda Rivera"},
         {"kind": "email", "value": PRIYA, "display_name": "Priya Natarajan"},
     ]
-    scan = {"connector": "nudge_fixture", "account": OWNER, "source_file": "fixture",
-            "source_hash": "a" * 64, "records": records, "handles": handles}
-    obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
+    # The old text comes from an android_sms import of its own: freshness is
+    # judged only for a connector in use. Inserted in the same order as before.
+    for i, (connector, part) in enumerate((("nudge_fixture", records[:7]),
+                                           ("android_sms", records[7:8]),
+                                           ("nudge_fixture", records[8:]))):
+        scan = {"connector": connector, "account": OWNER, "source_file": f"fixture{i}",
+                "source_hash": str(i) * 64, "records": part, "handles": handles}
+        obs.apply_plan(conn, scan, obs.build_plan(conn, scan))
     people = {}
     for name, kind, value in (("Alex Rivera", "phone", OWNER), ("Sam Okafor", "phone", SAM),
                               ("Linda Rivera", "phone", MOM),

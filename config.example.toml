@@ -143,6 +143,9 @@ max_loops = 10                     # open tasks/plans listed
 # [connectors.location]             # docs/location.md
 # path = "~/OneDrive/Timeline.json" # Timeline.json, location-history.json, or a Takeout
 
+# [connectors.gps_track]            # docs/gps_track.md
+# path = "~/OneDrive/GPSLogger"     # only if the track folder is not OneDrive › GPSLogger (or one folder down)
+
 # [connectors.browser]              # docs/browser.md
 # browser = "chrome"                # chrome | brave | edge | safari | chromium | vivaldi | opera
 # path = "..."                      # a History / History.db file or a profile folder
@@ -207,6 +210,10 @@ max_loops = 10                     # open tasks/plans listed
 # [collect]
 # sources = ["android_sms", "health"]   # only these, and nothing else is looked at
 # health_dir = "D:/Exports/Health Connect"   # one more folder for the phone's health export
+#
+# Online sources (Google Calendar, Gmail, Google Contacts, Last.fm) need nothing
+# here: `python -m lifecrm connect <service>` keeps what each needs in
+# data/secrets.json, never in this file (docs/online.md).
 
 # ---------------------------------------------------------------- nutrition
 # Optional. Whose reference intakes `lifecrm nutrients` compares against

@@ -20,7 +20,9 @@ Automate flow  ──Autosync──> OneDrive/VoiceJournal/inbox-text   (typed/d
 Samsung Health ──> Health Connect ──scheduled export──> zip ──> lifecrm health import
 SMS Backup & Restore ──scheduled──> OneDrive ──> lifecrm observe android_sms
 Contacts export (.vcf), Google Takeout (Calendar, Keep, Photos) ──> lifecrm observe ...
+GPSLogger ──Autosync (2nd pair)──> OneDrive/GPSLogger ──> lifecrm collect (gps_track)
 Timeline export (Timeline.json) ──> lifecrm observe location
+Google Calendar, Gmail, Google Contacts, Last.fm ──fetched by the laptop──> lifecrm collect
 WhatsApp "Export chat" (.zip) ──Quick Share──> lifecrm observe whatsapp
 ```
 
@@ -155,8 +157,8 @@ One UI puts background apps to sleep aggressively, and a sleeping Autosync
 simply stops uploading — no error, nothing arrives.
 
 - Settings › Battery › **Background usage limits** › **Never sleeping apps** ›
-  add **Autosync** (and OneDrive, Automate and SMS Backup & Restore if you
-  use them). On older One UI this is under Settings › Battery and device care
+  add **Autosync** (and OneDrive, Automate, SMS Backup & Restore and
+  GPSLogger if you use them). On older One UI this is under Settings › Battery and device care
   › Battery. **(verify)** the path on your version.
 - Make sure the same apps are not in *Sleeping apps* or *Deep sleeping apps*.
 - Settings › Apps › Autosync › Battery: **Unrestricted**; Mobile data: allow
@@ -288,6 +290,12 @@ known RCS conversation appears in the dry run's sample lines.
 Contact cards give phone numbers and email addresses their names, so texts,
 calls and calendar attendees can be linked to people.
 
+**Automatic instead:** a Samsung phone that saves contacts to the Google
+account needs no export — connect Google Contacts once on the laptop and
+every morning brings the whole address book ([google_contacts.md](google_contacts.md)).
+Calendar (its secret iCal link) and Gmail work the same way
+([online.md](online.md)). The by-hand route:
+
 1. **Contacts** › ≡ › **Manage contacts** › **Import or export contacts** ›
    **Export** › Internal storage. **(verify)** — it writes a `.vcf` file
    (often `Contacts.vcf`) and says where.
@@ -331,9 +339,16 @@ without Takeout: point `observe photos` at that OneDrive folder. Note that a
 folder of online-only OneDrive files is downloaded file by file when read —
 mark it *Always keep on this device* first, or use Takeout for the history.
 
+### Location, every day (GPSLogger)
+
+Timeline leaves the phone only by hand. For places every morning, GPSLogger
+logs the phone's position to one file a day and Autosync uploads it to
+OneDrive › GPSLogger; the laptop's morning job turns the points into visits.
+Setup, settings and the Samsung battery steps: [gps_track.md](gps_track.md).
+
 ### Location and browser history
 
-- **Where you were:** Settings › Location › Location services › Timeline ›
+- **Where you were (by hand, the history before GPSLogger):** Settings › Location › Location services › Timeline ›
   **Export Timeline data** writes `Timeline.json` **(verify)**. Save it to
   OneDrive and run `python -m lifecrm observe location`. See
   [location.md](location.md).
@@ -359,6 +374,8 @@ anyway.
 The pipeline side is tested with synthetic files named as above. What only a
 real Galaxy can show:
 
+- [ ] GPSLogger keeps logging overnight and after a restart (no gap in the
+  next day's file in OneDrive › GPSLogger).
 - [ ] Record a note, wait **ten minutes**, then let it sync. On the computer,
       `python -m lifecrm filedate "<OneDrive>\VoiceJournal\inbox\Voice 0NN.m4a"`
       — does "recorded" match when you spoke, or when it uploaded? (This

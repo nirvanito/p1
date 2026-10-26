@@ -69,9 +69,11 @@ protection). The account that scopes it:
   account changes. A single store passed on its own is 'mac-store:<id>' (its
   Sources folder name), so it can never remove the other stores' cards.
 - an iPhone backup: 'iphone:<device id>' (the backup folder's name).
-- a vCard: only when config.toml names it — [connectors.contacts] account —
-  because a .vcf does not say whose address book it is. Without one, nothing
-  is removed and the report says why.
+- a vCard: what its cards say in X-LIFECRM-ACCOUNT — `google:<email>`, the
+  file `lifecrm connect google_contacts` fetches each morning — else what
+  config.toml names, [connectors.contacts] account, because a .vcf exported
+  by hand does not say whose address book it is. Without either, nothing is
+  removed and the report says why.
 
 Not imported: photos (counted; media stays out of the database), group
 memberships (CATEGORIES), social profiles, related names, and any property
@@ -248,7 +250,12 @@ def _read_vcards(target: Path, cfg: Config) -> dict:
     if unterminated:
         unmapped["card without END:VCARD (file cut short?) — read as far as it goes"] = \
             unterminated
-    account = cfg.connector_settings(name).get("account")
+    # Whose address book: what every card says (X-LIFECRM-ACCOUNT, written
+    # by the Google Contacts fetcher), else what config.toml says. Cards that
+    # disagree, or only some saying, mirror nothing unless config names one.
+    stated = {c.get("account") for c in cards}
+    account = (next(iter(stated)) if len(stated) == 1 and None not in stated
+               else cfg.connector_settings(name).get("account"))
     detail = ("vCard " + "/".join(sorted(versions)) if len(files) == 1
               else f"{len(files)} vCard file(s)")
     return {"kind": "vcard", "cards": cards, "unmapped": unmapped,

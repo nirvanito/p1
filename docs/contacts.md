@@ -14,6 +14,13 @@ linked automatically. See [docs/observed-tier.md](observed-tier.md).
 
 ## Getting the address book
 
+**No export at all: connect Google Contacts.** If your contacts live in a
+Google account, `python -m lifecrm connect google_contacts` once (a
+ten-minute Google Cloud setup, [docs/google_contacts.md](google_contacts.md))
+and the daily job fetches the whole address book every morning, mirrored per
+account, with each card's own id and last-edit date. The exports below are
+the by-hand routes.
+
 **Windows laptop + Samsung (Android) phone.** Your contacts live in your Google
 account (Samsung Contacts syncs to it). On the laptop, open
 contacts.google.com → *Export* → **vCard (for iOS Contacts)** → *Export*. The
@@ -142,7 +149,8 @@ Which account a source is:
 | a Mac's Contacts folder | `mac-addressbook:<id>` — the top-level store's own UUID, one per Mac user |
 | one `.abcddb` store passed alone | `mac-store:<Sources folder id>` — never touches the other stores' cards |
 | an iPhone backup | `iphone:<device id>` (the backup folder's name) |
-| a `.vcf` | only what config.toml says — a vCard does not say whose it is |
+| the file `connect google_contacts` fetches | `google:<email>` — its cards say so (`X-LIFECRM-ACCOUNT`) |
+| any other `.vcf` | only what config.toml says — a vCard does not say whose it is |
 
 So a vCard mirrors only once you name it:
 

@@ -47,10 +47,10 @@ Access for the app running this, every read fails, and that is reported as
 the missing permission (one line, with where to grant it) rather than as a
 database that will not open.
 
-Freshness: this connector declares no `stale_after_days`. Its streams are
-ios_messages' streams, and doctor measures freshness per stream, so the
-`ios_messages_data_age` check already covers texts from either source; a
-second check would only repeat it.
+Freshness: 14 days, as ios_messages. Doctor measures freshness over a
+connector's streams once that connector has an import of its own, and these
+are ios_messages' streams: on a Mac that never read a backup this is the only
+check, and where both are in use they agree.
 """
 
 from __future__ import annotations
@@ -66,6 +66,7 @@ from . import ios_messages as im
 
 name = "mac_messages"
 streams = im.streams
+stale_after_days = 14
 # The same records as the phone's, so the same stored-format upgrade: a row
 # kept with a full Library/Messages/ (or Library/SMS/) attachment path by a
 # reader from before 2026-10-22 is rewritten, not reported as a conflict.

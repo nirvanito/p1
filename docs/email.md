@@ -15,6 +15,12 @@ always cited. Nothing here can touch `entries`, `measurements` or
 
 ## Getting the archive
 
+**Gmail, every morning, with no export.** Connect it once —
+`python -m lifecrm connect gmail you@gmail.com` with an app password — and
+the daily `collect` fetches new mail over IMAP (read-only) into `.eml`
+files this connector reads, older mail backfilled a batch a morning. See
+[gmail.md](gmail.md). The Takeout below is the one-off alternative.
+
 **Gmail, on either setup (Windows + Samsung, or Mac + iPhone).** Go to
 [takeout.google.com](https://takeout.google.com) → **Deselect all** → tick
 **Mail** (its *All Mail data included* button picks labels; leave it at all
@@ -69,6 +75,10 @@ addresses = ["alex.rivera@example.com", "alex@work.example"]
 # skip_labels = ["Spam", "Trash", "Junk", "Bin", "Deleted Messages", "Deleted Items",
 #                "Junk E-mail", "Junk Email", "Drafts", "Draft", "Chat"]
 ```
+
+Mail fetched by the Gmail source ([gmail.md](gmail.md)) names the account
+it came from (an `X-Lifecrm-Account` first line): that address is always
+one of yours and the import's account, whatever else is set.
 
 Without `addresses`, the email handles under `[owner]` (see
 [ask.md](ask.md), "Who you are") are used. Without either, the dry run
@@ -146,6 +156,8 @@ Accepted targets:
   forwarded message attached whole (`message/rfc822`) is described the same
   way, never read as this message's text. Apple Mail's `.partial.emlx`
   keeps attachments in a separate folder, so their size is unknown (`null`).
+  A big message the Gmail source fetched without its attachments carries
+  each one's size in an `X-Lifecrm-Omitted` line, and that size is used.
 - A **calendar invitation** is kept as the email it is, marked `invite`.
   The event itself comes in through the [calendar](calendar.md) connector.
 

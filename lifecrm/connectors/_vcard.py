@@ -26,6 +26,10 @@ would mangle exactly those values. A UTF-8 BOM is dropped and a UTF-16 file
 Photos are never decoded — media stays outside the database — but each card
 that carried one is counted, so the report can say so. Every property this
 reader does not use is counted by name, not silently dropped.
+
+One property is this project's own: X-LIFECRM-ACCOUNT, whose address book
+the card is (`google:<email>`), written by the Google Contacts fetcher
+(lifecrm/online/google_contacts.py) because a vCard otherwise cannot say it.
 """
 
 from __future__ import annotations
@@ -36,11 +40,12 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 NO_YEAR = 1604                 # Apple's year for a birthday entered without one
+ACCOUNT_PROP = "X-LIFECRM-ACCOUNT"
 
 # Properties read into the card, or structural; everything else is counted.
 _USED = {"BEGIN", "END", "VERSION", "PRODID", "FN", "N", "NICKNAME", "ORG",
          "TITLE", "BDAY", "ADR", "NOTE", "URL", "EMAIL", "TEL", "UID",
-         "X-ABUID", "REV", "X-ABLABEL", "X-ABSHOWAS", "X-ABADR"}
+         "X-ABUID", "REV", "X-ABLABEL", "X-ABSHOWAS", "X-ABADR", ACCOUNT_PROP}
 _MEDIA = {"PHOTO", "LOGO", "SOUND", "KEY"}
 _IGNORED_TYPES = {"voice", "pref", "internet", "x400", "msg", "intl", "dom",
                   "postal", "parcel", "text"}
@@ -390,8 +395,8 @@ def parse(raw: bytes, name: str) -> dict:
     A card carries the same keys as `_abcddb.read_contacts` produces (uid,
     first, last, middle, nickname, org, job_title, display_name, phones,
     emails, addresses, birthday, note, created_at, modified_at) plus urls,
-    uid_kind ('UID' | 'X-ABUID' | None) and bday_raw for a BDAY that is not
-    a date. Raises VCardError when the bytes hold no vCard at all.
+    uid_kind ('UID' | 'X-ABUID' | None), bday_raw for a BDAY that is not
+    a date, and account (X-LIFECRM-ACCOUNT, else None). Raises VCardError when the bytes hold no vCard at all.
     """
     data = _to_utf8_bytes(raw)
     blocks, unterminated = _cards(data)
@@ -433,7 +438,7 @@ def _card(lines: list[bytes]) -> tuple[dict, dict]:
             "org": None, "job_title": None, "display_name": None, "phones": [],
             "emails": [], "addresses": [], "urls": [], "birthday": None,
             "bday_raw": None, "note": None, "created_at": None,
-            "modified_at": None}
+            "modified_at": None, "account": None}
     info = {"unmapped": {}, "photo": False, "version": None, "prodid": None,
             "hints": set()}
     fn = abuid = None
@@ -524,6 +529,8 @@ def _card(lines: list[bytes]) -> tuple[dict, dict]:
             card["modified_at"] = parse_instant(_unescape(text))
         elif prop == "X-ABSHOWAS":
             company = text.strip().upper() == "COMPANY"
+        elif prop == ACCOUNT_PROP:
+            card["account"] = _clean(_unescape(text))
     if card["uid"] is None and abuid:
         card["uid"], card["uid_kind"] = abuid, "X-ABUID"
     card["nickname"] = ", ".join(dict.fromkeys(nicknames)) or None
