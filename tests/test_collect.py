@@ -738,6 +738,22 @@ def test_the_phone_is_guessed_from_this_computer(home, monkeypatch):
     assert collect.guess_phone() == "iphone-windows"
 
 
+def test_a_preview_names_a_checklist_only_where_the_doc_has_one():
+    assert collect.has_checklist("docs/android-texts.md")
+    assert not collect.has_checklist("docs/browser.md")
+    assert not collect.has_checklist("docs/no-such-doc.md")
+
+
+def test_no_answer_at_the_prompt_is_a_no_not_an_abort(monkeypatch):
+    import typer
+    from lifecrm.commands import collect as cmd
+
+    def closed(question):
+        raise typer.Abort()
+    monkeypatch.setattr(typer, "confirm", closed)
+    assert cmd._asked("Import this?") is False
+
+
 def test_cli_approve_decline_and_setup(tmp_path, monkeypatch, home):
     _phone_backup(home)
     _project(tmp_path, monkeypatch)
@@ -749,6 +765,7 @@ def test_cli_approve_decline_and_setup(tmp_path, monkeypatch, home):
     r = runner.invoke(app, ["collect", "approve", "android_sms"])       # not a terminal
     assert r.exit_code == 0, r.output
     assert "texts and calls (SMS Backup & Restore): " in r.output and "new record(s)" in r.output
+    assert "docs/android-texts.md (its first-real-import checklist)" in r.output
     assert "collect approve android_sms --yes" in r.output
     r = runner.invoke(app, ["collect", "approve", "android_sms", "--yes"])
     assert r.exit_code == 0, r.output
