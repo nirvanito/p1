@@ -140,8 +140,8 @@ When the user answers a collect question:
   odd (no unknown fields or skipped rows in bulk, no warning line), run
   `python -m lifecrm collect approve <source> --yes` and say in a sentence
   what came in. If something looks off, show the user those lines and the
-  doc the summary names (its first-real-import checklist) and ask before
-  importing. From then on the daily job collects it by itself.
+  doc the summary names (and its first-real-import checklist, when the
+  summary says it has one) and ask before importing. From then on the daily job collects it by itself.
 - **not now** — `python -m lifecrm nudges snooze <key> --days 7`.
 - **never** — `python -m lifecrm collect decline <source>`: the job stops
   looking at it (`collect approve` takes it back).
