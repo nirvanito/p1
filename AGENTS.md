@@ -542,7 +542,7 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
   `docs/mac.md` (combo 2: MacBook + iPhone) and `docs/windows-iphone.md`
   (combo 3: Windows laptop + iPhone) — the setups end to end;
   `docs/iphone.md` + `docs/android.md` — standalone phone capture guides.
-  On GitHub (nirvanito/p1, private) each setup is a branch —
+  On GitHub (nirvanito/p1, public) each setup is a branch —
   windows-android, windows-iphone, mac-iphone — that differs from main only
   in its README quick start and demo defaults; fixes land on main and are
   merged into the three.
