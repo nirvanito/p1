@@ -196,6 +196,18 @@ def _doc(name: str) -> str:
     return f"docs/{DOCS.get(name, name + '.md')}"
 
 
+def has_checklist(doc: str) -> bool:
+    """The doc ends in a first-real-import checklist (a heading saying so):
+    worth naming in a preview only when it is there."""
+    import re
+    path = Path(__file__).resolve().parent.parent / doc
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return re.search(r"^#+ .*checklist", text, re.I | re.M) is not None
+
+
 def _error_line(e: Exception) -> str:
     if isinstance(e, DomainError):
         return str(e)
@@ -586,6 +598,7 @@ def approve(conn: sqlite3.Connection, cfg: Config, name: str, *,
     out = {"source": name, "label": src["label"], "target": str(src["target"]),
            "counts": _plan_counts(plan), "span": _span(plan["new"]),
            "first_import": _first_time(conn, src), "doc": src["doc"],
+           "checklist": has_checklist(src["doc"]),
            "report": report, "applied": False}
     if src["kind"] == "observed":
         from .domain import observations as obs
