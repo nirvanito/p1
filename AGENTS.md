@@ -541,7 +541,13 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
 - `docs/windows-android.md` (combo 1: Windows laptop + Samsung),
   `docs/mac.md` (combo 2: MacBook + iPhone) and `docs/windows-iphone.md`
   (combo 3: Windows laptop + iPhone) — the setups end to end;
-  `docs/iphone.md` + `docs/android.md` — standalone phone capture guides.
+  `docs/iphone.md` + `docs/android.md` — standalone phone capture guides;
+  `docs/automatic-collection.md` — the hands-off plan on top of them: per
+  source its automatic route (A: no export ever once set up; B: requested by
+  hand, found the next morning; C: a folder named once in config.toml), the
+  setup order, what each morning asks afterwards, Obsidian as the main
+  screen with a see -> run table; it links into the per-source docs and
+  repeats none of their steps — keep it in step when a route changes.
   On GitHub (nirvanito/p1, public) each setup is a branch —
   windows-android, windows-iphone, mac-iphone — that differs from main only
   in its README quick start and demo defaults; fixes land on main and are

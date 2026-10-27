@@ -14,6 +14,10 @@ python -m lifecrm fetch SERVICE              download its new data now, import n
 python -m lifecrm disconnect SERVICE         forget its link / password / token
 ```
 
+Where these four sit among all the others — what else arrives by itself,
+what is still a download now and then — is
+[automatic-collection.md](automatic-collection.md).
+
 ## How it works
 
 1. **Fetch.** Each morning, for every connected service, the job downloads
