@@ -62,17 +62,18 @@ statements as they come.
 | source | the automatic route | set up once | after that | "gone quiet" warning |
 |---|---|---|---|---|
 | Voice notes, quick notes | the recorder's and the quick-note folder are read straight off the phone (Windows 11 + Android), or a sync app / Shortcut saves into `VoiceJournal/inbox` and `inbox-text` | [android.md §1–2](android.md#1-voice-notes), [iphone.md](iphone.md) | intake (07:00 and at logon) transcribes; you `/log` | `doctor`: a note stuck in the inbox |
-| Texts and calls (Android) | SMS Backup & Restore's scheduled daily backup, read off the phone or from its OneDrive folder | [android-texts.md](android-texts.md#making-scheduled-backups-to-onedrive-on-the-phone) | each morning; texts mirror the phone, calls are remembered | 14 days |
+| Texts, calls and contact names (Windows 11 + Android) | **nothing on the phone:** Phone Link's own cache on the laptop, filled by Link to Windows, read every morning (about a month's window; calls with the phone paired over Bluetooth) | [phone_link.md](phone_link.md) — open Phone Link's Messages tab once | each morning; texts and calls remembered, contact cards mirror | 14 days |
+| Texts and calls, the whole history (Android) | SMS Backup & Restore's scheduled daily backup, read off the phone or from its OneDrive folder — the other route: use one | [android-texts.md](android-texts.md#making-scheduled-backups-to-onedrive-on-the-phone) | each morning; texts mirror the phone, calls are remembered | 14 days |
 | Texts (Mac + iPhone) | Messages in iCloud fills the Mac's own Messages store | [texts.md](texts.md#reading-a-macs-messages-directly-mac_messages), Full Disk Access | each morning | 14 days |
 | Calls (Mac + iPhone) | *Calls from iPhone* fills the Mac's call history | [calls.md](calls.md) | each morning | 14 days |
 | Texts (Windows + iPhone) | an unencrypted Apple Devices backup; over Wi-Fi while the phone charges if Apple Devices offers it **(verify)**, else the cable now and then | [texts.md](texts.md#making-the-backup-windows) | each new backup is collected the next morning | 14 days |
-| Health (Android) | Health Connect's scheduled daily export into OneDrive, or into Google Drive synced to the laptop | [health-connect.md](health-connect.md#phone-side-setup-once) | each morning takes the newest export | 14 days |
+| Health (Android) | Health Connect's scheduled daily export into a folder on the phone (read off it when the phone is shown in File Explorer), into OneDrive, or into Google Drive synced to the laptop | [health-connect.md](health-connect.md#phone-side-setup-once) | each morning takes the newest export | 14 days |
 | Places visited | GPSLogger writes one track file a day; read off the phone or synced to OneDrive › GPSLogger | [gps_track.md](gps_track.md) | visits each morning | 7 days |
 | Browser history | the laptop's own Chrome / Edge / Brave / Safari history; the phone's browser, signed into the same account, syncs into it | [browser.md](browser.md) — nothing on the laptop | each morning | none, by design |
 | Photos (metadata only, never the pictures) | Gallery › *Sync with OneDrive* or the OneDrive app's *Camera upload* (Android; iPhone + Windows), or the Mac's Photos library with iCloud Photos on | [photos.md](photos.md#where-your-photos-are) | each morning | none, by design |
 | Calendar | Google Calendar's *Secret address in iCal format*, connected once | [online.md](online.md#google-calendar--google_calendar--the-calendar-connector) | downloaded each morning; a deleted event leaves the archive | — |
 | Email | Gmail over IMAP with an app password, connected once; read-only | [gmail.md](gmail.md) | all new mail each morning; after the first yes, older mail 2,000 a morning until the oldest | — |
-| Contacts | Google Contacts through an OAuth client of your own (ten minutes, once); or the Mac's Contacts with iCloud Contacts on | [google_contacts.md](google_contacts.md), [contacts.md](contacts.md) | the whole address book each morning; a deleted contact leaves the archive | — |
+| Contacts | Phone Link's cache (Windows 11 + Android, above); Google Contacts through an OAuth client of your own (ten minutes, once); or the Mac's Contacts with iCloud Contacts on — one of them | [phone_link.md](phone_link.md), [google_contacts.md](google_contacts.md), [contacts.md](contacts.md) | the whole address book each morning; a deleted contact leaves the archive | — |
 | Music | Spotify scrobbling to Last.fm, plus a free Last.fm API key, connected once | [lastfm.md](lastfm.md) | new scrobbles each morning; the history backfilled 10,000 a morning | 14 days |
 | Notes (Mac) | Apple Notes' own store with iCloud Notes on | [notes.md](notes.md) | each morning | — |
 | Notes (any setup) | a synced folder of your own `.md` / `.txt` notes, named once in `[connectors.notes] path` — never the Life CRM vault itself, whose notes are generated from the database; on a Mac the path replaces Apple Notes as what `notes` reads | [notes.md](notes.md) | each morning | — |
@@ -189,39 +190,48 @@ once.
 `lifecrm collect setup` prints these steps and keeps them current; here is
 what they add up to.
 
-**Windows 11 + Android.** The shortcut first: Quick settings › *Link to
-Windows* on the phone, and on the laptop Settings › Bluetooth & devices ›
-Mobile devices › *Show mobile device in File Explorer* **(verify)** the
-wording ([android.md](android.md#no-sync-app-at-all-windows-11-optional)).
-Then the laptop reads the phone's own folders over Wi-Fi, and three sources
-need no sync app at all:
+**Windows 11 + Android.** Link the phone first: Quick settings › *Link to
+Windows* on the phone, signed in with the laptop's Microsoft account, and on
+the laptop Settings › Bluetooth & devices › Mobile devices — add the phone,
+and turn on *Show mobile device in File Explorer* **(verify)** the wording
+([android.md](android.md#no-sync-app-at-all-windows-11-optional)). That one
+link gives two things. **Phone Link's cache**: the laptop's own copy of the
+phone's texts, call log and address book, read by the `phone_link`
+connector — open Phone Link's Messages tab once and texts, calls (with
+Bluetooth) and contact names arrive every morning with nothing installed
+([phone_link.md](phone_link.md)). **The phone in File Explorer**: the laptop
+reads the phone's own folders over Wi-Fi, so these need no sync app:
 
 - **Voice notes and quick notes** — Samsung Voice Recorder saves to
   `Recordings/Voice Recorder` (and call recordings to `Recordings/Call`, held
   until you pick them); a quick-note app saves one `.txt` per note into a
   phone folder named `VoiceJournal-text`. Intake copies new files off the
   phone, once, never moving them ([android.md §1–2](android.md#1-voice-notes)).
-- **Texts and calls** — SMS Backup & Restore: Messages and Call logs, *all*
-  conversations, scheduled daily at night; leave the backup in its local
-  folder ([android-texts.md](android-texts.md)).
 - **Places** — GPSLogger: GPX, one file a day, saved to Internal storage ›
   GPSLogger, 60-second interval, distance filter 0, start on boot
   ([gps_track.md](gps_track.md#1-gpslogger-on-the-phone)).
+- **Health** — Samsung Health › Health Connect, one app writing each metric,
+  then Health Connect's *scheduled export* daily into a phone folder named
+  `HealthConnect` **(verify)** that the chooser offers phone storage; the
+  laptop reads it off the phone. Or into OneDrive, or into Google Drive
+  synced to the laptop with Drive for desktop and added as `[collect]
+  health_dir` ([health-connect.md](health-connect.md#phone-side-setup-once)).
+- **Texts, the whole history** — only if you want more than Phone Link's
+  month, or deletions mirrored: SMS Backup & Restore, Messages and Call logs,
+  *all* conversations, scheduled daily at night, the backup left in its
+  local folder ([android-texts.md](android-texts.md)). Then it is your texts
+  route and Phone Link's is not (`collect decline phone_link`): an MMS in
+  both counts twice.
 
 Still through the cloud, because the phone writes them there:
 
-- **Health** — Samsung Health › Health Connect, one app writing each metric,
-  then Health Connect's *scheduled export* daily into OneDrive **(verify)**
-  the destinations; to Google Drive, sync that folder to the laptop with
-  Drive for desktop and add it as `[collect] health_dir`
-  ([health-connect.md](health-connect.md#phone-side-setup-once)).
 - **Photos** — Gallery › Settings › *Sync with OneDrive*, or the OneDrive
   app's Camera upload ([photos.md](photos.md#where-your-photos-are)).
 - **Browser** — Chrome on the phone signed into the same Google account with
   Sync on; the laptop's Chrome then holds the phone's pages too.
 
 Then **Never sleeping apps**: Settings › Battery › Background usage limits ›
-add SMS Backup & Restore, GPSLogger (and Autosync, if you use it), and
+add GPSLogger (and SMS Backup & Restore and Autosync, if you use them), and
 Battery: *Unrestricted* for each ([android.md](android.md#keep-samsung-from-killing-the-sync)).
 One UI stops a background app without a word, and a stopped app looks
 like a quiet day.
@@ -230,10 +240,10 @@ Without Link to Windows — or beside it — the sync route is Autosync for
 OneDrive: a folder pair `Recordings/Voice Recorder` → `VoiceJournal/inbox`
 (the free tier's one pair), and paid pairs or FolderSync for `GPSLogger` and
 `VoiceJournal-text`; SMS Backup & Restore uploads to OneDrive by itself. The
-phone and laptop must be on the same Wi-Fi for the shortcut, so a phone that
-is away reads as "not answering" and the morning run skips it quietly; the
-sync route has no such condition. `[phone] read = false` turns the shortcut
-off.
+phone and laptop must be on the same Wi-Fi for the folders in File Explorer,
+so a phone that is away reads as "not answering" and the morning run skips
+it quietly; Phone Link's cache and the sync route have no such condition.
+`[phone] read = false` turns the File Explorer shortcut off.
 
 **Windows + iPhone.** The two Shortcuts, *Log My Day* and *Quick Note*,
 saving to OneDrive's `VoiceJournal` ([iphone.md](iphone.md),
@@ -356,7 +366,8 @@ record is older than its limit (section 1's last column), the vault's
 
 | quiet source | first look at |
 |---|---|
-| texts, places, voice notes (Android) | the app still in *Never sleeping apps* and *Unrestricted*; GPSLogger's notification still showing; the phone on the same Wi-Fi as the laptop (`lifecrm collect status` says whether it answers); OneDrive running and not paused |
+| texts, calls, contacts through Phone Link | the phone still linked (Phone Link shows it); Phone Link opened recently, so its cache is current; calls need the Bluetooth pairing; `lifecrm where` shows when the cache was last written |
+| texts (backup), places, voice notes (Android) | the app still in *Never sleeping apps* and *Unrestricted*; GPSLogger's notification still showing; the phone on the same Wi-Fi as the laptop (`lifecrm collect status` says whether it answers); OneDrive running and not paused |
 | anything through the phone in File Explorer | the phone was away at 06:30 — the next run catches up, nothing is lost; the collect task also runs after logon |
 | health (Android) | Health Connect's scheduled export still on; the export landed where `collect` looks (top of OneDrive, one folder down, or `[collect] health_dir`) |
 | Gmail, Google Contacts, Last.fm | `lifecrm collect status`: a failed fetch is an **error**, never a silent skip; a revoked app password or an ended Google sign-in says "needs connecting again" — run the same `connect` command |

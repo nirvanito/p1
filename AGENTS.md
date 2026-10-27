@@ -170,9 +170,9 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
   pass the review gate; dry-run by default; connectors ai_chat, android_sms,
   browser, calendar, contacts, email, finance, fitness, google_activity,
   gps_track, ios_calls, ios_messages, lastfm, linkedin, location,
-  mac_messages, meta_messages, notes, nutrition, payments, photos, reading,
-  rides, spotify, telegram, whatsapp; `connectors` counts each stream's rows per connector (finance and
-  payments share txn); `imports list/retract/restore` —
+  mac_messages, meta_messages, notes, nutrition, payments, phone_link, photos,
+  reading, rides, spotify, telegram, whatsapp; `connectors` counts each stream's rows per connector (finance and
+  payments share txn; phone_link shares android_sms's three streams and contact_card); `imports list/retract/restore` —
   restore puts back exactly what retract hid, never what mirroring removed;
   `handles list --suggest` offers entity candidates (splits 'A / B' names,
   skips owner placeholders, falls back to the name on a contact_card holding
@@ -261,6 +261,29 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
     android_mms / android_call; texts mirror only a type="full" file whose
     count matches, with a known account; calls are remembered (the phone's
     call log ages old calls out). `docs/android-texts.md`.
+  - `phone_link` — Windows only: Phone Link's (Microsoft.YourPhone) own
+    cache of the linked Android phone, `%LOCALAPPDATA%\Packages\
+    Microsoft.YourPhone_8wekyb3d8bbwe\LocalCache\Indexed\<device>\System\
+    Database\{phone,calling,contacts}.db` (`platforms.local_appdata` honors a
+    LOCALAPPDATA under the home in use, so a test's fake home isolates it;
+    `platforms.phone_link_root`). SMS/MMS/calls go through
+    `android_sms._Reader` into android_sms / android_mms / android_call —
+    an SMS or call gets the SAME `_hid` id as from a backup (dedupe across
+    routes), an MMS hashes by content (no carrier m_id in the cache: one
+    route for texts per phone); contacts.db through `contacts._records` into
+    contact_card (`phonelink:<device8>:<contact_id>`, MIRRORS per phone) and
+    the names on handles. Texts and calls are REMEMBERED (the cache is a
+    ~1-month window) and declare no coverage. Owner: subscription.number,
+    else the reader's sent-MMS rule, else `[connectors.phone_link] account`;
+    `contacts = false` keeps names only. Times are FILETIME (ms for SMS/calls,
+    s for MMS). Every table/column is checked first: a format change is one
+    DomainError line. `default_target`: `path`, else the one cache folder
+    written within RECENT_DAYS (14) — a replaced phone's stale folder is
+    ignored, two live ones raise Ambiguous; on a Mac a DomainError (collect
+    skips). stale_after_days 14. Verified against a real cache 2026-10
+    (texts, contacts, the owner's number); calls and `rcs_chat` rows were
+    not in it (unverified). Checklist entry first in collect.PHONE["android"];
+    `where` lists the cache folders on Windows. `docs/phone_link.md`.
   - `whatsapp` — "Export chat" .txt/.zip, one chat per export; remembers.
   - `contacts` (+ `_vcard.py`, `_ios_addressbook.py`, `_abcddb.py`) — vCard,
     Mac Contacts, iPhone AddressBook as `contact_card`; handles carry the
@@ -490,7 +513,9 @@ Gmail, Google Contacts, Last.fm) are fetched each morning once connected.
   name) read directly: `pull` copies — never moves — the recorder's and the
   quick-note folder's new files into the inboxes once (`data/phone-
   pulled.json`; intake's content-hash check stands behind it), `folders()`
-  is one more place android_sms and gps_track look; every call has a
+  is one more place android_sms and gps_track look, and collect's `health`
+  source looks in its `HealthConnect` / `Download` folders
+  (`collect.HEALTH_PHONE_FOLDERS`); every call has a
   timeout, and a phone that is away is "not reachable" (collect: skipped
   or "missing", never an error). NEVER relied on: the sync-app route stays
   and is the only one on a Mac / with an iPhone; `[phone] read = false`
