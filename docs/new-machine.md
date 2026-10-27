@@ -119,7 +119,10 @@ waiting, and every other source this machine has that Life CRM can import.
 Follow **[docs/android.md](android.md)** or **[docs/iphone.md](iphone.md)**.
 You're saving into your *own* cloud folder, so skip the "someone else's
 journal" paragraph. Build both captures — the evening audio note and the
-ten-second daytime quick note.
+ten-second daytime quick note. To have the phone's other data (texts,
+health, places, photos) and your Google accounts arrive by themselves every
+morning as well, follow [automatic-collection.md](automatic-collection.md)
+once the journal works.
 
 Optional but recommended, back at the computer, schedule the jobs:
 

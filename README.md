@@ -71,6 +71,11 @@ to it.
   ([docs/obsidian.md](docs/obsidian.md)). Questions stay `lifecrm ask` (or
   the web UI, or voice): Obsidian shows the data, it does not answer.
 
+The hands-off plan — every source's automatic route, the order to set it
+up, what each morning asks of you afterwards, and Obsidian as the main
+screen — is one page:
+[docs/automatic-collection.md](docs/automatic-collection.md).
+
 ```
 lifecrm open                       # the one [gui] main names: "web" (default) or "obsidian"
 lifecrm open --gui obsidian        # this once
@@ -143,7 +148,9 @@ Re-running is always safe, because records dedupe on the source's own ids.
 With no path, every connector except `ai_chat` looks in its usual place
 (`finance`, `nutrition`, `payments` and `rides` need a `path` under their
 `[connectors.<name>]` table). `lifecrm where` lists what this machine has,
-with the command for each.
+with the command for each. Which of these arrive by themselves once set up,
+which are a download you request now and then, and how the 06:30 job turns
+either into a yes/no question: [docs/automatic-collection.md](docs/automatic-collection.md).
 
 **No export at all — connect once** ([docs/online.md](docs/online.md)). These
 live on a service's servers, so the 06:30 collect job downloads them itself
