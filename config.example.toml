@@ -95,6 +95,12 @@ max_loops = 10                     # open tasks/plans listed
 # account = "+15125550100"          # this phone's own number; scopes mirroring
 # mirror = true                     # only if your backups do not say type="full"
 
+# [connectors.phone_link]           # docs/phone_link.md — Windows: the linked phone's texts, calls and
+#                                   # contact names from Phone Link's own cache; nothing to set up on the phone
+# path = '~\AppData\Local\Packages\Microsoft.YourPhone_8wekyb3d8bbwe\LocalCache\Indexed\<device>'   # only with two live phones
+# account = "+15125550100"          # this phone's own number, when the cache does not say
+# contacts = true                   # false: names only — leave the address book to Google Contacts or a .vcf
+
 # [connectors.ios_messages]         # docs/texts.md
 # path = "~/Library/Application Support/MobileSync/Backup/<device id>"   # the backup to use when there are several (an iPad's, an old phone's)
 

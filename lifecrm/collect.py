@@ -65,6 +65,7 @@ LABELS = {
     "contacts": "contact cards", "email": "email", "finance": "bank and card transactions",
     "fitness": "workouts", "google_activity": "Google searches and YouTube history",
     "ios_calls": "iPhone calls", "ios_messages": "iPhone texts (from a backup)",
+    "phone_link": "texts, calls and contact names (Phone Link)",
     "gps_track": "places visited (GPS track)",
     "lastfm": "Last.fm scrobbles (your Spotify listening)",
     "linkedin": "LinkedIn connections and messages", "location": "places visited",
@@ -334,11 +335,20 @@ def blocked(e: BaseException | None) -> bool:
     return False
 
 
+# Where Health Connect's scheduled export lands when it is saved on the phone
+# itself (a folder picked in its destination chooser), read off a phone
+# Windows shows in File Explorer (lifecrm/phone.py) — no cloud needed.
+HEALTH_PHONE_FOLDERS = ("HealthConnect", "Health Connect", "Documents/HealthConnect",
+                        "Documents/Health Connect", "Download")
+
+
 def _health_dirs(cfg: Config) -> list[Path]:
     """Where a health export is looked for: [collect] health_dir, the usual
-    places (`health import`'s), and one folder down in the cloud drives — a
-    phone's scheduled export usually lands in a folder of its own."""
+    places (`health import`'s), one folder down in the cloud drives — a
+    phone's scheduled export usually lands in a folder of its own — and the
+    export folders on a phone shown in File Explorer, when it answers."""
     from . import health_import as hi
+    from . import phone
     first = settings(cfg)["health_dir"]
     dirs = ([first] if first else []) + hi.search_dirs()
     for root in platforms.onedrive_candidates():
@@ -347,6 +357,7 @@ def _health_dirs(cfg: Config) -> list[Path]:
                            and not p.name.startswith("."))
         except OSError:
             continue
+    dirs += phone.folders(cfg, *HEALTH_PHONE_FOLDERS)
     return list(dict.fromkeys(dirs))
 
 
@@ -710,7 +721,18 @@ def decline(conn: sqlite3.Connection, name: str) -> dict:
 # docs/windows-iphone.md, docs/mac.md), "(verify)" where those say it.
 PHONE = {
     "android": ("Windows + Android", "docs/windows-android.md", [
-        ("android_sms", "Texts and calls", [
+        ("phone_link", "Texts, calls and contact names (Phone Link: nothing on the phone)", [
+            "On the phone: Quick settings › Link to Windows, signed in with this "
+            "computer's Microsoft account (built into a Samsung; other Android phones "
+            "install Link to Windows from the Play Store).",
+            "On this computer: open Phone Link once and let it show Messages (and Calls, "
+            "with the phone paired over Bluetooth) — its own cache of the phone is read "
+            "every morning from then on (docs/phone_link.md).",
+            "One route for texts: Phone Link holds about a month; a SMS Backup & Restore "
+            "backup of the same phone adds the full history and mirrors deletions, but "
+            "its MMS count twice beside this one."]),
+        ("android_sms", "Texts and calls (SMS Backup & Restore: the full history, "
+                        "deletions mirrored)", [
             "Install SMS Backup & Restore (SyncTech) from the Play Store.",
             "Set up a backup: tick Messages and Call logs, and back up all "
             "conversations, not selected ones.",

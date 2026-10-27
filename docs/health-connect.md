@@ -32,7 +32,13 @@ See [apple-health.md](apple-health.md).
    destination the PC can reach:
    - Google Drive → then sync that folder to the PC (Drive for desktop), or
    - OneDrive, if it appears as a destination — it lands next to the
-     VoiceJournal flow you already have (verify: checklist).
+     VoiceJournal flow you already have (verify: checklist), or
+   - **a folder on the phone itself**, when the phone is shown in a Windows
+     11 laptop's File Explorer ([android.md](android.md#no-sync-app-at-all-windows-11-optional)):
+     make a folder `HealthConnect` in Internal storage and pick it (or
+     `Download`); the morning job reads the export off the phone, with no
+     cloud in between (verify: that the destination chooser offers phone
+     storage on your Android version).
    A manual one-off export to the same place works too and is the right way
    to do the first trial run.
 

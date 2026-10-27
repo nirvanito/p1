@@ -122,12 +122,14 @@ like a quiet day.
 
 ## 4. The phone
 
-Two routes, and they can run side by side. **The shortcut**: show the phone
-in this laptop's File Explorer (Link to Windows; android.md, "No sync app at
-all") and the laptop reads the recorder's, SMS Backup & Restore's and
-GPSLogger's own folders over Wi-Fi — nothing to install on the phone. **The
-sync route**, which is also what every other setup uses, follows
-[android.md](android.md):
+Two routes, and they can run side by side. **The shortcut**: link the phone
+to Windows (Link to Windows; android.md, "No sync app at all"). Phone Link
+on this laptop then holds the phone's texts, calls and contacts in a cache
+the `phone_link` connector reads ([phone_link.md](phone_link.md)), and with
+the phone shown in File Explorer the laptop reads the recorder's,
+GPSLogger's and Health Connect's own folders over Wi-Fi — nothing to install
+on the phone. **The sync route**, which is also what every other setup uses,
+follows [android.md](android.md):
 
 1. **Voice notes** — Samsung Voice Recorder, the side-button shortcut, and
    an Autosync folder pair `Recordings/Voice Recorder` → OneDrive
@@ -214,7 +216,8 @@ counts, date spans and sample lines; then run the same command with
 | Voice notes | §1 Voice Recorder + Autosync | `VoiceJournal\inbox` | `lifecrm intake` (scheduled) |
 | Text notes | §2 Automate + sync | `VoiceJournal\inbox-text` | `lifecrm intake` (scheduled) |
 | Health | §3 Samsung Health → Health Connect → scheduled export | Drive/OneDrive `.zip` | `lifecrm health import ["<zip>"]` |
-| Texts and calls | §4 SMS Backup & Restore, scheduled | `OneDrive\SMSBackupRestore` | `lifecrm observe android_sms ["<folder or sms-….xml>"]` ([android-texts.md](android-texts.md)) |
+| Texts, calls, contact names (nothing on the phone) | §4 Link to Windows, signed in | Phone Link's own cache on this laptop | `lifecrm observe phone_link` ([phone_link.md](phone_link.md)) |
+| Texts and calls (the full history) | §4 SMS Backup & Restore, scheduled | `OneDrive\SMSBackupRestore`, or the phone's own folder | `lifecrm observe android_sms ["<folder or sms-….xml>"]` ([android-texts.md](android-texts.md)) |
 | Contacts | §5 Contacts › Export | a `.vcf` | `lifecrm observe contacts ["<Contacts.vcf>"]` |
 | Calendar | §6 Google Takeout | `Takeout\Calendar` | `lifecrm observe calendar "<…\Takeout\Calendar>"` |
 | Keep notes | §6 Google Takeout | `Takeout\Keep` | `lifecrm observe notes "<…\Takeout\Keep>"` |
@@ -226,14 +229,15 @@ counts, date spans and sample lines; then run the same command with
 | Bank and card | the bank's website | a `.csv` / `.ofx` / `.qfx` | `lifecrm observe finance "<file or folder>"` ([finance.md](finance.md)) |
 | AI chats | Claude / ChatGPT data export | a `.zip` | `lifecrm observe ai_chat "<zip>"` ([ai-chat.md](ai-chat.md)) |
 
-**Or let the morning job do it.** Once the phone sends texts and calls (SMS
-Backup & Restore's nightly backup), health (Health Connect's scheduled
-export), photos (Gallery's OneDrive sync) and places (GPSLogger's daily
-track, synced to OneDrive › GPSLogger) to the laptop, and with the
-browser's own history already here, the 06:30 task finds each one by
-itself — no config. With the phone shown in File Explorer, the same task
-reads texts and tracks straight off the phone, and intake pulls the
-recordings. Calendar, Gmail, Google Contacts and your Spotify listening
+**Or let the morning job do it.** With the phone linked to Windows, texts,
+calls and contact names are already on this laptop in Phone Link's cache,
+and the 06:30 task reads them with nothing set up on the phone
+([phone_link.md](phone_link.md)). Once the phone also sends health (Health
+Connect's scheduled export), photos (Gallery's OneDrive sync) and places
+(GPSLogger's daily track) to the laptop — or, shown in File Explorer, lets
+the laptop read its folders — and with the browser's own history already
+here, the task finds each one by itself — no config. SMS Backup & Restore
+remains the route for the full text history and mirrored deletions. Calendar, Gmail, Google Contacts and your Spotify listening
 (through Last.fm) need no phone at all: connect each once with `lifecrm
 connect` and the same task downloads them first ([online.md](online.md)).
 The task also runs three minutes after you sign in, for the mornings the

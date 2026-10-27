@@ -200,20 +200,24 @@ lifecrm connect gmail you@gmail.com          # set one up (passwords asked for, 
 lifecrm fetch gmail                          # download now, import nothing; disconnect <service> forgets it
 ```
 
-**Windows laptop + Samsung:** with the phone shown in Windows 11's File
-Explorer (Link to Windows), voice notes, texts and GPS tracks need no sync app
-at all — the laptop reads them off the phone
+**Windows laptop + Samsung:** with the phone linked to Windows 11 (Link to
+Windows), two things need nothing on the phone at all. Phone Link's own
+cache on the laptop holds the phone's recent texts, calls and address book,
+and the `phone_link` connector reads it ([phone_link.md](docs/phone_link.md)).
+With the phone also shown in File Explorer, voice notes, GPS tracks and a
+health export saved on the phone are read straight off it
 ([android.md](docs/android.md#no-sync-app-at-all-windows-11-optional)). The
-sync route in the table works beside it.
+sync route in the table works beside both.
 
 | source | how it reaches the laptop | command | guide |
 |---|---|---|---|
 | Voice notes | Samsung Voice Recorder → Autosync → `OneDrive\VoiceJournal\inbox` | `lifecrm intake` (scheduled) | [android.md](docs/android.md) |
 | Quick notes | the same path, or an Automate flow into `inbox-text` | `lifecrm intake` | [android.md](docs/android.md) |
 | Call recordings (only the ones you pick) | Samsung Phone's `Recordings/Call` → the same inbox | held by intake; `lifecrm calls take <n>` | [android.md](docs/android.md#call-recordings-optional-and-only-the-ones-you-pick) |
-| Health | Samsung Health → Health Connect → scheduled export `.zip` | `lifecrm health import [zip]` | [health-connect.md](docs/health-connect.md) |
-| Texts and calls | SMS Backup & Restore XML, scheduled to OneDrive | `lifecrm observe android_sms [folder]` | [android-texts.md](docs/android-texts.md) |
-| Contacts | automatic: Google Contacts, connected once; or Contacts › Export → `.vcf` | `lifecrm observe contacts [file]` | [google_contacts.md](docs/google_contacts.md), [contacts.md](docs/contacts.md) |
+| Health | Samsung Health → Health Connect → scheduled export `.zip`, to OneDrive or to a folder on the phone | `lifecrm health import [zip]` | [health-connect.md](docs/health-connect.md) |
+| Texts, calls and contact names (nothing on the phone) | Phone Link's cache on the laptop, a window of about a month | `lifecrm observe phone_link` | [phone_link.md](docs/phone_link.md) |
+| Texts and calls (the full history, deletions mirrored) | SMS Backup & Restore XML, scheduled to OneDrive or read off the phone | `lifecrm observe android_sms [folder]` | [android-texts.md](docs/android-texts.md) |
+| Contacts | automatic: Phone Link's cache (above), or Google Contacts, connected once; or Contacts › Export → `.vcf` | `lifecrm observe contacts [file]` | [google_contacts.md](docs/google_contacts.md), [contacts.md](docs/contacts.md) |
 | Calendar | automatic: Google Calendar's secret iCal link, connected once; or Google Takeout | `lifecrm observe calendar [export]` | [calendar.md](docs/calendar.md) |
 | Notes | Google Keep Takeout, or a folder of `.md`/`.txt` (Obsidian, Samsung Notes text) | `lifecrm observe notes [path]` | [notes.md](docs/notes.md) |
 | Photos (metadata only) | Gallery › Sync with OneDrive, or a Google Photos Takeout | `lifecrm observe photos [folder]` | [photos.md](docs/photos.md) |
@@ -595,7 +599,9 @@ guide ends with what to check on the first real run:
   [iphone.md](docs/iphone.md#verification-checklist-run-on-the-real-phone).
   Nothing has run on a real Mac yet: launchd, Full Disk Access, iCloud
   latency, whisper speed on Apple Silicon.
-- Imports: [texts](docs/texts.md#first-real-import-checklist-unproven-until-a-real-backup),
+- Imports: [Phone Link](docs/phone_link.md#verified-against-a-real-cache-2026-10)
+  (texts and contacts were read from a real cache; calls and RCS rows were
+  not in it), [texts](docs/texts.md#first-real-import-checklist-unproven-until-a-real-backup),
   [calls](docs/calls.md#first-real-import-checklist-unproven-until-a-real-store),
   [Android texts](docs/android-texts.md#first-real-import-checklist-unproven-until-a-real-backup),
   [Health Connect](docs/health-connect.md#first-real-import-checklist-unproven-until-a-real-phone-run),
