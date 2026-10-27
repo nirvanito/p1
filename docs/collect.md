@@ -18,7 +18,10 @@ answer yes or no.
 ```
 
 (macOS: `.venv/bin/python -m lifecrm …`.) In Claude Code, `/morning` asks
-the questions and runs the answers for you.
+the questions and runs the answers for you. This page is the job's rules;
+the plan that puts every source on it — which route is automatic, in what
+order to set it up, what a morning asks of you — is
+[automatic-collection.md](automatic-collection.md).
 
 ## How it goes
 
