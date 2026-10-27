@@ -10,7 +10,10 @@ with no plugins.
 It can be your **main GUI** in place of the web UI: set where the vault
 lives once, and every command that changes the database keeps it current
 ([below](#obsidian-as-your-main-gui)). It is the markdown export grown up,
-and like every export it is **one-way**.
+and like every export it is **one-way**. Setting it up as the screen for a
+collection that runs by itself, and acting from it day to day, is
+[automatic-collection.md](automatic-collection.md), sections 4 and 5; this
+page is the vault's own reference.
 
 ## Read-only by design
 
