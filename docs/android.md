@@ -22,7 +22,8 @@ SMS Backup & Restore ──scheduled──> OneDrive ──> lifecrm observe and
 Contacts export (.vcf), Google Takeout (Calendar, Keep, Photos) ──> lifecrm observe ...
 GPSLogger ──Autosync (2nd pair)──> OneDrive/GPSLogger ──> lifecrm collect (gps_track)
    …or, with the phone shown in Windows 11's File Explorer: the laptop reads the
-   recorder's, SMS Backup & Restore's and GPSLogger's own folders — no sync app
+   recorder's, SMS Backup & Restore's, GPSLogger's and Health Connect's own folders — no sync app
+Phone Link's cache on the laptop (texts, calls, contacts — nothing on the phone) ──> lifecrm collect (phone_link)
 Timeline export (Timeline.json) ──> lifecrm observe location
 Google Calendar, Gmail, Google Contacts, Last.fm ──fetched by the laptop──> lifecrm collect
 WhatsApp "Export chat" (.zip) ──Quick Share──> lifecrm observe whatsapp
@@ -54,7 +55,13 @@ Samsung (Link to Windows is built in), nothing uploaded anywhere.
 2. Apps keep their defaults: Voice Recorder saves to `Recordings/Voice
    Recorder`, SMS Backup & Restore to its local folder `SMSBackupRestore`
    (no upload needed), GPSLogger to `GPSLogger`; quick notes are any app
-   that saves a `.txt` into a phone folder named `VoiceJournal-text`.
+   that saves a `.txt` into a phone folder named `VoiceJournal-text`;
+   Health Connect's scheduled export can be saved to a phone folder named
+   `HealthConnect` (or into `Download`) and is read there too.
+   And the same Link to Windows feeds **Phone Link** on the laptop, whose
+   own cache of the phone's texts, calls and contacts is read by the
+   `phone_link` connector — texts with nothing installed at all (§4,
+   [phone_link.md](phone_link.md)).
 3. On the laptop, `lifecrm collect status` says whether the phone answers;
    `lifecrm intake` pulls the notes (`pulled Voice 001.m4a from …`).
 
@@ -298,10 +305,23 @@ python -m lifecrm health import "<path to the export .zip>" --apply
 Samsung Health's own *Download personal data* (a folder of CSVs) is not
 read by anything here; Health Connect is the supported route.
 
-## 4. Texts and calls: SMS Backup & Restore
+## 4. Texts and calls: Phone Link, or SMS Backup & Restore
 
-*SMS Backup & Restore* (SyncTech, free) writes `sms-<timestamp>.xml` and
-`calls-<timestamp>.xml` and can upload them to OneDrive on a schedule.
+**Nothing on the phone (Windows 11): Phone Link.** With the phone linked to
+Windows (Quick settings › *Link to Windows*, the same sign-in that shows it
+in File Explorer), the laptop's Phone Link app already keeps the phone's
+recent texts, its call log and its address book in a cache of its own. The
+`phone_link` connector reads that cache every morning: texts and calls in
+the same streams as the backup below, contact cards and the names on every
+number besides. It holds about a month, it never removes a text, and calls
+appear only with the phone paired over Bluetooth. Open Phone Link's
+Messages tab once and you are done — [phone_link.md](phone_link.md). Use one
+route for texts: this one, or the backup below for the full history with
+deletions mirrored.
+
+**The whole history: SMS Backup & Restore.** *SMS Backup & Restore*
+(SyncTech, free) writes `sms-<timestamp>.xml` and `calls-<timestamp>.xml` and
+can upload them to OneDrive on a schedule.
 
 1. **Set up a backup** › tick **Messages** and **Call logs**.
 2. Back up **all conversations**, not selected ones. Texts mirror the phone

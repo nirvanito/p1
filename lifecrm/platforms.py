@@ -38,6 +38,32 @@ def venv_python(root: Path) -> Path:
     return root / ".venv" / "bin" / "python"
 
 
+def local_appdata() -> Path:
+    """Windows' %LOCALAPPDATA%, when it lies under this home — a test's fake
+    home is honored, and so is the real variable on a real Windows — else
+    <home>/AppData/Local, where Windows keeps it by default."""
+    h = home()
+    v = os.environ.get("LOCALAPPDATA")
+    if v:
+        p = Path(v)
+        if os.path.normcase(str(p)).startswith(os.path.normcase(str(h))):
+            return p
+    return h / "AppData" / "Local"
+
+
+# ---------------------------------------------------------------- Phone Link (Windows)
+
+PHONE_LINK_PACKAGE = "Microsoft.YourPhone_8wekyb3d8bbwe"
+
+
+def phone_link_root() -> Path:
+    """Where Phone Link keeps one cache folder per linked phone (a GUID each,
+    with System/Database/*.db inside): Indexed/ under its package's
+    LocalCache. Proposed only; the connector checks what is there."""
+    return (local_appdata() / "Packages" / PHONE_LINK_PACKAGE / "LocalCache"
+            / "Indexed")
+
+
 # ---------------------------------------------------------------- cloud drives
 
 def icloud_drive() -> Path:

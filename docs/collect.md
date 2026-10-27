@@ -191,13 +191,25 @@ answers. A phone that is away is never an error: a source found only there
 is skipped that morning, and one the phone stopped answering on mid-read is
 "missing" with the reason. Same Wi-Fi, one phone at a time, Windows only;
 `[phone] read = false` turns it off. The sync-app route is unchanged and is
-the whole story on a Mac. docs/android.md, "No sync app at all".
+the whole story on a Mac. docs/android.md, "No sync app at all". A health
+export saved on the phone (a folder named `HealthConnect`, or `Download`)
+is one more place the `health` source looks.
+
+**Phone Link's cache (Windows).** The same Link to Windows feeds Phone Link
+on the laptop, which keeps the phone's recent texts, call log and address
+book in SQLite files of its own. The `phone_link` connector reads them —
+nothing on the phone, no sync, the laptop's own files — and the job
+collects it like any source: held once, then every morning
+(docs/phone_link.md). It is a window of about a month, remembered; a
+SMS Backup & Restore backup is the full history. One route for texts.
 
 ## Phone side, per setup
 
 `collect setup` prints these with each one's state on this computer:
 
-- **Windows + Samsung** (`docs/windows-android.md`): SMS Backup & Restore's
+- **Windows + Samsung** (`docs/windows-android.md`): Phone Link's cache of
+  the linked phone — texts, calls, contact names, nothing on the phone
+  (`phone_link`, `docs/phone_link.md`); or SMS Backup & Restore's
   scheduled daily backup to OneDrive (`android_sms`); Health Connect's
   scheduled export to OneDrive (`health`); Gallery › Sync with OneDrive
   (`photos`); Chrome sync brings the phone's history into the laptop's
