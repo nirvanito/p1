@@ -246,6 +246,25 @@ def _mac_groups() -> list[dict]:
     ]
 
 
+def _windows_groups() -> list[dict]:
+    """Phone Link's cache of the linked phone — texts, calls and contact
+    names with nothing set up on the phone (docs/phone_link.md): one folder
+    per phone ever linked, the live one written recently."""
+    from datetime import datetime
+
+    from ..connectors import phone_link
+    root = platforms.phone_link_root()
+    devices = phone_link.device_folders(root)
+    items = [_item("cache", folder,
+                   f"phone.db written {datetime.fromtimestamp(stamp).strftime('%Y-%m-%d')}"
+                   if stamp else "") for folder, stamp in devices]
+    if not items:
+        items = [_item("cache", root)]
+    return [{"title": "Phone Link (texts, calls and contacts from the linked phone)",
+             "note": "" if devices else "no phone linked in Phone Link",
+             "items": items, "commands": ["python -m lifecrm observe phone_link"]}]
+
+
 def drop_folders(journal_root: Path | None) -> list[Path]:
     """Where a person saves an export by hand: Downloads, the cloud drive's
     top level, the journal folder, and the Android backup apps' folders."""
@@ -339,6 +358,8 @@ def survey(root: Path) -> dict:
     groups = [journal, _iphone_backups()]
     if platforms.is_mac():
         groups += _mac_groups()
+    if platforms.is_windows():
+        groups += _windows_groups()
     groups += _export_groups(drop_folders(journal_root))
     known = _known_connectors()
     for g in groups:

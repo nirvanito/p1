@@ -11,6 +11,14 @@ never sends anything.
 This is the texts half of the Windows laptop + Samsung setup. (An iPhone's
 texts come from its backup instead — see `docs/texts.md`.)
 
+**The route with nothing on the phone.** On a Windows 11 laptop the phone
+is linked to, Phone Link's own cache already holds about a month of the
+phone's texts, its call log and its address book; the `phone_link`
+connector reads it into the same streams as this import, with the same ids
+for SMS and calls ([phone_link.md](phone_link.md)). This page is the route
+for the **whole** history and for mirrored deletions. One route for texts
+per phone: an MMS the two overlap on counts twice.
+
 ## Making scheduled backups to OneDrive (on the phone)
 
 Menu names move between app versions; what matters is the four choices in
